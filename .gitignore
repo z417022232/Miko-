@@ -1,0 +1,25 @@
+# Android / Gradle
+.gradle/
+.kotlin/
+**/build/
+local.properties
+
+# IDE
+.idea/
+*.iml
+
+# Signing and local secrets
+*.jks
+*.keystore
+
+# Runtime data and exports
+imports/
+work/
+*.db
+*.db-wal
+*.db-shm
+*.apk
+
+# OS
+.DS_Store
+Thumbs.db
