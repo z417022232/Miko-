@@ -15,6 +15,7 @@ local.properties
 # Runtime data and exports
 imports/
 work/
+.worktrees/
 *.db
 *.db-wal
 *.db-shm
