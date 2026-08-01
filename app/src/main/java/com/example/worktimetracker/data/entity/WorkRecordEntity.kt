@@ -15,6 +15,8 @@ data class WorkRecordEntity(
     val shift: String? = null,
     val startTime: Long? = null,
     val endTime: Long? = null,
+    val homeDepartureTime: Long? = null,
+    val homeArrivalTime: Long? = null,
     val actualMinutes: Int? = null,
     val finalMinutes: Int = 0,
     val isManual: Boolean = false,

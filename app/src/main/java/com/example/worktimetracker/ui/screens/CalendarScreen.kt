@@ -58,6 +58,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.UiDayRecord
+import com.example.worktimetracker.ui.calendarDayLabel
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import java.time.LocalDate
@@ -78,6 +79,9 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
     var showMonthPicker by remember { mutableStateOf(false) }
     var showDetail by remember { mutableStateOf(false) }
     var showSalaryEditor by remember { mutableStateOf(false) }
+    var batchMode by remember { mutableStateOf(false) }
+    var batchDates by remember(month) { mutableStateOf(emptySet<LocalDate>()) }
+    var showBatchEditor by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -103,10 +107,22 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
             onNext = vm::nextMonth,
             onMonthClick = { showMonthPicker = true }
         )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            if (batchMode) {
+                TextButton(onClick = { batchMode = false; batchDates = emptySet() }) { Text("取消") }
+                Button(onClick = { showBatchEditor = true }, enabled = batchDates.isNotEmpty()) {
+                    Text("修改已选 ${batchDates.size} 天")
+                }
+            } else {
+                OutlinedButton(onClick = { batchMode = true }) { Text("批量修改") }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         CalendarCard(
             records = records,
             selectedDate = selectedDate,
+            batchMode = batchMode,
+            selectedDates = batchDates,
             modifier = Modifier.pointerInput(month) {
                 detectHorizontalDragGestures(
                     onDragEnd = {
@@ -120,7 +136,11 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
                     onHorizontalDrag = { _, amount -> monthDrag += amount }
                 )
             },
-            onClick = { vm.select(it.date) }
+            onClick = {
+                if (batchMode) {
+                    batchDates = if (it.date in batchDates) batchDates - it.date else batchDates + it.date
+                } else vm.select(it.date)
+            }
         )
         Spacer(Modifier.height(12.dp))
         SelectedDayCard(selected, onEdit = { showDetail = true })
@@ -145,6 +165,18 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
             onSave = {
                 vm.saveMonthlySalary(it.first, it.second)
                 showSalaryEditor = false
+            }
+        )
+    }
+    if (showBatchEditor) {
+        BatchManualDialog(
+            count = batchDates.size,
+            onDismiss = { showBatchEditor = false },
+            onSave = { hours, shift, note ->
+                vm.saveBatchManualHours(batchDates, hours, shift, note)
+                showBatchEditor = false
+                batchMode = false
+                batchDates = emptySet()
             }
         )
     }
@@ -248,6 +280,8 @@ private fun MonthToolbar(
 private fun CalendarCard(
     records: List<UiDayRecord>,
     selectedDate: LocalDate,
+    batchMode: Boolean,
+    selectedDates: Set<LocalDate>,
     modifier: Modifier = Modifier,
     onClick: (UiDayRecord) -> Unit
 ) {
@@ -278,7 +312,7 @@ private fun CalendarCard(
                     week.forEach { record ->
                         Box(Modifier.weight(1f)) {
                             if (record == null) Spacer(Modifier.height(62.dp))
-                            else DayCell(record, record.date == selectedDate, onClick)
+                            else DayCell(record, if (batchMode) record.date in selectedDates else record.date == selectedDate, onClick)
                         }
                     }
                 }
@@ -292,7 +326,7 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
     val today = record.date == LocalDate.now()
     val color = statusColor(record.status)
     val subLabel = when {
-        record.finalMinutes > 0 -> compactHours(record.finalMinutes)
+        record.finalMinutes > 0 -> calendarDayLabel(record.shift, record.finalMinutes)
         !record.holidayName.isNullOrBlank() -> record.holidayName.take(3)
         record.status.isNotBlank() -> shortStatus(record.status)
         else -> ""
@@ -594,11 +628,13 @@ private fun ManualHoursDialog(
     }
     var note by remember(record.date) { mutableStateOf(record.note.orEmpty()) }
     var setDefault by remember { mutableStateOf(false) }
+    var shift by remember(record.date) { mutableStateOf(record.shift ?: "DAY_SHIFT") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改计入工时") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                ShiftSelector(shift) { shift = it }
                 OutlinedTextField(
                     value = hours,
                     onValueChange = { hours = it },
@@ -621,9 +657,67 @@ private fun ManualHoursDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { vm.saveManualHours(record.date, hours, setDefault, note); onSaved() }) {
+            TextButton(onClick = { vm.saveManualHours(record.date, hours, setDefault, note, shift); onSaved() }) {
                 Text("保存")
             }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+private fun ShiftSelector(value: String, onChange: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(
+            selected = value == "DAY_SHIFT",
+            onClick = { onChange("DAY_SHIFT") },
+            label = { Text("白班") },
+            modifier = Modifier.weight(1f)
+        )
+        FilterChip(
+            selected = value == "NIGHT_SHIFT",
+            onClick = { onChange("NIGHT_SHIFT") },
+            label = { Text("夜班") },
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun BatchManualDialog(
+    count: Int,
+    onDismiss: () -> Unit,
+    onSave: (String, String, String) -> Unit
+) {
+    var hours by remember { mutableStateOf("11") }
+    var shift by remember { mutableStateOf("DAY_SHIFT") }
+    var note by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("批量修改 $count 天") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("所选日期将使用同一班次和计入工时，原有到岗、离岗、离家、到家时间保持不变。")
+                ShiftSelector(shift) { shift = it }
+                OutlinedTextField(
+                    value = hours,
+                    onValueChange = { hours = it },
+                    label = { Text("计入工时") },
+                    suffix = { Text("小时") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("备注（可选）") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(hours, shift, note) }, enabled = hours.toDoubleOrNull() != null) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )

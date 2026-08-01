@@ -20,13 +20,20 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
         )
     }
 
-    fun nextState(previous: WorkStateEntity, type: LocationType, now: Long, settings: UserSettingsEntity): WorkStateEntity {
+    fun nextState(
+        previous: WorkStateEntity,
+        type: LocationType,
+        now: Long,
+        settings: UserSettingsEntity,
+        distanceFromCompanyMeters: Double? = null,
+        isMovingAway: Boolean = false
+    ): WorkStateEntity {
         val leaveConfirmMillis = settings.leaveCompanyConfirmMinutes * 60_000L
         val next = when (previous.currentState) {
             "REST" -> when (type) {
                 LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
                 LocationType.COMPANY -> previous.copy(currentState = "NEAR_COMPANY", sessionStart = now)
-                LocationType.OTHER -> previous.copy(currentState = "LEAVING_HOME", sessionStart = now)
+                LocationType.OTHER -> previous.copy(currentState = "LEAVING_HOME", sessionStart = now, homeDepartureTime = now)
                 LocationType.UNKNOWN -> previous
             }
             "LEAVING_HOME" -> when (type) {
@@ -47,8 +54,16 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
             "TEMP_LEAVE" -> when (type) {
                 LocationType.COMPANY -> previous.copy(currentState = "WORKING", tempLeaveStart = null)
                 LocationType.UNKNOWN -> previous
-                else -> if (previous.tempLeaveStart != null && now - previous.tempLeaveStart >= leaveConfirmMillis) {
-                    previous.copy(currentState = "FINISHED", tempLeaveStart = null)
+                else -> if (previous.tempLeaveStart != null && now - previous.tempLeaveStart >= leaveConfirmMillis &&
+                    (type == LocationType.HOME || (isMovingAway && distanceFromCompanyMeters != null &&
+                        distanceFromCompanyMeters >= settings.companyRadiusMeters + MIN_DEPARTURE_DISTANCE_METERS))
+                ) {
+                    previous.copy(
+                        currentState = "FINISHED",
+                        confirmedDepartureTime = previous.tempLeaveStart,
+                        homeArrivalTime = if (type == LocationType.HOME) now else previous.homeArrivalTime,
+                        tempLeaveStart = null
+                    )
                 } else {
                     previous
                 }
@@ -61,10 +76,11 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
             }
             else -> previous.copy(currentState = if (type == LocationType.HOME) "REST" else previous.currentState)
         }
-        return next.copy(lastLocationTime = now, updatedAt = now)
+        return next.copy(lastLocationTime = now, lastCompanyDistanceMeters = distanceFromCompanyMeters, updatedAt = now)
     }
 
     private companion object {
         const val MAX_USABLE_ACCURACY_METERS = 100f
+        const val MIN_DEPARTURE_DISTANCE_METERS = 100.0
     }
 }

@@ -33,7 +33,7 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         AppLogEntity::class,
         MonthlySalaryEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

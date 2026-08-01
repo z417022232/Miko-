@@ -18,3 +18,10 @@ data class UiDayRecord(
     val homeArrivalText: String? = null,
     val homeDepartureText: String? = null
 )
+
+fun calendarDayLabel(shift: String?, minutes: Int): String {
+    if (minutes <= 0) return when (shift) { "白班" -> "白"; "夜班" -> "夜"; else -> "" }
+    val hours = if (minutes % 60 == 0) "${minutes / 60}" else "%.1f".format(java.util.Locale.US, minutes / 60.0)
+    val prefix = when (shift) { "白班" -> "白 "; "夜班" -> "夜 "; else -> "" }
+    return "${prefix}${hours}h"
+}

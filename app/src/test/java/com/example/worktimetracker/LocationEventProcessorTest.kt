@@ -35,12 +35,20 @@ class LocationEventProcessorTest {
         assertEquals(1_000L, stillLeaving.sessionStart)
     }
 
+    @Test fun companyArrivalDoesNotIncludeCommuteTime() {
+        val leaving = processor.nextState(WorkStateEntity(currentState = "REST"), LocationType.OTHER, 1_000L, settings)
+        val working = processor.nextState(leaving, LocationType.COMPANY, 2_000L, settings)
+        assertEquals("WORKING", working.currentState)
+        assertEquals(2_000L, working.sessionStart)
+        assertEquals(1_000L, working.homeDepartureTime)
+    }
+
     @Test fun leaveLongerThanThresholdFinishes() {
         val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L, lastLocationTime = 1_000L)
         val temp = processor.nextState(working, LocationType.OTHER, 2_000L, settings)
         val updatedOnce = processor.nextState(temp, LocationType.OTHER, 30 * 60_000L, settings)
         val updatedAgain = processor.nextState(updatedOnce, LocationType.OTHER, 59 * 60_000L, settings)
-        val finished = processor.nextState(updatedAgain, LocationType.OTHER, 61 * 60_000L, settings)
+        val finished = processor.nextState(updatedAgain, LocationType.OTHER, 61 * 60_000L, settings, 500.0, true)
         assertEquals("FINISHED", finished.currentState)
     }
 
@@ -60,6 +68,31 @@ class LocationEventProcessorTest {
         val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L)
         val unchanged = processor.nextState(working, type, 2_000L, settings)
         assertEquals("WORKING", unchanged.currentState)
+    }
+
+    @Test fun stationaryOutsideSamplesDoNotConfirmDepartureWithoutMovementEvidence() {
+        val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L)
+        val candidate = processor.nextState(working, LocationType.OTHER, 2_000L, settings)
+        val afterTimeout = processor.nextState(candidate, LocationType.OTHER, 61 * 60_000L, settings, 260.0, false)
+        assertEquals("TEMP_LEAVE", afterTimeout.currentState)
+    }
+
+    @Test fun homeEvidenceConfirmsDepartureAndPreservesFirstExitTime() {
+        val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L)
+        val candidate = processor.nextState(working, LocationType.OTHER, 2_000L, settings)
+        val finished = processor.nextState(candidate, LocationType.HOME, 61 * 60_000L, settings, 2_000.0, true)
+        assertEquals("FINISHED", finished.currentState)
+        assertEquals(2_000L, finished.confirmedDepartureTime)
+        assertEquals(61 * 60_000L, finished.homeArrivalTime)
+    }
+
+    @Test fun returningToCompanyCancelsCandidateDeparture() {
+        val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L)
+        val candidate = processor.nextState(working, LocationType.OTHER, 2_000L, settings)
+        val returned = processor.nextState(candidate, LocationType.COMPANY, 3_000L, settings)
+        assertEquals("WORKING", returned.currentState)
+        assertEquals(null, returned.tempLeaveStart)
+        assertEquals(null, returned.confirmedDepartureTime)
     }
 }
 

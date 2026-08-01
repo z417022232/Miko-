@@ -23,7 +23,9 @@ import com.example.worktimetracker.data.entity.LocationLogEntity
 import com.example.worktimetracker.notification.NotificationChannels
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
+import com.example.worktimetracker.domain.engine.ShiftProfileLearner
 import com.example.worktimetracker.domain.model.WorkSettings
+import com.example.worktimetracker.domain.model.ShiftType
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import com.example.worktimetracker.domain.model.WorkSession
 import java.time.ZoneId
@@ -32,6 +34,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import com.example.worktimetracker.location.recovery.ServiceRecovery
 
 class ForegroundLocationService : Service(), LocationListener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -39,6 +42,8 @@ class ForegroundLocationService : Service(), LocationListener {
     private val samplingPolicy = LocationSamplingPolicy()
     private val locationAnalyzer = LocationStatusAnalyzer()
     private val sessionEngine = WorkSessionEngine(ZoneId.systemDefault())
+    private val fixGate = LocationFixGate(LAST_KNOWN_MAX_AGE_MILLIS)
+    private val profileLearner = ShiftProfileLearner()
     private var locationManager: LocationManager? = null
     private val watchdogHandler = Handler(Looper.getMainLooper())
     private var lastFixReceivedAt: Long = 0L
@@ -62,6 +67,7 @@ class ForegroundLocationService : Service(), LocationListener {
         startLocationUpdates()
         watchdogHandler.postDelayed(locationWatchdog, WATCHDOG_INTERVAL_MILLIS)
         logEvent("SERVICE", "前台定位服务已启动")
+        ServiceRecovery.heartbeat(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -80,14 +86,27 @@ class ForegroundLocationService : Service(), LocationListener {
 
     override fun onLocationChanged(location: Location) {
         val app = application as WorkTimeApplication
-        val now = System.currentTimeMillis()
+            val now = System.currentTimeMillis()
+            ServiceRecovery.heartbeat(this@ForegroundLocationService, now)
+        val fixTime = location.time
+        if (!fixGate.shouldAccept(location.provider, fixTime, now)) return
         lastFixReceivedAt = now
         scope.launch {
             val settings = app.database.userSettingsDao().getSettings() ?: com.example.worktimetracker.data.entity.UserSettingsEntity()
+            val previous = app.database.workStateDao().getState() ?: com.example.worktimetracker.data.entity.WorkStateEntity()
+            val persistedFixTime = if (location.provider == LocationManager.GPS_PROVIDER) previous.lastGpsFixTime else previous.lastNetworkFixTime
+            if (persistedFixTime != null && fixTime <= persistedFixTime) return@launch
             val type = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
+            val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
+                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
+            } else null
+            val movingAway = type == com.example.worktimetracker.domain.model.LocationType.HOME ||
+                (location.hasSpeed() && location.speed >= 1.5f) ||
+                (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
+                    companyDistance >= previous.lastCompanyDistanceMeters + 50.0)
             app.database.locationLogDao().insert(
                 LocationLogEntity(
-                    time = now,
+                    time = fixTime,
                     latitude = location.latitude,
                     longitude = location.longitude,
                     accuracyMeters = location.accuracy,
@@ -95,37 +114,38 @@ class ForegroundLocationService : Service(), LocationListener {
                     provider = location.provider
                 )
             )
-            val previous = app.database.workStateDao().getState() ?: com.example.worktimetracker.data.entity.WorkStateEntity()
-            val next = processor.nextState(previous, type, now, settings).copy(lastLatitude = location.latitude, lastLongitude = location.longitude)
+            val next = processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway).copy(
+                lastLatitude = location.latitude,
+                lastLongitude = location.longitude,
+                lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
+                lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
+            )
             app.database.workStateDao().save(next)
             updateSamplingPolicy(location, type.name, next.currentState, settings)
             maybeCreateOutsideRecord(app, previous, next, now, settings)
+            if (previous.currentState != "WORKING" && next.currentState == "WORKING" && next.sessionStart != null) {
+                saveDraftRecord(app, next, settings)
+            }
             if (previous.currentState != "FINISHED" && next.currentState == "FINISHED" && previous.sessionStart != null) {
-                val domainSettings = WorkSettings(settings.workStartMinutes, settings.workEndMinutes, settings.hasDefaultHours, settings.defaultWorkMinutes, settings.restDeductionMinutes, settings.outsideThresholdMinutes, settings.leaveCompanyConfirmMinutes, settings.earlyLeaveToleranceMinutes)
-                val session = sessionEngine.buildSession(previous.sessionStart, now, domainSettings)
+                val learned = learnedSettings(app, settings)
+                val typicalDuration = if (detectShift(previous.sessionStart, learned.first) == ShiftType.NIGHT_SHIFT) learned.second.nightTypicalDurationMinutes else learned.second.dayTypicalDurationMinutes
+                val maximumEnd = previous.sessionStart + profileLearner.maximumDurationMinutes(typicalDuration) * 60_000L
+                val confirmedEnd = next.confirmedDepartureTime ?: fixTime
+                val effectiveEnd = minOf(confirmedEnd, maximumEnd)
+                val capped = confirmedEnd > maximumEnd
+                val session = sessionEngine.buildSession(previous.sessionStart, effectiveEnd, learned.first)
                 val existing = app.database.workRecordDao().getByDate(session.assignedDate)
-                val automaticRecord = WorkRecordEntity(
-                        workDate = session.assignedDate,
-                        status = when (session.status.name) { "EARLY_LEAVE" -> "EARLY_LEAVE"; "ARRIVAL_EXCEPTION" -> "ARRIVAL_EXCEPTION"; else -> "WORK" },
-                        shift = session.shiftType.name,
-                        startTime = session.startMillis,
-                        endTime = session.endMillis,
-                        actualMinutes = session.actualMinutes,
-                        finalMinutes = session.finalMinutes,
-                        needsReview = session.needsReview
-                    )
-                val recordToSave = if (existing?.isManual == true) {
-                    existing.copy(
-                        shift = automaticRecord.shift,
-                        startTime = automaticRecord.startTime,
-                        endTime = automaticRecord.endTime,
-                        actualMinutes = automaticRecord.actualMinutes,
-                        needsReview = existing.needsReview || automaticRecord.needsReview,
-                        updatedAt = now
-                    )
-                } else {
-                    automaticRecord
-                }
+                val recordToSave = ConfirmedSession.merge(
+                    existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK"),
+                    shift = session.shiftType.name,
+                    companyArrival = previous.sessionStart,
+                    companyDeparture = effectiveEnd,
+                    homeDeparture = next.homeDepartureTime,
+                    homeArrival = next.homeArrivalTime,
+                    actualMinutes = session.actualMinutes,
+                    calculatedMinutes = session.finalMinutes,
+                    needsReview = session.needsReview || capped
+                )
                 app.database.workRecordDao().upsert(recordToSave)
                 sendWorkRecordNotification(session)
             }
@@ -161,10 +181,57 @@ class ForegroundLocationService : Service(), LocationListener {
         }
         providers.forEach { provider ->
             manager.requestLocationUpdates(provider, currentSamplingIntervalMillis, 50f, this)
-            manager.getLastKnownLocation(provider)
-                ?.takeIf { System.currentTimeMillis() - it.time <= LAST_KNOWN_MAX_AGE_MILLIS }
-                ?.let { onLocationChanged(it) }
         }
+    }
+
+    private suspend fun learnedSettings(
+        app: WorkTimeApplication,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ): Pair<WorkSettings, ShiftProfileLearner.Profile> {
+        val samples = app.database.workRecordDao().latestValidForLearning().mapNotNull { row ->
+            val start = row.startTime ?: return@mapNotNull null
+            val end = row.endTime ?: return@mapNotNull null
+            val shift = runCatching { ShiftType.valueOf(row.shift ?: "") }.getOrNull() ?: return@mapNotNull null
+            val minute = Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).toLocalTime().toSecondOfDay() / 60
+            ShiftProfileLearner.Sample(shift, minute, ((end - start) / 60_000L).toInt(), true)
+        }
+        val profile = profileLearner.learn(samples, settings.workStartMinutes, settings.workEndMinutes)
+        val domain = WorkSettings(
+            profile.dayStartMinutes,
+            profile.nightStartMinutes,
+            settings.hasDefaultHours,
+            settings.defaultWorkMinutes,
+            settings.restDeductionMinutes,
+            settings.outsideThresholdMinutes,
+            settings.leaveCompanyConfirmMinutes,
+            settings.earlyLeaveToleranceMinutes
+        )
+        return domain to profile
+    }
+
+    private fun detectShift(startMillis: Long, settings: WorkSettings): ShiftType =
+        com.example.worktimetracker.domain.engine.ShiftDetector(ZoneId.systemDefault()).detectShift(startMillis, settings)
+
+    private suspend fun saveDraftRecord(
+        app: WorkTimeApplication,
+        state: com.example.worktimetracker.data.entity.WorkStateEntity,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ) {
+        val start = state.sessionStart ?: return
+        val learned = learnedSettings(app, settings)
+        val session = sessionEngine.buildSession(start, null, learned.first)
+        val existing = app.database.workRecordDao().getByDate(session.assignedDate)
+        if (existing?.isManual == true) return
+        app.database.workRecordDao().upsert(
+            (existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK")).copy(
+                status = "WORK",
+                shift = session.shiftType.name,
+                startTime = start,
+                homeDepartureTime = state.homeDepartureTime,
+                needsReview = false,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
     }
 
     private fun updateSamplingPolicy(
