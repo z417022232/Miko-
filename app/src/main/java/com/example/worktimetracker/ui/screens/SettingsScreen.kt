@@ -8,6 +8,7 @@ import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -72,6 +73,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.worktimetracker.data.entity.UserSettingsEntity
 import com.example.worktimetracker.location.permission.PermissionManager
+import com.example.worktimetracker.location.permission.PermissionItem
+import com.example.worktimetracker.location.permission.PermissionRepairPriority
+import com.example.worktimetracker.location.permission.PermissionSettingsRouter
 import com.example.worktimetracker.location.permission.PermissionStatus
 import com.example.worktimetracker.location.service.ForegroundLocationService
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
@@ -476,6 +480,15 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     var serviceMessage by remember { mutableStateOf("") }
     val status = remember(refresh) { PermissionManager.check(context) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
+    fun repair(item: PermissionItem) {
+        when (item) {
+            PermissionItem.FINE_LOCATION -> permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            PermissionItem.NOTIFICATIONS -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            } else refresh++
+            else -> serviceMessage = PermissionSettingsRouter.open(item, context)
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) refresh++ }
@@ -487,43 +500,22 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         ScreenHeader("权限与自动记录", "OriginOS 6 后台运行检查", onBack)
         Spacer(Modifier.height(14.dp))
         SettingsGroup {
-            PermissionRow("精确定位", "用于判断公司和家庭范围", status.fineLocation)
+            PermissionRow("精确定位", "用于判断公司和家庭范围", status.fineLocation) { repair(PermissionItem.FINE_LOCATION) }
             ThinDivider()
-            PermissionRow("后台定位", "退出应用后继续记录", status.backgroundLocation)
+            PermissionRow("后台定位", "退出应用后继续记录", status.backgroundLocation) { repair(PermissionItem.BACKGROUND_LOCATION) }
             ThinDivider()
-            PermissionRow("通知", "显示常驻记录状态和异常提醒", status.notifications)
+            PermissionRow("通知", "显示常驻记录状态和异常提醒", status.notifications) { repair(PermissionItem.NOTIFICATIONS) }
             ThinDivider()
-            PermissionRow("电池不受限制", "避免 OriginOS 清理自动记录服务", status.batteryUnrestricted)
+            PermissionRow("电池不受限制", "避免 OriginOS 清理自动记录服务", status.batteryUnrestricted) { repair(PermissionItem.BATTERY_UNRESTRICTED) }
+            ThinDivider()
+            PermissionRow("Vivo 自启动", "允许开机和系统清理后恢复记录", null) { repair(PermissionItem.VIVO_AUTOSTART) }
         }
         Spacer(Modifier.height(14.dp))
-        if (!status.fineLocation || !status.notifications) {
-            Button(
-                onClick = {
-                    permissionLauncher.launch(buildList {
-                        add(Manifest.permission.ACCESS_FINE_LOCATION)
-                        add(Manifest.permission.ACCESS_COARSE_LOCATION)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
-                    }.toTypedArray())
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("申请定位和通知权限") }
-            Spacer(Modifier.height(8.dp))
-        }
-        OutlinedButton(
-            onClick = {
-                context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null)))
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
+        Button(onClick = { repair(PermissionRepairPriority.next(status)) }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Outlined.Security, null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
-            Text("打开系统权限设置")
+            Text("修复下一项")
         }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
-            modifier = Modifier.fillMaxWidth()
-        ) { Text("打开电池优化和自启动设置") }
         Spacer(Modifier.height(8.dp))
         Button(
             onClick = {
@@ -549,19 +541,19 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun PermissionRow(title: String, summary: String, granted: Boolean) {
-    Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun PermissionRow(title: String, summary: String, granted: Boolean?, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(
-            if (granted) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
+            if (granted == true) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
             null,
-            tint = if (granted) AppGreen else AppOrange
+            tint = if (granted == true) AppGreen else AppOrange
         )
         Spacer(Modifier.size(12.dp))
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Medium)
             Text(summary, color = AppMuted, style = MaterialTheme.typography.bodySmall)
         }
-        Text(if (granted) "已开启" else "未开启", color = if (granted) AppGreen else AppOrange)
+        Text(if (granted == true) "已开启" else if (granted == false) "未开启" else "去设置", color = if (granted == true) AppGreen else AppOrange)
     }
 }
 

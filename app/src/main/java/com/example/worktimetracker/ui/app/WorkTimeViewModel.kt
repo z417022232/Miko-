@@ -16,9 +16,11 @@ import com.example.worktimetracker.domain.engine.ChinaHolidayProvider
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
+import com.example.worktimetracker.domain.engine.ReviewRecordEditor
 import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.export.ExportManager
 import com.example.worktimetracker.ui.UiDayRecord
+import com.example.worktimetracker.ui.MonthlyRecordIndex
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -39,6 +41,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private val engine = WorkSessionEngine(zone)
     private val payrollRules = PayrollPeriodRules()
     private var monthJob: Job? = null
+    private var observedMonth: YearMonth? = null
 
     private val _month = MutableStateFlow(YearMonth.now())
     val month: StateFlow<YearMonth> = _month
@@ -48,6 +51,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val settings: StateFlow<UserSettingsEntity> = _settings
     private val _records = MutableStateFlow<List<UiDayRecord>>(emptyList())
     val records: StateFlow<List<UiDayRecord>> = _records
+    private val _reviewRecords = MutableStateFlow<List<UiDayRecord>>(emptyList())
+    val reviewRecords: StateFlow<List<UiDayRecord>> = _reviewRecords
     private val _lastKnownLocationText = MutableStateFlow("暂无定位")
     val lastKnownLocationText: StateFlow<String> = _lastKnownLocationText
     private val _recentLogs = MutableStateFlow<List<String>>(emptyList())
@@ -102,26 +107,59 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun loadMonth() {
+        val requestedMonth = _month.value
+        if (monthJob?.isActive == true && observedMonth == requestedMonth) return
         monthJob?.cancel()
+        observedMonth = requestedMonth
         monthJob = viewModelScope.launch {
-            val m = _month.value
+            val m = requestedMonth
             val start = m.atDay(1).toString()
             val end = m.atEndOfMonth().toString()
             val salary = db.monthlySalaryDao().getForPayrollMonth(m.toString())
             _monthlySalaryCents.value = salary?.netSalaryCents
             _monthlySalaryPaymentDate.value = salary?.paymentDate
             db.workRecordDao().observeMonthRecords(start, end).collectLatest { rows ->
-                _records.value = (1..m.lengthOfMonth()).map { day ->
-                    val date = m.atDay(day)
-                    rows.firstOrNull { it.workDate == date.toString() }?.toUi(date)
-                        ?: UiDayRecord(
-                            date = date,
-                            status = if (date.isAfter(LocalDate.now())) "" else "休息",
-                            finalMinutes = 0,
-                            holidayName = ChinaHolidayProvider.name(date)
-                        )
-                }
+                _records.value = MonthlyRecordIndex.build(m, rows, LocalDate.now(), zone)
+                _reviewRecords.value = _records.value.filter { it.needsReview }
             }
+        }
+    }
+
+    fun confirmReview(
+        date: LocalDate,
+        shift: String,
+        startMillis: Long?,
+        endMillis: Long?,
+        hoursText: String,
+        note: String,
+        onResult: (String?) -> Unit
+    ) {
+        val minutes = hoursText.toDoubleOrNull()?.let { (it * 60).toInt() }
+        if (minutes == null) {
+            onResult("请输入有效工时")
+            return
+        }
+        viewModelScope.launch {
+            val old = db.workRecordDao().getByDate(date.toString())
+            if (old == null || !old.needsReview) {
+                onResult("该记录已不需要确认")
+                return@launch
+            }
+            ReviewRecordEditor.confirm(old, shift, startMillis, endMillis, minutes, note).fold(
+                onSuccess = { confirmed ->
+                    db.workRecordDao().upsert(confirmed)
+                    db.manualOverrideDao().insert(
+                        ManualOverrideEntity(
+                            recordId = confirmed.id,
+                            oldValue = "${old.shift}:${old.startTime}:${old.endTime}:${old.finalMinutes}",
+                            newValue = "$shift:$startMillis:$endMillis:$minutes",
+                            reason = note.ifBlank { "统计页人工确认" }
+                        )
+                    )
+                    onResult(null)
+                },
+                onFailure = { onResult(it.message ?: "确认失败") }
+            )
         }
     }
 
