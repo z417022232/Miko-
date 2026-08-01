@@ -47,6 +47,7 @@ class ForegroundLocationService : Service(), LocationListener {
     private val sessionEngine = WorkSessionEngine(ZoneId.systemDefault())
     private val fixGate = LocationFixGate(LAST_KNOWN_MAX_AGE_MILLIS)
     private val profileLearner = ShiftProfileLearner()
+    private val companyFallback = CompanyPresenceFallback(ZoneId.systemDefault())
     private val processingGate = LocationProcessingGate<Location>()
     private val processingSignal = Channel<Unit>(Channel.CONFLATED)
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
@@ -152,6 +153,9 @@ class ForegroundLocationService : Service(), LocationListener {
             app.database.workStateDao().save(next)
             updateSamplingPolicy(location, type.name, next.currentState, settings)
             maybeCreateOutsideRecord(app, previous, next, now, settings)
+            if (type == com.example.worktimetracker.domain.model.LocationType.COMPANY && previous.currentState == "REST") {
+                applyCompanyPresenceFallback(app, fixTime, now, settings)
+            }
             if (previous.currentState != "WORKING" && next.currentState == "WORKING" && next.sessionStart != null) {
                 saveDraftRecord(app, next, settings)
             }
@@ -254,7 +258,7 @@ class ForegroundLocationService : Service(), LocationListener {
         val learned = learnedSettings(app, settings)
         val session = sessionEngine.buildSession(start, null, learned.first)
         val existing = app.database.workRecordDao().getByDate(session.assignedDate)
-        if (existing?.isManual == true) return
+        if (existing?.isManual == true || (existing?.needsReview == true && existing.note == CompanyPresenceFallback.FALLBACK_NOTE)) return
         app.database.workRecordDao().upsert(
             (existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK")).copy(
                 status = "WORK",
@@ -266,6 +270,38 @@ class ForegroundLocationService : Service(), LocationListener {
             )
         )
     }
+
+    private suspend fun applyCompanyPresenceFallback(
+        app: WorkTimeApplication,
+        companyFixAt: Long,
+        now: Long,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ) {
+        val domain = settings.fallbackDomain()
+        val candidate = companyFallback.evaluate(companyFixAt, now, null, domain)
+        val candidateRecord = when (candidate) {
+            is CompanyPresenceFallback.Action.Draft -> candidate.record
+            is CompanyPresenceFallback.Action.UpsertReview -> candidate.record
+            CompanyPresenceFallback.Action.None -> return
+        }
+        val existing = app.database.workRecordDao().getByDate(candidateRecord.workDate)
+        when (val action = companyFallback.evaluate(companyFixAt, now, existing, domain)) {
+            is CompanyPresenceFallback.Action.Draft -> app.database.workRecordDao().upsert(action.record)
+            is CompanyPresenceFallback.Action.UpsertReview -> app.database.workRecordDao().upsert(action.record)
+            CompanyPresenceFallback.Action.None -> Unit
+        }
+    }
+
+    private fun com.example.worktimetracker.data.entity.UserSettingsEntity.fallbackDomain() = WorkSettings(
+        workStartMinutes = workStartMinutes,
+        workEndMinutes = workEndMinutes,
+        hasDefaultHours = hasDefaultHours,
+        defaultWorkMinutes = defaultWorkMinutes,
+        restDeductionMinutes = restDeductionMinutes,
+        outsideThresholdMinutes = outsideThresholdMinutes,
+        leaveCompanyConfirmMinutes = leaveCompanyConfirmMinutes,
+        earlyLeaveToleranceMinutes = earlyLeaveToleranceMinutes
+    )
 
     private fun updateSamplingPolicy(
         location: Location,

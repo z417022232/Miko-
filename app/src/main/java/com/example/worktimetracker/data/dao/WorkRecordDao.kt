@@ -29,6 +29,9 @@ interface WorkRecordDao {
     @Query("SELECT * FROM work_records WHERE isManual = 0 AND startTime IS NOT NULL ORDER BY startTime DESC LIMIT 31")
     suspend fun recentAutomaticRecordsForRepair(): List<WorkRecordEntity>
 
+    @Query("SELECT * FROM work_records WHERE isManual = 0 AND needsReview = 1 AND endTime IS NULL AND note = :note ORDER BY workDate ASC")
+    suspend fun incompleteFallbackRecords(note: String): List<WorkRecordEntity>
+
     @Query("SELECT finalMinutes FROM work_records WHERE isManual = 1 AND finalMinutes > 0 ORDER BY updatedAt DESC LIMIT 1")
     suspend fun latestManualFinalMinutes(): Int?
 
