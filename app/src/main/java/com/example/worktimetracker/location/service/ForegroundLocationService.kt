@@ -126,66 +126,66 @@ class ForegroundLocationService : Service(), LocationListener {
         val previous = app.database.workStateDao().getState() ?: com.example.worktimetracker.data.entity.WorkStateEntity()
         val persistedFixTime = if (location.provider == LocationManager.GPS_PROVIDER) previous.lastGpsFixTime else previous.lastNetworkFixTime
         if (persistedFixTime != null && fixTime <= persistedFixTime) return
-            val type = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
-            val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
-                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
-            } else null
-            val movingAway = type == com.example.worktimetracker.domain.model.LocationType.HOME ||
-                (location.hasSpeed() && location.speed >= 1.5f) ||
-                (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
-                    companyDistance >= previous.lastCompanyDistanceMeters + 50.0)
-            app.database.locationLogDao().insert(
-                LocationLogEntity(
-                    time = fixTime,
-                    latitude = location.latitude,
-                    longitude = location.longitude,
-                    accuracyMeters = location.accuracy,
-                    locationType = type.name,
-                    provider = location.provider
-                )
+        val type = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
+        val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
+            locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
+        } else null
+        val movingAway = type == com.example.worktimetracker.domain.model.LocationType.HOME ||
+            (location.hasSpeed() && location.speed >= 1.5f) ||
+            (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
+                companyDistance >= previous.lastCompanyDistanceMeters + 50.0)
+        app.database.locationLogDao().insert(
+            LocationLogEntity(
+                time = fixTime,
+                latitude = location.latitude,
+                longitude = location.longitude,
+                accuracyMeters = location.accuracy,
+                locationType = type.name,
+                provider = location.provider
             )
-            val next = processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway).copy(
-                lastLatitude = location.latitude,
-                lastLongitude = location.longitude,
-                lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
-                lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
+        )
+        val next = processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway).copy(
+            lastLatitude = location.latitude,
+            lastLongitude = location.longitude,
+            lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
+            lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
+        )
+        app.database.workStateDao().save(next)
+        updateSamplingPolicy(location, type.name, next.currentState, settings)
+        maybeCreateOutsideRecord(app, previous, next, now, settings)
+        if (type == com.example.worktimetracker.domain.model.LocationType.COMPANY && previous.currentState == "REST") {
+            applyCompanyPresenceFallback(app, fixTime, now, settings)
+        }
+        if (previous.currentState != "WORKING" && next.currentState == "WORKING" && next.sessionStart != null) {
+            saveDraftRecord(app, next, settings)
+        }
+        if (previous.currentState != "FINISHED" && next.currentState == "FINISHED" && previous.sessionStart != null) {
+            val learned = learnedSettings(app, settings)
+            val typicalDuration = if (detectShift(previous.sessionStart, learned.first) == ShiftType.NIGHT_SHIFT) learned.second.nightTypicalDurationMinutes else learned.second.dayTypicalDurationMinutes
+            val maximumEnd = previous.sessionStart + profileLearner.maximumDurationMinutes(typicalDuration) * 60_000L
+            val confirmedEnd = next.confirmedDepartureTime ?: fixTime
+            val effectiveEnd = minOf(confirmedEnd, maximumEnd)
+            val capped = confirmedEnd > maximumEnd
+            val session = sessionEngine.buildSession(previous.sessionStart, effectiveEnd, learned.first)
+            val existing = app.database.workRecordDao().getByDate(session.assignedDate)
+            val recordToSave = ConfirmedSession.merge(
+                existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK"),
+                shift = session.shiftType.name,
+                companyArrival = previous.sessionStart,
+                companyDeparture = effectiveEnd,
+                homeDeparture = next.homeDepartureTime,
+                homeArrival = next.homeArrivalTime,
+                actualMinutes = session.actualMinutes,
+                calculatedMinutes = session.finalMinutes,
+                needsReview = session.needsReview || capped
             )
-            app.database.workStateDao().save(next)
-            updateSamplingPolicy(location, type.name, next.currentState, settings)
-            maybeCreateOutsideRecord(app, previous, next, now, settings)
-            if (type == com.example.worktimetracker.domain.model.LocationType.COMPANY && previous.currentState == "REST") {
-                applyCompanyPresenceFallback(app, fixTime, now, settings)
-            }
-            if (previous.currentState != "WORKING" && next.currentState == "WORKING" && next.sessionStart != null) {
-                saveDraftRecord(app, next, settings)
-            }
-            if (previous.currentState != "FINISHED" && next.currentState == "FINISHED" && previous.sessionStart != null) {
-                val learned = learnedSettings(app, settings)
-                val typicalDuration = if (detectShift(previous.sessionStart, learned.first) == ShiftType.NIGHT_SHIFT) learned.second.nightTypicalDurationMinutes else learned.second.dayTypicalDurationMinutes
-                val maximumEnd = previous.sessionStart + profileLearner.maximumDurationMinutes(typicalDuration) * 60_000L
-                val confirmedEnd = next.confirmedDepartureTime ?: fixTime
-                val effectiveEnd = minOf(confirmedEnd, maximumEnd)
-                val capped = confirmedEnd > maximumEnd
-                val session = sessionEngine.buildSession(previous.sessionStart, effectiveEnd, learned.first)
-                val existing = app.database.workRecordDao().getByDate(session.assignedDate)
-                val recordToSave = ConfirmedSession.merge(
-                    existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK"),
-                    shift = session.shiftType.name,
-                    companyArrival = previous.sessionStart,
-                    companyDeparture = effectiveEnd,
-                    homeDeparture = next.homeDepartureTime,
-                    homeArrival = next.homeArrivalTime,
-                    actualMinutes = session.actualMinutes,
-                    calculatedMinutes = session.finalMinutes,
-                    needsReview = session.needsReview || capped
-                )
-                app.database.workRecordDao().upsert(recordToSave)
-                learnedCache.clear()
-                sendWorkRecordNotification(session)
-            }
-            if (previous.currentState != next.currentState) {
-                app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
-            }
+            app.database.workRecordDao().upsert(recordToSave)
+            learnedCache.clear()
+            sendWorkRecordNotification(session)
+        }
+        if (previous.currentState != next.currentState) {
+            app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
+        }
     }
 
     override fun onProviderEnabled(provider: String) {
