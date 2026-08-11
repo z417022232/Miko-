@@ -23,4 +23,11 @@ class ServiceRecoveryPolicyTest {
         assertFalse(ServiceRecoveryPolicy.canStartLocationService(ServiceRecoveryPolicy.RecoveryTrigger.GEOFENCE, true, false, false))
         assertTrue(ServiceRecoveryPolicy.canStartLocationService(ServiceRecoveryPolicy.RecoveryTrigger.GEOFENCE, true, false, true))
     }
+
+    @Test fun bootVerificationRequiresEveryRecoveryPart() {
+        assertTrue(ServiceRecoveryPolicy.bootVerified(true, true, true))
+        assertFalse(ServiceRecoveryPolicy.bootVerified(true, false, true))
+        assertFalse(ServiceRecoveryPolicy.bootVerified(false, true, true))
+        assertFalse(ServiceRecoveryPolicy.bootVerified(true, true, false))
+    }
 }

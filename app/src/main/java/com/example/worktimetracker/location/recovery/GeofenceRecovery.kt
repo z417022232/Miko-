@@ -14,26 +14,31 @@ import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingClient
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 object GeofenceRecovery {
     private const val HOME_ID = "work-time-home"
     private const val COMPANY_ID = "work-time-company"
 
-    fun register(context: Context, settings: UserSettingsEntity) {
+    suspend fun register(context: Context, settings: UserSettingsEntity): Boolean {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val background = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val homeLat = settings.homeLat ?: return
-        val homeLng = settings.homeLng ?: return
-        val companyLat = settings.companyLat ?: return
-        val companyLng = settings.companyLng ?: return
-        if (!fine || !background) return
+        val homeLat = settings.homeLat ?: return false
+        val homeLng = settings.homeLng ?: return false
+        val companyLat = settings.companyLat ?: return false
+        val companyLng = settings.companyLng ?: return false
+        if (!fine || !background) return false
         val request = GeofencingRequest.Builder()
             .setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
             .addGeofence(geofence(HOME_ID, homeLat, homeLng, settings.homeRadiusMeters.toFloat()))
             .addGeofence(geofence(COMPANY_ID, companyLat, companyLng, settings.companyRadiusMeters.toFloat()))
             .build()
-        client(context).addGeofences(request, pendingIntent(context))
-            .addOnFailureListener { registerPlatformFallback(context, settings) }
+        return suspendCoroutine { continuation ->
+            client(context).addGeofences(request, pendingIntent(context))
+                .addOnSuccessListener { continuation.resume(true) }
+                .addOnFailureListener { continuation.resume(registerPlatformFallback(context, settings)) }
+        }
     }
 
     private fun geofence(id: String, latitude: Double, longitude: Double, radius: Float): Geofence =
@@ -45,16 +50,17 @@ object GeofenceRecovery {
 
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
-    private fun registerPlatformFallback(context: Context, settings: UserSettingsEntity) {
-        val homeLat = settings.homeLat ?: return
-        val homeLng = settings.homeLng ?: return
-        val companyLat = settings.companyLat ?: return
-        val companyLng = settings.companyLng ?: return
+    private fun registerPlatformFallback(context: Context, settings: UserSettingsEntity): Boolean = runCatching {
+        val homeLat = requireNotNull(settings.homeLat)
+        val homeLng = requireNotNull(settings.homeLng)
+        val companyLat = requireNotNull(settings.companyLat)
+        val companyLng = requireNotNull(settings.companyLng)
         val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val pending = pendingIntent(context)
         manager.addProximityAlert(homeLat, homeLng, settings.homeRadiusMeters.toFloat(), -1L, pending)
         manager.addProximityAlert(companyLat, companyLng, settings.companyRadiusMeters.toFloat(), -1L, pending)
-    }
+        true
+    }.getOrDefault(false)
 
     private fun pendingIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
         context, 24601, Intent(context, LocationTransitionReceiver::class.java),

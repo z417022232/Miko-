@@ -20,4 +20,7 @@ object ServiceRecoveryPolicy {
         RecoveryTrigger.GEOFENCE -> hasBackgroundLocation && (hasFineLocation || hasCoarseLocation)
         RecoveryTrigger.BACKGROUND_HEALTH_CHECK -> false
     }
+
+    fun bootVerified(serviceStarted: Boolean, healthScheduled: Boolean, geofenceRegistered: Boolean): Boolean =
+        serviceStarted && healthScheduled && geofenceRegistered
 }

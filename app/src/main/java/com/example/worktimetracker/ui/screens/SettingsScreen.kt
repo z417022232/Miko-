@@ -77,6 +77,8 @@ import com.example.worktimetracker.location.permission.PermissionItem
 import com.example.worktimetracker.location.permission.PermissionRepairPriority
 import com.example.worktimetracker.location.permission.PermissionSettingsRouter
 import com.example.worktimetracker.location.permission.PermissionStatus
+import com.example.worktimetracker.location.permission.AutostartState
+import com.example.worktimetracker.location.permission.AutostartVerificationStore
 import com.example.worktimetracker.location.service.ForegroundLocationService
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 
@@ -478,7 +480,11 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var refresh by remember { mutableIntStateOf(0) }
     var serviceMessage by remember { mutableStateOf("") }
+    var awaitingAutostartConfirmation by remember { mutableStateOf(false) }
+    var showAutostartConfirmation by remember { mutableStateOf(false) }
     val status = remember(refresh) { PermissionManager.check(context) }
+    val autostartStore = remember(context) { AutostartVerificationStore(context) }
+    val autostartState = remember(refresh) { autostartStore.get() }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     fun repair(item: PermissionItem) {
         when (item) {
@@ -486,12 +492,23 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             PermissionItem.NOTIFICATIONS -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
             } else refresh++
-            else -> serviceMessage = PermissionSettingsRouter.open(item, context)
+            else -> {
+                if (item == PermissionItem.VIVO_AUTOSTART) awaitingAutostartConfirmation = true
+                serviceMessage = PermissionSettingsRouter.open(item, context)
+            }
         }
     }
 
     DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) refresh++ }
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                refresh++
+                if (awaitingAutostartConfirmation) {
+                    awaitingAutostartConfirmation = false
+                    showAutostartConfirmation = true
+                }
+            }
+        }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
@@ -508,7 +525,16 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             ThinDivider()
             PermissionRow("电池不受限制", "避免 OriginOS 清理自动记录服务", status.batteryUnrestricted) { repair(PermissionItem.BATTERY_UNRESTRICTED) }
             ThinDivider()
-            PermissionRow("Vivo 自启动", "允许开机和系统清理后恢复记录", null) { repair(PermissionItem.VIVO_AUTOSTART) }
+            PermissionRow(
+                "Vivo 自启动",
+                "允许开机和系统清理后恢复记录",
+                granted = autostartState != AutostartState.UNKNOWN,
+                statusText = when (autostartState) {
+                    AutostartState.UNKNOWN -> "去设置"
+                    AutostartState.USER_CONFIRMED -> "已开启"
+                    AutostartState.BOOT_VERIFIED -> "已验证"
+                }
+            ) { repair(PermissionItem.VIVO_AUTOSTART) }
         }
         Spacer(Modifier.height(14.dp))
         Button(onClick = { repair(PermissionRepairPriority.next(status)) }, modifier = Modifier.fillMaxWidth()) {
@@ -538,10 +564,34 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             }
         }
     }
+
+    if (showAutostartConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showAutostartConfirmation = false },
+            title = { Text("确认自启动权限") },
+            text = { Text("是否已开启工时记录助手自启动？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    autostartStore.confirmByUser()
+                    showAutostartConfirmation = false
+                    refresh++
+                }) { Text("已开启") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAutostartConfirmation = false }) { Text("暂未开启") }
+            }
+        )
+    }
 }
 
 @Composable
-private fun PermissionRow(title: String, summary: String, granted: Boolean?, onClick: () -> Unit) {
+private fun PermissionRow(
+    title: String,
+    summary: String,
+    granted: Boolean?,
+    statusText: String? = null,
+    onClick: () -> Unit
+) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
         Icon(
             if (granted == true) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
@@ -553,7 +603,7 @@ private fun PermissionRow(title: String, summary: String, granted: Boolean?, onC
             Text(title, fontWeight = FontWeight.Medium)
             Text(summary, color = AppMuted, style = MaterialTheme.typography.bodySmall)
         }
-        Text(if (granted == true) "已开启" else if (granted == false) "未开启" else "去设置", color = if (granted == true) AppGreen else AppOrange)
+        Text(statusText ?: if (granted == true) "已开启" else if (granted == false) "未开启" else "去设置", color = if (granted == true) AppGreen else AppOrange)
     }
 }
 
