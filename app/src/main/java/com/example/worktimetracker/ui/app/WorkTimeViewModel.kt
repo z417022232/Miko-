@@ -15,11 +15,14 @@ import com.example.worktimetracker.data.importer.LegacyAttendanceCsvImporter
 import com.example.worktimetracker.domain.engine.ChinaHolidayProvider
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
+import com.example.worktimetracker.domain.engine.ManualRecordEditor
 import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.export.ExportManager
 import com.example.worktimetracker.ui.UiDayRecord
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -35,6 +38,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private val zone = ZoneId.systemDefault()
     private val engine = WorkSessionEngine(zone)
     private val payrollRules = PayrollPeriodRules()
+    private var monthJob: Job? = null
 
     private val _month = MutableStateFlow(YearMonth.now())
     val month: StateFlow<YearMonth> = _month
@@ -98,29 +102,25 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun loadMonth() {
-        viewModelScope.launch {
+        monthJob?.cancel()
+        monthJob = viewModelScope.launch {
             val m = _month.value
             val start = m.atDay(1).toString()
             val end = m.atEndOfMonth().toString()
-            val rows = db.workRecordDao().getMonthRecords(start, end)
-            val windowStart = m.atDay(1).atStartOfDay().ms()
-            val windowEnd = m.atEndOfMonth().plusDays(1).atTime(12, 0).ms()
-            val locationLogs = db.locationLogDao().getLogs(windowStart, windowEnd)
-            val priorLocation = db.locationLogDao().latestBefore(windowStart)
-            val locationTimeline = listOfNotNull(priorLocation) + locationLogs
             val salary = db.monthlySalaryDao().getForPayrollMonth(m.toString())
             _monthlySalaryCents.value = salary?.netSalaryCents
             _monthlySalaryPaymentDate.value = salary?.paymentDate
-            _records.value = (1..m.lengthOfMonth()).map { day ->
-                val date = m.atDay(day)
-                val base = rows.firstOrNull { it.workDate == date.toString() }?.toUi(date)
-                    ?: UiDayRecord(
-                        date = date,
-                        status = if (date.isAfter(LocalDate.now())) "" else "休息",
-                        finalMinutes = 0,
-                        holidayName = ChinaHolidayProvider.name(date)
-                    )
-                base.withLocationEvents(locationTimeline)
+            db.workRecordDao().observeMonthRecords(start, end).collectLatest { rows ->
+                _records.value = (1..m.lengthOfMonth()).map { day ->
+                    val date = m.atDay(day)
+                    rows.firstOrNull { it.workDate == date.toString() }?.toUi(date)
+                        ?: UiDayRecord(
+                            date = date,
+                            status = if (date.isAfter(LocalDate.now())) "" else "休息",
+                            finalMinutes = 0,
+                            holidayName = ChinaHolidayProvider.name(date)
+                        )
+                }
             }
         }
     }
@@ -238,17 +238,37 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun saveManualHours(date: LocalDate, hoursText: String, setAsDefault: Boolean, note: String) {
+    fun saveManualHours(date: LocalDate, hoursText: String, setAsDefault: Boolean, note: String, shift: String? = null) {
         val minutes = ((hoursText.toDoubleOrNull() ?: return) * 60).toInt()
         viewModelScope.launch {
             val old = db.workRecordDao().getByDate(date.toString())
-            val record = (old ?: WorkRecordEntity(workDate = date.toString(), status = "WORK", finalMinutes = minutes)).copy(
-                status = "MANUAL", finalMinutes = minutes, isManual = true, needsReview = false, note = note, updatedAt = System.currentTimeMillis()
-            )
+            val record = ManualRecordEditor.apply(old, date.toString(), shift ?: old?.shift ?: "DAY_SHIFT", minutes, note)
             val id = db.workRecordDao().upsert(record)
             db.manualOverrideDao().insert(ManualOverrideEntity(recordId = if (record.id == 0L) id else record.id, oldValue = old?.finalMinutes?.toString(), newValue = minutes.toString(), reason = note))
             _lastManualHoursText.value = if (minutes % 60 == 0) (minutes / 60).toString() else "%.1f".format(minutes / 60.0)
             if (setAsDefault) saveDefaultHours(hoursText) else loadMonth()
+        }
+    }
+
+    fun saveBatchManualHours(dates: Set<LocalDate>, hoursText: String, shift: String, note: String) {
+        val minutes = ((hoursText.toDoubleOrNull() ?: return) * 60).toInt()
+        if (dates.isEmpty()) return
+        viewModelScope.launch {
+            dates.sorted().forEach { date ->
+                val old = db.workRecordDao().getByDate(date.toString())
+                val record = ManualRecordEditor.apply(old, date.toString(), shift, minutes, note)
+                val id = db.workRecordDao().upsert(record)
+                db.manualOverrideDao().insert(
+                    ManualOverrideEntity(
+                        recordId = if (record.id == 0L) id else record.id,
+                        oldValue = old?.let { "${it.shift}:${it.finalMinutes}" },
+                        newValue = "$shift:$minutes",
+                        reason = note.ifBlank { "批量修正班次和工时" }
+                    )
+                )
+            }
+            _lastManualHoursText.value = if (minutes % 60 == 0) (minutes / 60).toString() else "%.1f".format(minutes / 60.0)
+            loadMonth()
         }
     }
 
@@ -427,47 +447,16 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         finalMinutes = finalMinutes,
         needsReview = needsReview,
         note = note,
-        holidayName = ChinaHolidayProvider.name(date)
+        holidayName = ChinaHolidayProvider.name(date),
+        companyArrivalText = startTime?.timeText(),
+        companyDepartureText = endTime?.timeText(startTime),
+        homeDepartureText = homeDepartureTime?.timeText(),
+        homeArrivalText = homeArrivalTime?.timeText(startTime)
     )
 
     private fun UserSettingsEntity.toDomain(): WorkSettings = WorkSettings(workStartMinutes, workEndMinutes, hasDefaultHours, defaultWorkMinutes, restDeductionMinutes, outsideThresholdMinutes, leaveCompanyConfirmMinutes, earlyLeaveToleranceMinutes)
     private fun LocalDateTime.ms(): Long = atZone(zone).toInstant().toEpochMilli()
     private fun Long.timeText(start: Long? = null): String { val t = Instant.ofEpochMilli(this).atZone(zone).toLocalDateTime(); val prefix = if (start != null && Instant.ofEpochMilli(start).atZone(zone).toLocalDate() != t.toLocalDate()) "次日" else ""; return prefix + "%02d:%02d".format(t.hour, t.minute) }
-    private fun UiDayRecord.withLocationEvents(logs: List<LocationLogEntity>): UiDayRecord {
-        val dayStart = date.atStartOfDay().ms()
-        val nextNoon = date.plusDays(1).atTime(12, 0).ms()
-
-        fun transitions(type: String): Pair<Long?, Long?> {
-            var arrival: Long? = null
-            var departure: Long? = null
-            for (index in 1 until logs.size) {
-                val previous = logs[index - 1]
-                val current = logs[index]
-                if (current.time !in dayStart..nextNoon) continue
-                if (arrival == null && current.time < date.plusDays(1).atStartOfDay().ms() &&
-                    previous.locationType != type && current.locationType == type
-                ) {
-                    arrival = current.time
-                }
-                if (arrival != null && current.time >= arrival &&
-                    previous.locationType == type && current.locationType != type
-                ) {
-                    departure = current.time
-                    break
-                }
-            }
-            return arrival to departure
-        }
-
-        val company = transitions("COMPANY")
-        val home = transitions("HOME")
-        return copy(
-            companyArrivalText = startText ?: company.first?.timeText(),
-            companyDepartureText = endText ?: company.second?.timeText(company.first),
-            homeArrivalText = home.first?.timeText(),
-            homeDepartureText = home.second?.timeText(home.first)
-        )
-    }
     private fun parseRangeMinutes(start: String, end: String): Int { val s = start.split(":").mapNotNull { it.toIntOrNull() }; val e = end.split(":").mapNotNull { it.toIntOrNull() }; if (s.size != 2 || e.size != 2) return 0; val sm = s[0] * 60 + s[1]; var em = e[0] * 60 + e[1]; if (em < sm) em += 24 * 60; return (em - sm).coerceAtLeast(0) }
 }
 

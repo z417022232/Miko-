@@ -492,6 +492,8 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             PermissionRow("后台定位", "退出应用后继续记录", status.backgroundLocation)
             ThinDivider()
             PermissionRow("通知", "显示常驻记录状态和异常提醒", status.notifications)
+            ThinDivider()
+            PermissionRow("电池不受限制", "避免 OriginOS 清理自动记录服务", status.batteryUnrestricted)
         }
         Spacer(Modifier.height(14.dp))
         if (!status.fineLocation || !status.notifications) {
@@ -517,6 +519,11 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             Spacer(Modifier.size(8.dp))
             Text("打开系统权限设置")
         }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("打开电池优化和自启动设置") }
         Spacer(Modifier.height(8.dp))
         Button(
             onClick = {
