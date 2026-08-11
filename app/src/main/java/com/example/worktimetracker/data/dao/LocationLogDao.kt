@@ -18,6 +18,9 @@ interface LocationLogDao {
     @Query("SELECT * FROM location_logs WHERE time BETWEEN :startTime AND :endTime ORDER BY time ASC")
     suspend fun getLogs(startTime: Long, endTime: Long): List<LocationLogEntity>
 
+    @Query("SELECT * FROM location_logs ORDER BY time ASC")
+    suspend fun getAllLogs(): List<LocationLogEntity>
+
     @Query("SELECT * FROM location_logs WHERE time < :time ORDER BY time DESC LIMIT 1")
     suspend fun latestBefore(time: Long): LocationLogEntity?
 

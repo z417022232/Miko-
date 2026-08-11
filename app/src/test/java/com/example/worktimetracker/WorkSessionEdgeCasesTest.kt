@@ -29,5 +29,11 @@ class WorkSessionEdgeCasesTest {
         assertTrue(session.needsReview)
     }
 
+    @Test fun verifiedCompanyArrivalOnAugustFirstOwnsTheNightShiftEvenWhenHomeArrivalIsNextDay() {
+        val session = engine.buildSession(ms(2026, 8, 1, 20, 44), ms(2026, 8, 2, 9, 12), settings)
+        assertEquals("2026-08-01", session.assignedDate)
+        assertEquals(ShiftType.NIGHT_SHIFT, session.shiftType)
+    }
+
     private fun ms(y: Int, m: Int, d: Int, h: Int, min: Int): Long = LocalDateTime.of(y, m, d, h, min).atZone(zone).toInstant().toEpochMilli()
 }

@@ -54,6 +54,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
 import com.example.worktimetracker.location.service.ForegroundLocationService
+import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.location.recovery.ServiceRecoveryPolicy
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import com.example.worktimetracker.ui.screens.CalendarScreen
 import com.example.worktimetracker.ui.screens.SettingsScreen
@@ -74,10 +76,7 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         if (hasLocationPermission) {
-            ContextCompat.startForegroundService(
-                this,
-                Intent(this, ForegroundLocationService::class.java)
-            )
+            ServiceRecovery.start(this, ServiceRecoveryPolicy.RecoveryTrigger.USER_VISIBLE)
         }
     }
 }

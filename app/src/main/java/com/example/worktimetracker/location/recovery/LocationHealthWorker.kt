@@ -10,7 +10,15 @@ import java.time.ZoneId
 
 class LocationHealthWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
-        if (!ServiceRecovery.isHealthy(applicationContext)) ServiceRecovery.start(applicationContext)
+        if (!ServiceRecovery.isHealthy(applicationContext)) {
+            val app = applicationContext as WorkTimeApplication
+            app.database.appLogDao().insert(
+                com.example.worktimetracker.data.entity.AppLogEntity(
+                    type = "RECOVERY_BLOCKED",
+                    content = "后台健康检查检测到定位服务未运行；Android 不允许后台任务直接启动定位前台服务"
+                )
+            )
+        }
         val app = applicationContext as WorkTimeApplication
         val settings = app.database.userSettingsDao().getSettings()
         if (settings != null) {

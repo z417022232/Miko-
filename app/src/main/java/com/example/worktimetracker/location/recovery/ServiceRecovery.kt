@@ -16,10 +16,11 @@ object ServiceRecovery {
     private const val PREFS = "location_service_health"
     private const val HEARTBEAT = "last_heartbeat"
 
-    fun start(context: Context) {
+    fun start(context: Context, trigger: ServiceRecoveryPolicy.RecoveryTrigger) {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!ServiceRecoveryPolicy.canStartLocationService(fine, coarse)) return
+        val background = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!ServiceRecoveryPolicy.canStartLocationService(trigger, fine, coarse, background)) return
         runCatching {
             ContextCompat.startForegroundService(context, Intent(context, ForegroundLocationService::class.java))
         }

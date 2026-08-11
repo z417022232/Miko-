@@ -10,7 +10,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action in ServiceRecoveryPolicy.actions) {
             ServiceRecovery.schedule(context)
-            ServiceRecovery.start(context)
+            ServiceRecovery.start(context, ServiceRecoveryPolicy.RecoveryTrigger.BOOT)
         }
     }
 }
