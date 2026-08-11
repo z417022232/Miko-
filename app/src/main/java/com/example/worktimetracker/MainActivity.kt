@@ -39,6 +39,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -52,11 +53,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.core.content.ContextCompat
 import com.example.worktimetracker.location.service.ForegroundLocationService
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.ServiceRecoveryPolicy
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
+import com.example.worktimetracker.ui.app.AppForegroundReset
 import com.example.worktimetracker.ui.screens.CalendarScreen
 import com.example.worktimetracker.ui.screens.SettingsScreen
 import com.example.worktimetracker.ui.screens.StatisticsScreen
@@ -90,6 +95,19 @@ private enum class MainTab(val label: String) {
 @Composable
 fun AppRoot() {
     val vm: WorkTimeViewModel = viewModel()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val foregroundReset = remember { AppForegroundReset() }
+    DisposableEffect(lifecycleOwner, foregroundReset, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> if (foregroundReset.onStart()) vm.today()
+                Lifecycle.Event.ON_STOP -> foregroundReset.onStop()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val onboardingDone by vm.onboardingDone.collectAsState()
     if (!onboardingDone) {
         OnboardingScreen(vm)
