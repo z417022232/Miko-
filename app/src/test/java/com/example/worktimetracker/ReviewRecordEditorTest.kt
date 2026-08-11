@@ -20,6 +20,18 @@ class ReviewRecordEditorTest {
     }
 
     @Test
+    fun `editing confirmed record preserves home events and remains confirmed`() {
+        val old = record(homeDepartureTime = 10L, homeArrivalTime = 40L).copy(needsReview = false)
+
+        val result = ReviewRecordEditor.confirm(old, "DAY_SHIFT", 20L, 30L, 540, "人工修改", 99L).getOrThrow()
+
+        assertTrue(result.isManual)
+        assertFalse(result.needsReview)
+        assertEquals(10L, result.homeDepartureTime)
+        assertEquals(40L, result.homeArrivalTime)
+    }
+
+    @Test
     fun `confirmation rejects departure before arrival`() {
         assertTrue(ReviewRecordEditor.confirm(record(), "DAY_SHIFT", 30L, 20L, 600, "", 99L).isFailure)
     }

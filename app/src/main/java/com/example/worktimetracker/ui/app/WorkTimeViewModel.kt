@@ -163,6 +163,44 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun saveRecordEdit(
+        date: LocalDate,
+        shift: String,
+        startMillis: Long?,
+        endMillis: Long?,
+        hoursText: String,
+        note: String,
+        onResult: (String?) -> Unit
+    ) {
+        val minutes = hoursText.toDoubleOrNull()?.let { (it * 60).toInt() }
+        if (minutes == null) {
+            onResult("请输入有效工时")
+            return
+        }
+        viewModelScope.launch {
+            val old = db.workRecordDao().getByDate(date.toString())
+            if (old == null) {
+                onResult("记录不存在")
+                return@launch
+            }
+            ReviewRecordEditor.confirm(old, shift, startMillis, endMillis, minutes, note).fold(
+                onSuccess = { edited ->
+                    db.workRecordDao().upsert(edited)
+                    db.manualOverrideDao().insert(
+                        ManualOverrideEntity(
+                            recordId = edited.id,
+                            oldValue = "${old.shift}:${old.startTime}:${old.endTime}:${old.finalMinutes}",
+                            newValue = "$shift:$startMillis:$endMillis:$minutes",
+                            reason = note.ifBlank { "统计页人工修改" }
+                        )
+                    )
+                    onResult(null)
+                },
+                onFailure = { onResult(it.message ?: "修改失败") }
+            )
+        }
+    }
+
     fun saveMonthlySalary(text: String, paymentDateText: String) {
         val cents = runCatching {
             BigDecimal(text.trim().replace(",", ""))

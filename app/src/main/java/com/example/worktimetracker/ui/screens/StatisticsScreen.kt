@@ -42,6 +42,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.UiDayRecord
+import com.example.worktimetracker.ui.DailyRecordAction
+import com.example.worktimetracker.ui.EditorMode
 import com.example.worktimetracker.ui.ReviewEditorState
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import java.time.Instant
@@ -56,7 +58,8 @@ fun StatisticsScreen(vm: WorkTimeViewModel) {
     val settings by vm.settings.collectAsState()
     var showExport by remember { mutableStateOf(false) }
     var showReviews by remember { mutableStateOf(false) }
-    var editingReview by remember { mutableStateOf<UiDayRecord?>(null) }
+    var editingRecord by remember { mutableStateOf<UiDayRecord?>(null) }
+    var editorMode by remember { mutableStateOf(EditorMode.CONFIRM_REVIEW) }
     val total = remember(records) { records.sumOf { it.finalMinutes } }
     val worked = remember(records) { records.filter { it.finalMinutes > 0 } }
     val workDays = worked.size
@@ -106,7 +109,10 @@ fun StatisticsScreen(vm: WorkTimeViewModel) {
             item { EmptyStatistics() }
         } else {
             items(worked.sortedByDescending { it.date }, key = { it.date.toString() }) { record ->
-                DailyStatRow(record)
+                DailyStatRow(record, onClick = {
+                    editingRecord = record
+                    editorMode = DailyRecordAction.forRecord(record.needsReview)
+                })
             }
         }
         item { Spacer(Modifier.height(6.dp)) }
@@ -116,16 +122,18 @@ fun StatisticsScreen(vm: WorkTimeViewModel) {
     if (showReviews) {
         ReviewListDialog(reviewRecords, onDismiss = { showReviews = false }) {
             showReviews = false
-            editingReview = it
+            editingRecord = it
+            editorMode = EditorMode.CONFIRM_REVIEW
         }
     }
-    editingReview?.let { record ->
+    editingRecord?.let { record ->
         ReviewConfirmDialog(
             record = record,
+            mode = editorMode,
             defaultStartMinutes = settings.workStartMinutes,
             defaultEndMinutes = settings.workEndMinutes,
             vm = vm,
-            onDismiss = { editingReview = null }
+            onDismiss = { editingRecord = null }
         )
     }
 }
@@ -193,6 +201,7 @@ private fun ReviewListDialog(records: List<UiDayRecord>, onDismiss: () -> Unit, 
 @Composable
 private fun ReviewConfirmDialog(
     record: UiDayRecord,
+    mode: EditorMode,
     defaultStartMinutes: Int,
     defaultEndMinutes: Int,
     vm: WorkTimeViewModel,
@@ -207,7 +216,7 @@ private fun ReviewConfirmDialog(
     var error by remember(record.date) { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("确认 ${record.date.monthValue}月${record.date.dayOfMonth}日记录") },
+        title = { Text("${if (mode == EditorMode.CONFIRM_REVIEW) "确认" else "编辑"} ${record.date.monthValue}月${record.date.dayOfMonth}日记录") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -230,12 +239,15 @@ private fun ReviewConfirmDialog(
                 } else {
                     val state = ReviewEditorState.from(record.date, shift, startMinute, endMinute, zone)
                     if (state.validationError != null) error = state.validationError
-                    else vm.confirmReview(record.date, shift, state.startMillis, state.endMillis, hours, note) { message ->
+                    else {
+                        val save = if (mode == EditorMode.CONFIRM_REVIEW) vm::confirmReview else vm::saveRecordEdit
+                        save(record.date, shift, state.startMillis, state.endMillis, hours, note) { message ->
                         error = message
                         if (message == null) onDismiss()
+                        }
                     }
                 }
-            }) { Text("确认记录") }
+            }) { Text(if (mode == EditorMode.CONFIRM_REVIEW) "确认记录" else "保存修改") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
