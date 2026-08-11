@@ -6,6 +6,8 @@ data class UiDayRecord(
     val date: LocalDate,
     val status: String,
     val shift: String? = null,
+    val startMillis: Long? = null,
+    val endMillis: Long? = null,
     val startText: String? = null,
     val endText: String? = null,
     val actualMinutes: Int? = null,

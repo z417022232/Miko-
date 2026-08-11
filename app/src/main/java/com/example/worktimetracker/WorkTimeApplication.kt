@@ -6,6 +6,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.worktimetracker.data.database.AppDatabase
 import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.location.recovery.GeofenceRecovery
 import com.example.worktimetracker.data.HistoricalRecordRepair
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,7 +17,10 @@ class WorkTimeApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         ServiceRecovery.schedule(this)
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { HistoricalRecordRepair.runOnce(this@WorkTimeApplication) }
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            HistoricalRecordRepair.runOnce(this@WorkTimeApplication)
+            database.userSettingsDao().getSettings()?.let { GeofenceRecovery.register(this@WorkTimeApplication, it) }
+        }
     }
 
     val database: AppDatabase by lazy {

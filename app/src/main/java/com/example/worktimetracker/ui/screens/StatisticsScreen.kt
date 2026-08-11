@@ -1,6 +1,7 @@
 package com.example.worktimetracker.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,16 +15,21 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,20 +42,30 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.UiDayRecord
+import com.example.worktimetracker.ui.DailyRecordAction
+import com.example.worktimetracker.ui.EditorMode
+import com.example.worktimetracker.ui.ReviewEditorState
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
+import java.time.Instant
+import java.time.ZoneId
 import kotlin.math.max
 
 @Composable
 fun StatisticsScreen(vm: WorkTimeViewModel) {
     val month by vm.month.collectAsState()
     val records by vm.records.collectAsState()
+    val reviewRecords by vm.reviewRecords.collectAsState()
+    val settings by vm.settings.collectAsState()
     var showExport by remember { mutableStateOf(false) }
-    val total = records.sumOf { it.finalMinutes }
-    val worked = records.filter { it.finalMinutes > 0 }
+    var showReviews by remember { mutableStateOf(false) }
+    var editingRecord by remember { mutableStateOf<UiDayRecord?>(null) }
+    var editorMode by remember { mutableStateOf(EditorMode.CONFIRM_REVIEW) }
+    val total = remember(records) { records.sumOf { it.finalMinutes } }
+    val worked = remember(records) { records.filter { it.finalMinutes > 0 } }
     val workDays = worked.size
     val average = if (workDays == 0) 0 else total / workDays
     val restDays = records.count { it.status == "休息" }
-    val reviewDays = records.count { it.needsReview }
+    val reviewDays = reviewRecords.size
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -74,7 +90,9 @@ fun StatisticsScreen(vm: WorkTimeViewModel) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 SmallMetricCard("日均工时", formatMinutes(average), AppBlue, Modifier.weight(1f))
                 SmallMetricCard("休息", "${restDays}天", AppGreen, Modifier.weight(1f))
-                SmallMetricCard("待确认", "${reviewDays}天", AppRed, Modifier.weight(1f))
+                SmallMetricCard("待确认", "${reviewDays}天", AppRed, Modifier.weight(1f)) {
+                    if (reviewDays > 0) showReviews = true
+                }
             }
         }
         item {
@@ -90,14 +108,34 @@ fun StatisticsScreen(vm: WorkTimeViewModel) {
         if (worked.isEmpty()) {
             item { EmptyStatistics() }
         } else {
-            items(worked.sortedByDescending { it.date }) { record ->
-                DailyStatRow(record)
+            items(worked.sortedByDescending { it.date }, key = { it.date.toString() }) { record ->
+                DailyStatRow(record, onClick = {
+                    editingRecord = record
+                    editorMode = DailyRecordAction.forRecord(record.needsReview)
+                })
             }
         }
         item { Spacer(Modifier.height(6.dp)) }
     }
 
     if (showExport) ExportBottomSheet(vm, onDismiss = { showExport = false })
+    if (showReviews) {
+        ReviewListDialog(reviewRecords, onDismiss = { showReviews = false }) {
+            showReviews = false
+            editingRecord = it
+            editorMode = EditorMode.CONFIRM_REVIEW
+        }
+    }
+    editingRecord?.let { record ->
+        ReviewConfirmDialog(
+            record = record,
+            mode = editorMode,
+            defaultStartMinutes = settings.workStartMinutes,
+            defaultEndMinutes = settings.workEndMinutes,
+            vm = vm,
+            onDismiss = { editingRecord = null }
+        )
+    }
 }
 
 @Composable
@@ -130,17 +168,99 @@ private fun StatisticsHero(total: Int, workDays: Int) {
 }
 
 @Composable
-private fun SmallMetricCard(title: String, value: String, color: Color, modifier: Modifier) {
+private fun SmallMetricCard(title: String, value: String, color: Color, modifier: Modifier, onClick: (() -> Unit)? = null) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(18.dp),
-        modifier = modifier
+        modifier = modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     ) {
         Column(Modifier.padding(13.dp)) {
             Text(value, fontWeight = FontWeight.Bold, color = color, maxLines = 1)
             Text(title, color = AppMuted, style = MaterialTheme.typography.labelMedium)
         }
     }
+}
+
+@Composable
+private fun ReviewListDialog(records: List<UiDayRecord>, onDismiss: () -> Unit, onSelect: (UiDayRecord) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("待确认记录（${records.size}）") },
+        text = {
+            Column(Modifier.heightIn(max = 480.dp).verticalScroll(androidx.compose.foundation.rememberScrollState())) {
+                records.sortedByDescending { it.date }.forEach { record ->
+                    DailyStatRow(record, onClick = { onSelect(record) })
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
+}
+
+@Composable
+private fun ReviewConfirmDialog(
+    record: UiDayRecord,
+    mode: EditorMode,
+    defaultStartMinutes: Int,
+    defaultEndMinutes: Int,
+    vm: WorkTimeViewModel,
+    onDismiss: () -> Unit
+) {
+    val zone = ZoneId.systemDefault()
+    var shift by remember(record.date) { mutableStateOf(if (record.shift == "夜班") "NIGHT_SHIFT" else "DAY_SHIFT") }
+    var startText by remember(record.date) { mutableStateOf(record.startMillis?.clockText(zone) ?: minuteText(if (shift == "NIGHT_SHIFT") defaultEndMinutes else defaultStartMinutes)) }
+    var endText by remember(record.date) { mutableStateOf(record.endMillis?.clockText(zone) ?: minuteText(if (shift == "NIGHT_SHIFT") defaultStartMinutes else defaultEndMinutes)) }
+    var hours by remember(record.date) { mutableStateOf(if (record.finalMinutes % 60 == 0) "${record.finalMinutes / 60}" else "%.1f".format(record.finalMinutes / 60.0)) }
+    var note by remember(record.date) { mutableStateOf(record.note.orEmpty()) }
+    var error by remember(record.date) { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${if (mode == EditorMode.CONFIRM_REVIEW) "确认" else "编辑"} ${record.date.monthValue}月${record.date.dayOfMonth}日记录") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = shift == "DAY_SHIFT", onClick = { shift = "DAY_SHIFT" }, label = { Text("白班") }, modifier = Modifier.weight(1f))
+                    FilterChip(selected = shift == "NIGHT_SHIFT", onClick = { shift = "NIGHT_SHIFT" }, label = { Text("夜班") }, modifier = Modifier.weight(1f))
+                }
+                OutlinedTextField(startText, { startText = it }, label = { Text("到岗时间 HH:mm") }, singleLine = true)
+                OutlinedTextField(endText, { endText = it }, label = { Text(if (shift == "NIGHT_SHIFT") "离岗时间（早于到岗则为次日）" else "离岗时间 HH:mm") }, singleLine = true)
+                OutlinedTextField(hours, { hours = it }, label = { Text("计入工时（小时）") }, singleLine = true)
+                OutlinedTextField(note, { note = it }, label = { Text("备注（可选）") })
+                error?.let { Text(it, color = AppRed, style = MaterialTheme.typography.bodySmall) }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val startMinute = parseClock(startText)
+                val endMinute = parseClock(endText)
+                if (startMinute == null || endMinute == null) {
+                    error = "请输入 HH:mm 格式的时间"
+                } else {
+                    val state = ReviewEditorState.from(record.date, shift, startMinute, endMinute, zone)
+                    if (state.validationError != null) error = state.validationError
+                    else {
+                        val save = if (mode == EditorMode.CONFIRM_REVIEW) vm::confirmReview else vm::saveRecordEdit
+                        save(record.date, shift, state.startMillis, state.endMillis, hours, note) { message ->
+                        error = message
+                        if (message == null) onDismiss()
+                        }
+                    }
+                }
+            }) { Text(if (mode == EditorMode.CONFIRM_REVIEW) "确认记录" else "保存修改") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+private fun Long.clockText(zone: ZoneId): String = Instant.ofEpochMilli(this).atZone(zone).let { "%02d:%02d".format(it.hour, it.minute) }
+private fun minuteText(minutes: Int): String = "%02d:%02d".format((minutes / 60) % 24, minutes % 60)
+private fun parseClock(value: String): Int? {
+    val parts = value.trim().split(":")
+    if (parts.size != 2) return null
+    val hour = parts[0].toIntOrNull() ?: return null
+    val minute = parts[1].toIntOrNull() ?: return null
+    return if (hour in 0..23 && minute in 0..59) hour * 60 + minute else null
 }
 
 @Composable
@@ -198,11 +318,11 @@ private fun EmptyStatistics() {
 }
 
 @Composable
-private fun DailyStatRow(record: UiDayRecord) {
+private fun DailyStatRow(record: UiDayRecord, onClick: (() -> Unit)? = null) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
         shape = RoundedCornerShape(17.dp),
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth().then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
     ) {
         Row(Modifier.padding(horizontal = 15.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
