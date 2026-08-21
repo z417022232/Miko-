@@ -20,6 +20,7 @@ data class WorkRecordEntity(
     val actualMinutes: Int? = null,
     val finalMinutes: Int = 0,
     val isManual: Boolean = false,
+    val manualFieldsMask: Int = 0,
     val needsReview: Boolean = false,
     val note: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
