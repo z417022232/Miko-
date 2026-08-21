@@ -14,20 +14,21 @@ object ConfirmedSession {
         calculatedMinutes: Int,
         needsReview: Boolean
     ): WorkRecordEntity {
-        require(companyDeparture == null || companyDeparture >= companyArrival)
-        require(homeDeparture == null || homeDeparture <= companyArrival)
-        require(homeArrival == null || (companyDeparture != null && homeArrival >= companyDeparture))
+        val validDeparture = companyDeparture?.takeIf { it >= companyArrival }
+        val validHomeDeparture = homeDeparture?.takeIf { it <= companyArrival }
+        val validHomeArrival = homeArrival?.takeIf { validDeparture != null && it >= validDeparture }
+        val invalidOrder = validDeparture != companyDeparture || validHomeDeparture != homeDeparture || validHomeArrival != homeArrival
         val base = existing ?: WorkRecordEntity(workDate = "", status = "WORK", finalMinutes = calculatedMinutes)
         return base.copy(
             status = if (base.isManual) base.status else "WORK",
             shift = shift,
             startTime = companyArrival,
-            endTime = companyDeparture,
-            homeDepartureTime = homeDeparture,
-            homeArrivalTime = homeArrival,
+            endTime = validDeparture,
+            homeDepartureTime = validHomeDeparture,
+            homeArrivalTime = validHomeArrival,
             actualMinutes = actualMinutes,
             finalMinutes = if (base.isManual) base.finalMinutes else calculatedMinutes,
-            needsReview = base.needsReview || needsReview,
+            needsReview = base.needsReview || needsReview || invalidOrder,
             updatedAt = System.currentTimeMillis()
         )
     }

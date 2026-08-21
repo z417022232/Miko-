@@ -49,6 +49,8 @@ class ForegroundLocationService : Service(), LocationListener {
     private val profileLearner = ShiftProfileLearner()
     private val companyFallback = CompanyPresenceFallback(ZoneId.systemDefault())
     private val processingGate = LocationProcessingGate<Location>()
+    private val safeProcessor = SafeLocationProcessor<Location>()
+    private val failureLimiter = LocationFailureLimiter()
     private val processingSignal = Channel<Unit>(Channel.CONFLATED)
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
     @Volatile private var cachedSettings: com.example.worktimetracker.data.entity.UserSettingsEntity? = null
@@ -67,6 +69,12 @@ class ForegroundLocationService : Service(), LocationListener {
             watchdogHandler.postDelayed(this, WATCHDOG_INTERVAL_MILLIS)
         }
     }
+    private val serviceHeartbeat = object : Runnable {
+        override fun run() {
+            ServiceRecovery.heartbeat(this@ForegroundLocationService)
+            watchdogHandler.postDelayed(this, 5 * 60_000L)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -80,13 +88,27 @@ class ForegroundLocationService : Service(), LocationListener {
             for (ignored in processingSignal) {
                 var pending = processingGate.takePending()
                 while (pending != null) {
-                    processLocation(pending.value)
+                    val error = safeProcessor.process(pending.value) { processLocation(it) }
+                    if (error == null) {
+                        failureLimiter.success()
+                    } else {
+                        val key = "${error::class.java.simpleName}:${error.stackTrace.firstOrNull()?.lineNumber ?: 0}"
+                        when (failureLimiter.record(key, System.currentTimeMillis())) {
+                            LocationFailureLimiter.Action.LOG -> logEvent("LOCATION_PROCESSING_ERROR", key)
+                            LocationFailureLimiter.Action.NOTIFY_AND_THROTTLE -> {
+                                logEvent("LOCATION_PROCESSING_ERROR", "$key repeated")
+                                sendSimpleNotification("自动记录异常", "单条定位处理失败，服务仍在运行；相关记录已保留待确认")
+                            }
+                            LocationFailureLimiter.Action.SUPPRESS -> Unit
+                        }
+                    }
                     pending = processingGate.takePending()
                 }
             }
         }
         startLocationUpdates()
         watchdogHandler.postDelayed(locationWatchdog, WATCHDOG_INTERVAL_MILLIS)
+        watchdogHandler.post(serviceHeartbeat)
         logEvent("SERVICE", "前台定位服务已启动")
         ServiceRecovery.heartbeat(this)
     }
@@ -98,6 +120,7 @@ class ForegroundLocationService : Service(), LocationListener {
 
     override fun onDestroy() {
         watchdogHandler.removeCallbacks(locationWatchdog)
+        watchdogHandler.removeCallbacks(serviceHeartbeat)
         locationManager?.removeUpdates(this)
         processingSignal.close()
         scope.cancel()
@@ -111,6 +134,7 @@ class ForegroundLocationService : Service(), LocationListener {
         val now = System.currentTimeMillis()
         ServiceRecovery.heartbeat(this@ForegroundLocationService, now)
         val fixTime = location.time
+        ServiceRecovery.locationCallback(this, location.accuracy <= 100f, now)
         if (!fixGate.shouldAccept(location.provider, fixTime, now)) return
         lastFixReceivedAt = now
         processingGate.offer(location.provider ?: "unknown", fixTime, Location(location))
@@ -150,7 +174,6 @@ class ForegroundLocationService : Service(), LocationListener {
             lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
             lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
         )
-        app.database.workStateDao().save(next)
         updateSamplingPolicy(location, type.name, next.currentState, settings)
         maybeCreateOutsideRecord(app, previous, next, now, settings)
         if (type == com.example.worktimetracker.domain.model.LocationType.COMPANY && previous.currentState == "REST") {
@@ -179,10 +202,13 @@ class ForegroundLocationService : Service(), LocationListener {
                 calculatedMinutes = session.finalMinutes,
                 needsReview = session.needsReview || capped
             )
-            app.database.workRecordDao().upsert(recordToSave)
+            app.database.workRecordDao().upsert(
+                if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave) else recordToSave
+            )
             learnedCache.clear()
             sendWorkRecordNotification(session)
         }
+        app.database.workStateDao().save(next)
         if (previous.currentState != next.currentState) {
             app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
         }
@@ -211,9 +237,11 @@ class ForegroundLocationService : Service(), LocationListener {
         manager.removeUpdates(this)
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).filter { manager.isProviderEnabled(it) }
         if (providers.isEmpty()) {
+            ServiceRecovery.providerAvailable(this, false)
             logEvent("LOCATION_DISABLED", "没有可用的定位提供器")
             return
         }
+        ServiceRecovery.providerAvailable(this, true)
         providers.forEach { provider ->
             manager.requestLocationUpdates(provider, currentSamplingIntervalMillis, 50f, this)
         }

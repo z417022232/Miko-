@@ -95,6 +95,7 @@ class WorkTimeApplication : Application() {
                 db.execSQL("ALTER TABLE work_state ADD COLUMN stableHomeCount INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE work_state ADD COLUMN movingAwayCount INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("UPDATE work_state SET candidateCompanyDepartureTime = tempLeaveStart WHERE tempLeaveStart IS NOT NULL")
+                db.execSQL("UPDATE work_state SET homeArrivalTime = NULL, confirmedDepartureTime = NULL WHERE currentState IN ('LEAVING_HOME','NEAR_COMPANY','WORKING','TEMP_LEAVE')")
                 db.execSQL(
                     "UPDATE work_records SET manualFieldsMask = 33" +
                         " + CASE WHEN startTime IS NOT NULL THEN 2 ELSE 0 END" +

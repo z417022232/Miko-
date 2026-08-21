@@ -33,8 +33,9 @@ class ConfirmedSessionTest {
         assertEquals(3_000L, merged.homeArrivalTime)
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun rejectsHomeArrivalBeforeCompanyDeparture() {
-        ConfirmedSession.merge(null, "NIGHT_SHIFT", 1_000L, 3_000L, 500L, 2_000L, 10, 10, false)
+    @Test fun staleHomeArrivalIsDroppedAndMarkedForReviewInsteadOfCrashing() {
+        val merged = ConfirmedSession.merge(null, "NIGHT_SHIFT", 1_000L, 3_000L, 500L, 2_000L, 10, 10, false)
+        assertEquals(null, merged.homeArrivalTime)
+        assertTrue(merged.needsReview)
     }
 }

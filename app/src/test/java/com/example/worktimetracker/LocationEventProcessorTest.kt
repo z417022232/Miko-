@@ -94,5 +94,23 @@ class LocationEventProcessorTest {
         assertEquals(null, returned.tempLeaveStart)
         assertEquals(null, returned.confirmedDepartureTime)
     }
+
+    @Test fun newCommuteClearsPreviousSessionArrivalAndDeparture() {
+        val stale = WorkStateEntity(currentState = "REST", homeArrivalTime = 100L,
+            confirmedDepartureTime = 90L, tempLeaveStart = 80L)
+        val next = processor.nextState(stale, LocationType.OTHER, 200L, settings)
+        assertEquals(null, next.homeArrivalTime)
+        assertEquals(null, next.confirmedDepartureTime)
+        assertEquals(null, next.tempLeaveStart)
+    }
+
+    @Test fun firstReliableHomeTimeIsKeptUntilDepartureConfirmation() {
+        val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L)
+        val candidate = processor.nextState(working, LocationType.OTHER, 2_000L, settings)
+        val firstHome = processor.nextState(candidate, LocationType.HOME, 30 * 60_000L, settings, 2_000.0, true)
+        assertEquals(30 * 60_000L, firstHome.candidateHomeArrivalTime)
+        val confirmed = processor.nextState(firstHome, LocationType.HOME, 61 * 60_000L, settings, 2_000.0, true)
+        assertEquals(30 * 60_000L, confirmed.homeArrivalTime)
+    }
 }
 
