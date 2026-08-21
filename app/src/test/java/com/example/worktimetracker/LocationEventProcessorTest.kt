@@ -37,7 +37,9 @@ class LocationEventProcessorTest {
 
     @Test fun companyArrivalDoesNotIncludeCommuteTime() {
         val leaving = processor.nextState(WorkStateEntity(currentState = "REST"), LocationType.OTHER, 1_000L, settings)
-        val working = processor.nextState(leaving, LocationType.COMPANY, 2_000L, settings)
+        val near = processor.nextState(leaving, LocationType.COMPANY, 2_000L, settings)
+        assertEquals("NEAR_COMPANY", near.currentState)
+        val working = processor.nextState(near, LocationType.COMPANY, 3_000L, settings)
         assertEquals("WORKING", working.currentState)
         assertEquals(2_000L, working.sessionStart)
         assertEquals(1_000L, working.homeDepartureTime)

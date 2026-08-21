@@ -27,6 +27,9 @@ interface LocationLogDao {
     @Query("SELECT * FROM location_logs ORDER BY time DESC LIMIT 1")
     suspend fun latest(): LocationLogEntity?
 
+    @Query("SELECT * FROM location_logs WHERE accuracyMeters <= 30 ORDER BY time DESC LIMIT :limit")
+    suspend fun recentAccurate(limit: Int): List<LocationLogEntity>
+
     @Query("SELECT COUNT(*) FROM location_logs WHERE time = :time")
     suspend fun countByTime(time: Long): Int
 

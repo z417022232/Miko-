@@ -17,6 +17,10 @@ import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewRecordEditor
+import com.example.worktimetracker.domain.engine.LocationAnchorCalibration
+import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
+import com.example.worktimetracker.location.permission.LocationCalibrationStore
+import com.example.worktimetracker.ui.CompanyCalibrationProposal
 import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.export.ExportManager
 import com.example.worktimetracker.ui.UiDayRecord
@@ -69,6 +73,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val monthlySalaryCents: StateFlow<Long?> = _monthlySalaryCents
     private val _monthlySalaryPaymentDate = MutableStateFlow<String?>(null)
     val monthlySalaryPaymentDate: StateFlow<String?> = _monthlySalaryPaymentDate
+    private val _companyCalibrationProposal = MutableStateFlow<CompanyCalibrationProposal?>(null)
+    val companyCalibrationProposal: StateFlow<CompanyCalibrationProposal?> = _companyCalibrationProposal
 
     init {
         viewModelScope.launch {
@@ -534,5 +540,37 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private fun LocalDateTime.ms(): Long = atZone(zone).toInstant().toEpochMilli()
     private fun Long.timeText(start: Long? = null): String { val t = Instant.ofEpochMilli(this).atZone(zone).toLocalDateTime(); val prefix = if (start != null && Instant.ofEpochMilli(start).atZone(zone).toLocalDate() != t.toLocalDate()) "次日" else ""; return prefix + "%02d:%02d".format(t.hour, t.minute) }
     private fun parseRangeMinutes(start: String, end: String): Int { val s = start.split(":").mapNotNull { it.toIntOrNull() }; val e = end.split(":").mapNotNull { it.toIntOrNull() }; if (s.size != 2 || e.size != 2) return 0; val sm = s[0] * 60 + s[1]; var em = e[0] * 60 + e[1]; if (em < sm) em += 24 * 60; return (em - sm).coerceAtLeast(0) }
-}
 
+    fun prepareCompanyCalibration() {
+        viewModelScope.launch {
+            val points = db.locationLogDao().recentAccurate(20).map {
+                LocationAnchorCalibration.Point(it.latitude, it.longitude, it.accuracyMeters ?: 999f, it.time)
+            }
+            val result = LocationAnchorCalibration().calculate(points)
+            val current = _settings.value
+            if (result == null || current.companyLat == null || current.companyLng == null) {
+                _placeSearchMessage.value = "高精度样本不足，请在公司实际工作位置保持定位后重试"
+                return@launch
+            }
+            val offset = LocationStatusAnalyzer().distanceMeters(current.companyLat, current.companyLng, result.centerLat, result.centerLng)
+            if (offset > current.companyRadiusMeters + 350) {
+                _placeSearchMessage.value = "当前定位不像公司位置，未生成校准建议"
+                return@launch
+            }
+            _companyCalibrationProposal.value = CompanyCalibrationProposal(result.centerLat, result.centerLng,
+                result.stableRadiusMeters, offset.toInt(), result.acceptedCount)
+        }
+    }
+
+    fun acceptCompanyCalibration() {
+        val proposal = _companyCalibrationProposal.value ?: return
+        viewModelScope.launch {
+            saveSettings(_settings.value.copy(companyLat = proposal.latitude, companyLng = proposal.longitude))
+            LocationCalibrationStore(getApplication()).saveCompany(proposal.stableRadiusMeters, System.currentTimeMillis())
+            _companyCalibrationProposal.value = null
+            _placeSearchMessage.value = "公司位置校准完成"
+        }
+    }
+
+    fun cancelCompanyCalibration() { _companyCalibrationProposal.value = null }
+}

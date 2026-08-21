@@ -14,6 +14,7 @@ object HistoricalRecordRepair {
     private const val PREFS = "historical_repair"
     private const val KEY = "reliable_sessions_v6"
     private const val CROSS_MIDNIGHT_KEY = "cross_midnight_sessions_v7"
+    private const val AUGUST_19_KEY = "august_19_incomplete_v8"
 
     fun shouldRepair(record: WorkRecordEntity): Boolean =
         !record.isManual && !record.needsReview && record.startTime != null && record.endTime != null
@@ -46,6 +47,18 @@ object HistoricalRecordRepair {
             prefs.edit().putBoolean(KEY, true).apply()
         }
         repairCrossMidnightSessions(app, domain, engine, prefs)
+        if (!prefs.getBoolean(AUGUST_19_KEY, false)) {
+            db.workRecordDao().getByDate("2026-08-19")?.let { db.workRecordDao().upsert(markAugustNineteenthIncomplete(it)) }
+            prefs.edit().putBoolean(AUGUST_19_KEY, true).apply()
+        }
+    }
+
+    fun markAugustNineteenthIncomplete(record: WorkRecordEntity): WorkRecordEntity {
+        if (record.workDate != "2026-08-19" || record.endTime != null) return record
+        val evidence = "离岗候选约08:59，持续远离证据约09:14；09:46后定位中断，到家时间需人工确认"
+        return record.copy(needsReview = true, homeArrivalTime = null,
+            note = record.note?.takeIf { it.isNotBlank() }?.let { "$it；$evidence" } ?: evidence,
+            updatedAt = System.currentTimeMillis())
     }
 
     private suspend fun repairCrossMidnightSessions(

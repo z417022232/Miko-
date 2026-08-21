@@ -38,11 +38,13 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
             }
             "LEAVING_HOME" -> when (type) {
                 LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
-                LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = now)
+                LocationType.COMPANY -> previous.copy(currentState = "NEAR_COMPANY", sessionStart = now,
+                    candidateCompanyArrivalTime = now, stableCompanyCount = 1)
                 LocationType.OTHER, LocationType.UNKNOWN -> previous.copy(currentState = "LEAVING_HOME", sessionStart = previous.sessionStart ?: now)
             }
             "NEAR_COMPANY" -> when (type) {
-                LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = previous.sessionStart ?: now)
+                LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = previous.sessionStart ?: now,
+                    companyArrivalConfirmedAt = now, stableCompanyCount = previous.stableCompanyCount + 1)
                 LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
                 else -> previous.copy(currentState = "LEAVING_HOME", sessionStart = previous.sessionStart ?: now)
             }

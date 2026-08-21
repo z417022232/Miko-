@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.room.withTransaction
 import com.example.worktimetracker.MainActivity
 import com.example.worktimetracker.WorkTimeApplication
 import com.example.worktimetracker.data.entity.LocationLogEntity
@@ -38,10 +39,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.location.permission.LocationCalibrationStore
 
 class ForegroundLocationService : Service(), LocationListener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val processor = LocationEventProcessor()
+    private val anchorEngine = TrajectoryAnchorEngine()
     private val samplingPolicy = LocationSamplingPolicy()
     private val locationAnalyzer = LocationStatusAnalyzer()
     private val sessionEngine = WorkSessionEngine(ZoneId.systemDefault())
@@ -85,6 +88,7 @@ class ForegroundLocationService : Service(), LocationListener {
             app.database.userSettingsDao().observeSettings().collectLatest { cachedSettings = it }
         }
         scope.launch {
+            reconcileIncompleteSession(app)
             for (ignored in processingSignal) {
                 var pending = processingGate.takePending()
                 while (pending != null) {
@@ -147,12 +151,16 @@ class ForegroundLocationService : Service(), LocationListener {
         val fixTime = location.time
         val settings = cachedSettings ?: app.database.userSettingsDao().getSettings()
             ?.also { cachedSettings = it } ?: com.example.worktimetracker.data.entity.UserSettingsEntity()
+        app.database.withTransaction {
         val previous = app.database.workStateDao().getState() ?: com.example.worktimetracker.data.entity.WorkStateEntity()
         val persistedFixTime = if (location.provider == LocationManager.GPS_PROVIDER) previous.lastGpsFixTime else previous.lastNetworkFixTime
-        if (persistedFixTime != null && fixTime <= persistedFixTime) return
+        if (persistedFixTime != null && fixTime <= persistedFixTime) return@withTransaction
         val type = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
         val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
             locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
+        } else null
+        val homeDistance = if (settings.homeLat != null && settings.homeLng != null) {
+            locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng)
         } else null
         val movingAway = type == com.example.worktimetracker.domain.model.LocationType.HOME ||
             (location.hasSpeed() && location.speed >= 1.5f) ||
@@ -168,7 +176,18 @@ class ForegroundLocationService : Service(), LocationListener {
                 provider = location.provider
             )
         )
-        val next = processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway).copy(
+        val calibration = LocationCalibrationStore(this)
+        val stateDecision = if (calibration.companyCalibratedAt() > 0L) {
+            anchorEngine.next(previous, TrajectoryAnchorEngine.Fix(
+                time = fixTime, type = type, accuracyMeters = location.accuracy,
+                provider = location.provider ?: "unknown", companyDistanceMeters = companyDistance,
+                companyAnchorDistanceMeters = companyDistance, homeDistanceMeters = homeDistance,
+                homeAnchorDistanceMeters = homeDistance, speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
+                movingAway = movingAway
+            ), TrajectoryAnchorEngine.Config(settings.companyRadiusMeters, settings.homeRadiusMeters,
+                calibration.companyStableRadius(), 100, settings.leaveCompanyConfirmMinutes)).nextState
+        } else processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway)
+        val next = stateDecision.copy(
             lastLatitude = location.latitude,
             lastLongitude = location.longitude,
             lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
@@ -211,6 +230,7 @@ class ForegroundLocationService : Service(), LocationListener {
         app.database.workStateDao().save(next)
         if (previous.currentState != next.currentState) {
             app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
+        }
         }
     }
 
@@ -272,6 +292,27 @@ class ForegroundLocationService : Service(), LocationListener {
             settings.earlyLeaveToleranceMinutes
         )
         return (domain to profile).also { learnedCache.put(revision, it) }
+    }
+
+    private suspend fun reconcileIncompleteSession(app: WorkTimeApplication) {
+        app.database.withTransaction {
+            val state = app.database.workStateDao().getState() ?: return@withTransaction
+            val start = state.sessionStart ?: return@withTransaction
+            val date = Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+            val record = app.database.workRecordDao().getByDate(date) ?: return@withTransaction
+            when (val plan = SessionReconciler.plan(state, record, state.sessionId)) {
+                SessionReconciler.Plan.None -> Unit
+                is SessionReconciler.Plan.Fill -> {
+                    val automatic = record.copy(endTime = plan.companyDeparture,
+                        homeArrivalTime = plan.homeArrival, needsReview = true,
+                        note = record.note ?: "服务恢复后补齐离岗证据；到家时间请核对",
+                        updatedAt = System.currentTimeMillis())
+                    app.database.workRecordDao().upsert(ProtectedRecordMerge.merge(record, automatic))
+                    app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(
+                        type = "SESSION_RECONCILE", content = "已恢复半完成会话 $date review=${plan.needsReview}"))
+                }
+            }
+        }
     }
 
     private fun detectShift(startMillis: Long, settings: WorkSettings): ShiftType =
