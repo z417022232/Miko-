@@ -48,8 +48,21 @@ object HistoricalRecordRepair {
         }
         repairCrossMidnightSessions(app, domain, engine, prefs)
         if (!prefs.getBoolean(AUGUST_19_KEY, false)) {
-            db.workRecordDao().getByDate("2026-08-19")?.let { db.workRecordDao().upsert(markAugustNineteenthIncomplete(it)) }
+            db.workRecordDao().getByDate("2026-08-19")?.let { db.workRecordDao().update(markAugustNineteenthIncomplete(it)) }
             prefs.edit().putBoolean(AUGUST_19_KEY, true).apply()
+        }
+        db.workRecordDao().getByDate("2026-08-19")?.let { record ->
+            if (record.isManual && db.manualOverrideDao().countForRecord(record.id) == 0) {
+                db.manualOverrideDao().insert(
+                    com.example.worktimetracker.data.entity.ManualOverrideEntity(
+                        recordId = record.id,
+                        oldValue = record.finalMinutes.toString(),
+                        newValue = record.finalMinutes.toString(),
+                        reason = "恢复人工修改审计",
+                        modifiedAt = record.updatedAt
+                    )
+                )
+            }
         }
     }
 
