@@ -54,6 +54,7 @@ class ForegroundLocationService : Service(), LocationListener {
     private val processingGate = LocationProcessingGate<Location>()
     private val safeProcessor = SafeLocationProcessor<Location>()
     private val failureLimiter = LocationFailureLimiter()
+    private val providerRecoveryGate = ProviderRecoveryGate()
     private val processingSignal = Channel<Unit>(Channel.CONFLATED)
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
     @Volatile private var cachedSettings: com.example.worktimetracker.data.entity.UserSettingsEntity? = null
@@ -61,6 +62,15 @@ class ForegroundLocationService : Service(), LocationListener {
     private val watchdogHandler = Handler(Looper.getMainLooper())
     private var lastFixReceivedAt: Long = 0L
     private var currentSamplingIntervalMillis = LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS
+    private var pendingSamplingIntervalMillis = currentSamplingIntervalMillis
+    private val applySamplingInterval = Runnable {
+        val interval = pendingSamplingIntervalMillis
+        if (interval != currentSamplingIntervalMillis) {
+            currentSamplingIntervalMillis = interval
+            logEvent("SAMPLING", "定位采样间隔调整为${interval / 60_000}分钟")
+            startLocationUpdates()
+        }
+    }
     private val locationWatchdog = object : Runnable {
         override fun run() {
             val now = System.currentTimeMillis()
@@ -118,13 +128,13 @@ class ForegroundLocationService : Service(), LocationListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startLocationUpdates()
         return START_STICKY
     }
 
     override fun onDestroy() {
         watchdogHandler.removeCallbacks(locationWatchdog)
         watchdogHandler.removeCallbacks(serviceHeartbeat)
+        watchdogHandler.removeCallbacks(applySamplingInterval)
         locationManager?.removeUpdates(this)
         processingSignal.close()
         scope.cancel()
@@ -139,6 +149,11 @@ class ForegroundLocationService : Service(), LocationListener {
         ServiceRecovery.heartbeat(this@ForegroundLocationService, now)
         val fixTime = location.time
         ServiceRecovery.locationCallback(this, location.accuracy <= 100f, now)
+        if (!providerRecoveryGate.shouldProcess(location.provider ?: "unknown")) {
+            lastFixReceivedAt = now
+            logEvent("PROVIDER_BASELINE", "${location.provider ?: "unknown"} 恢复后的首个定位仅用于建立基线")
+            return
+        }
         if (!fixGate.shouldAccept(location.provider, fixTime, now)) return
         lastFixReceivedAt = now
         processingGate.offer(location.provider ?: "unknown", fixTime, Location(location))
@@ -235,11 +250,17 @@ class ForegroundLocationService : Service(), LocationListener {
     }
 
     override fun onProviderEnabled(provider: String) {
+        providerRecoveryGate.providerEnabled(provider)
+        ServiceRecovery.providerAvailable(this, true)
         logEvent("LOCATION_ENABLED", "$provider 已开启，重新注册定位监听")
         startLocationUpdates()
     }
 
     override fun onProviderDisabled(provider: String) {
+        val manager = locationManager
+        val anyAvailable = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .any { manager?.isProviderEnabled(it) == true }
+        ServiceRecovery.providerAvailable(this, anyAvailable)
         sendSimpleNotification("定位异常", "${provider} 已关闭，可能需要按参考上下班时间自动补全")
         logEvent("LOCATION_DISABLED", "$provider 已关闭")
     }
@@ -254,14 +275,15 @@ class ForegroundLocationService : Service(), LocationListener {
         }
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val manager = locationManager ?: return
-        manager.removeUpdates(this)
-        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).filter { manager.isProviderEnabled(it) }
-        if (providers.isEmpty()) {
+        val activeProviders = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { manager.isProviderEnabled(it) }
+        val providers = activeProviders + listOf(LocationManager.PASSIVE_PROVIDER).filter { manager.isProviderEnabled(it) }
+        if (activeProviders.isEmpty()) {
             ServiceRecovery.providerAvailable(this, false)
             logEvent("LOCATION_DISABLED", "没有可用的定位提供器")
-            return
+        } else {
+            ServiceRecovery.providerAvailable(this, true)
         }
-        ServiceRecovery.providerAvailable(this, true)
         providers.forEach { provider ->
             manager.requestLocationUpdates(provider, currentSamplingIntervalMillis, 50f, this)
         }
@@ -399,14 +421,12 @@ class ForegroundLocationService : Service(), LocationListener {
             workStartMinutes = settings.workStartMinutes,
             workEndMinutes = settings.workEndMinutes
         )
-        if (interval == currentSamplingIntervalMillis) return
-        watchdogHandler.post {
-            if (interval != currentSamplingIntervalMillis) {
-                currentSamplingIntervalMillis = interval
-                logEvent("SAMPLING", "定位采样间隔调整为${interval / 60_000}分钟")
-                startLocationUpdates()
-            }
-        }
+        val decision = LocationRegistrationPolicy.intervalChange(currentSamplingIntervalMillis, interval)
+        if (!decision.reconfigure) return
+        pendingSamplingIntervalMillis = interval
+        watchdogHandler.removeCallbacks(applySamplingInterval)
+        if (decision.delayMillis == 0L) watchdogHandler.post(applySamplingInterval)
+        else watchdogHandler.postDelayed(applySamplingInterval, decision.delayMillis)
     }
 
     private fun logEvent(type: String, content: String) {
