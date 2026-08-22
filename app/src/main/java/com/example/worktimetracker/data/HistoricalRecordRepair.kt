@@ -9,6 +9,11 @@ import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.location.service.ConfirmedSession
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import java.time.ZoneId
+import java.time.Instant
+import androidx.room.withTransaction
+import com.example.worktimetracker.location.permission.LocationCalibrationStore
+import com.example.worktimetracker.location.service.CalibrationSessionReplay
+import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 
 object HistoricalRecordRepair {
     private const val PREFS = "historical_repair"
@@ -63,6 +68,53 @@ object HistoricalRecordRepair {
                     )
                 )
             }
+        }
+        repairCalibrationSplitSession(app, settings, domain, engine)
+    }
+
+    private suspend fun repairCalibrationSplitSession(
+        app: WorkTimeApplication,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
+        domain: WorkSettings,
+        engine: WorkSessionEngine
+    ) {
+        val store = LocationCalibrationStore(app)
+        val calibratedAt = store.companyCalibratedAt()
+        val companyLat = settings.companyLat ?: return
+        val companyLng = settings.companyLng ?: return
+        if (calibratedAt <= 0L) return
+        val db = app.database
+        db.withTransaction {
+            val state = db.workStateDao().getState() ?: return@withTransaction
+            val homeDeparture = state.candidateHomeDepartureTime ?: state.homeDepartureTime ?: return@withTransaction
+            val logs = db.locationLogDao().getLogs(homeDeparture, calibratedAt)
+            val analyzer = LocationStatusAnalyzer()
+            val arrival = CalibrationSessionReplay.findArrival(homeDeparture, calibratedAt,
+                store.companyStableRadius(), logs.map {
+                    CalibrationSessionReplay.Sample(it.time,
+                        analyzer.distanceMeters(it.latitude, it.longitude, companyLat, companyLng),
+                        it.accuracyMeters ?: 999f)
+                }) ?: return@withTransaction
+            if (state.sessionStart == arrival && state.companyArrivalConfirmedAt != null) return@withTransaction
+            val session = engine.buildSession(arrival, null, domain)
+            val target = db.workRecordDao().getByDate(session.assignedDate)
+            val repaired = (target ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK")).copy(
+                status = "WORK", shift = session.shiftType.name, startTime = arrival,
+                homeDepartureTime = homeDeparture, finalMinutes = 0, needsReview = false,
+                note = null, updatedAt = System.currentTimeMillis())
+            if (target == null) db.workRecordDao().upsert(repaired) else db.workRecordDao().update(repaired)
+            state.sessionStart?.let { oldStart ->
+                val wrongDate = Instant.ofEpochMilli(oldStart).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                if (wrongDate != session.assignedDate) {
+                    db.workRecordDao().getByDate(wrongDate)?.takeIf { !it.isManual && it.endTime == null }?.let { db.workRecordDao().delete(it) }
+                }
+            }
+            db.workStateDao().save(state.copy(
+                currentState = if (state.currentState == "LEAVING_HOME") "WORKING" else state.currentState,
+                sessionStart = arrival, candidateCompanyArrivalTime = arrival,
+                companyArrivalConfirmedAt = calibratedAt, updatedAt = System.currentTimeMillis()))
+            db.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(
+                type = "CALIBRATION_REPLAY", content = "校准后回放当前会话并归入${session.assignedDate}"))
         }
     }
 
