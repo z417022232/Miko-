@@ -19,5 +19,16 @@ data class WorkStateEntity(
     val lastNetworkFixTime: Long? = null,
     val lastCompanyDistanceMeters: Double? = null,
     val sessionType: String? = null,
+    val sessionId: String? = null,
+    val candidateHomeDepartureTime: Long? = null,
+    val candidateCompanyArrivalTime: Long? = null,
+    val candidateCompanyDepartureTime: Long? = null,
+    val candidateHomeArrivalTime: Long? = null,
+    val companyArrivalConfirmedAt: Long? = null,
+    val companyDepartureConfirmedAt: Long? = null,
+    val homeArrivalConfirmedAt: Long? = null,
+    val stableCompanyCount: Int = 0,
+    val stableHomeCount: Int = 0,
+    val movingAwayCount: Int = 0,
     val updatedAt: Long = System.currentTimeMillis()
 )

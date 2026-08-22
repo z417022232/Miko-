@@ -32,27 +32,32 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
         val next = when (previous.currentState) {
             "REST" -> when (type) {
                 LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
-                LocationType.COMPANY -> previous.copy(currentState = "NEAR_COMPANY", sessionStart = now)
-                LocationType.OTHER -> previous.copy(currentState = "LEAVING_HOME", sessionStart = now, homeDepartureTime = now)
+                LocationType.COMPANY -> previous.newSession("NEAR_COMPANY", now, null)
+                LocationType.OTHER -> previous.newSession("LEAVING_HOME", now, now)
                 LocationType.UNKNOWN -> previous
             }
             "LEAVING_HOME" -> when (type) {
                 LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
-                LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = now)
+                LocationType.COMPANY -> previous.copy(currentState = "NEAR_COMPANY", sessionStart = now,
+                    candidateCompanyArrivalTime = now, stableCompanyCount = 1)
                 LocationType.OTHER, LocationType.UNKNOWN -> previous.copy(currentState = "LEAVING_HOME", sessionStart = previous.sessionStart ?: now)
             }
             "NEAR_COMPANY" -> when (type) {
-                LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = previous.sessionStart ?: now)
+                LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = previous.sessionStart ?: now,
+                    companyArrivalConfirmedAt = now, stableCompanyCount = previous.stableCompanyCount + 1)
                 LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
                 else -> previous.copy(currentState = "LEAVING_HOME", sessionStart = previous.sessionStart ?: now)
             }
             "WORKING" -> when (type) {
                 LocationType.COMPANY -> previous.copy(tempLeaveStart = null)
                 LocationType.UNKNOWN -> previous
-                else -> previous.copy(currentState = "TEMP_LEAVE", tempLeaveStart = now)
+                else -> previous.copy(currentState = "TEMP_LEAVE", tempLeaveStart = now,
+                    candidateCompanyDepartureTime = now,
+                    candidateHomeArrivalTime = if (type == LocationType.HOME) now else null)
             }
             "TEMP_LEAVE" -> when (type) {
-                LocationType.COMPANY -> previous.copy(currentState = "WORKING", tempLeaveStart = null)
+                LocationType.COMPANY -> previous.copy(currentState = "WORKING", tempLeaveStart = null,
+                    candidateCompanyDepartureTime = null, candidateHomeArrivalTime = null)
                 LocationType.UNKNOWN -> previous
                 else -> if (previous.tempLeaveStart != null && now - previous.tempLeaveStart >= leaveConfirmMillis &&
                     (type == LocationType.HOME || (isMovingAway && distanceFromCompanyMeters != null &&
@@ -61,11 +66,13 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
                     previous.copy(
                         currentState = "FINISHED",
                         confirmedDepartureTime = previous.tempLeaveStart,
-                        homeArrivalTime = if (type == LocationType.HOME) now else previous.homeArrivalTime,
+                        candidateCompanyDepartureTime = previous.tempLeaveStart,
+                        candidateHomeArrivalTime = if (type == LocationType.HOME) previous.candidateHomeArrivalTime ?: now else previous.candidateHomeArrivalTime,
+                        homeArrivalTime = if (type == LocationType.HOME) previous.candidateHomeArrivalTime ?: now else previous.homeArrivalTime,
                         tempLeaveStart = null
                     )
                 } else {
-                    previous
+                    previous.copy(candidateHomeArrivalTime = if (type == LocationType.HOME) previous.candidateHomeArrivalTime ?: now else previous.candidateHomeArrivalTime)
                 }
             }
             "FINISHED" -> when (type) {
@@ -83,4 +90,24 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
         const val MAX_USABLE_ACCURACY_METERS = 100f
         const val MIN_DEPARTURE_DISTANCE_METERS = 100.0
     }
+
+    private fun WorkStateEntity.newSession(state: String, now: Long, homeDeparture: Long?) = copy(
+        currentState = state,
+        sessionStart = now,
+        sessionId = java.util.UUID.randomUUID().toString(),
+        tempLeaveStart = null,
+        confirmedDepartureTime = null,
+        homeDepartureTime = homeDeparture,
+        homeArrivalTime = null,
+        candidateHomeDepartureTime = homeDeparture,
+        candidateCompanyArrivalTime = if (state == "NEAR_COMPANY") now else null,
+        candidateCompanyDepartureTime = null,
+        candidateHomeArrivalTime = null,
+        companyArrivalConfirmedAt = null,
+        companyDepartureConfirmedAt = null,
+        homeArrivalConfirmedAt = null,
+        stableCompanyCount = 0,
+        stableHomeCount = 0,
+        movingAwayCount = 0
+    )
 }

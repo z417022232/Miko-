@@ -271,6 +271,7 @@ private fun LocationSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val settings by vm.settings.collectAsState()
     val lastLocation by vm.lastKnownLocationText.collectAsState()
     val searchMessage by vm.placeSearchMessage.collectAsState()
+    val calibrationProposal by vm.companyCalibrationProposal.collectAsState()
     var companyLat by remember(settings.companyLat) { mutableStateOf(settings.companyLat?.toString().orEmpty()) }
     var companyLng by remember(settings.companyLng) { mutableStateOf(settings.companyLng?.toString().orEmpty()) }
     var homeLat by remember(settings.homeLat) { mutableStateOf(settings.homeLat?.toString().orEmpty()) }
@@ -310,6 +311,9 @@ private fun LocationSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             onCurrent = { vm.useLastLocationForCompany() },
             onSearch = { searchTarget = LocationTarget.COMPANY }
         )
+        TextButton(onClick = { vm.prepareCompanyCalibration() }, modifier = Modifier.fillMaxWidth()) {
+            Text("在公司重新校准位置")
+        }
         Spacer(Modifier.height(12.dp))
         LocationCard(
             title = "家庭",
@@ -340,6 +344,16 @@ private fun LocationSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth()
         ) { Text("保存半径与坐标") }
         Spacer(Modifier.height(20.dp))
+    }
+
+    calibrationProposal?.let { proposal ->
+        AlertDialog(
+            onDismissRequest = { vm.cancelCompanyCalibration() },
+            title = { Text("确认公司位置校准") },
+            text = { Text("已分析${proposal.acceptedCount}个高精度定位，建议中心与当前设置相差约${proposal.offsetMeters}米。确认后才会更新公司位置。") },
+            confirmButton = { TextButton(onClick = { vm.acceptCompanyCalibration() }) { Text("确认更新") } },
+            dismissButton = { TextButton(onClick = { vm.cancelCompanyCalibration() }) { Text("取消") } }
+        )
     }
 
     searchTarget?.let { target ->

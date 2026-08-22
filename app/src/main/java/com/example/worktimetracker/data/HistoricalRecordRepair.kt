@@ -9,11 +9,18 @@ import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.location.service.ConfirmedSession
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import java.time.ZoneId
+import java.time.Instant
+import java.time.LocalDate
+import androidx.room.withTransaction
+import com.example.worktimetracker.location.permission.LocationCalibrationStore
+import com.example.worktimetracker.location.service.CalibrationSessionReplay
+import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 
 object HistoricalRecordRepair {
     private const val PREFS = "historical_repair"
     private const val KEY = "reliable_sessions_v6"
     private const val CROSS_MIDNIGHT_KEY = "cross_midnight_sessions_v7"
+    private const val AUGUST_19_KEY = "august_19_incomplete_v8"
 
     fun shouldRepair(record: WorkRecordEntity): Boolean =
         !record.isManual && !record.needsReview && record.startTime != null && record.endTime != null
@@ -46,6 +53,102 @@ object HistoricalRecordRepair {
             prefs.edit().putBoolean(KEY, true).apply()
         }
         repairCrossMidnightSessions(app, domain, engine, prefs)
+        if (!prefs.getBoolean(AUGUST_19_KEY, false)) {
+            db.workRecordDao().getByDate("2026-08-19")?.let { db.workRecordDao().update(markAugustNineteenthIncomplete(it)) }
+            prefs.edit().putBoolean(AUGUST_19_KEY, true).apply()
+        }
+        db.workRecordDao().getByDate("2026-08-19")?.let { record ->
+            if (record.isManual && db.manualOverrideDao().countForRecord(record.id) == 0) {
+                db.manualOverrideDao().insert(
+                    com.example.worktimetracker.data.entity.ManualOverrideEntity(
+                        recordId = record.id,
+                        oldValue = record.finalMinutes.toString(),
+                        newValue = record.finalMinutes.toString(),
+                        reason = "恢复人工修改审计",
+                        modifiedAt = record.updatedAt
+                    )
+                )
+            }
+        }
+        repairCalibrationSplitSession(app, settings, domain, engine)
+    }
+
+    private suspend fun repairCalibrationSplitSession(
+        app: WorkTimeApplication,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
+        domain: WorkSettings,
+        engine: WorkSessionEngine
+    ) {
+        val store = LocationCalibrationStore(app)
+        val calibratedAt = store.companyCalibratedAt()
+        val companyLat = settings.companyLat ?: return
+        val companyLng = settings.companyLng ?: return
+        if (calibratedAt <= 0L) return
+        val db = app.database
+        db.withTransaction {
+            val state = db.workStateDao().getState() ?: return@withTransaction
+            val homeDeparture = state.candidateHomeDepartureTime ?: state.homeDepartureTime ?: return@withTransaction
+            val logs = db.locationLogDao().getLogs(homeDeparture, calibratedAt)
+            val analyzer = LocationStatusAnalyzer()
+            val arrival = CalibrationSessionReplay.findArrival(homeDeparture, calibratedAt,
+                store.companyStableRadius(), logs.map {
+                    CalibrationSessionReplay.Sample(it.time,
+                        analyzer.distanceMeters(it.latitude, it.longitude, companyLat, companyLng),
+                        it.accuracyMeters ?: 999f)
+                }) ?: return@withTransaction
+            val session = engine.buildSession(arrival, null, domain)
+            val departure = state.candidateCompanyDepartureTime?.takeIf { it >= arrival }
+            val homeArrival = state.candidateHomeArrivalTime?.takeIf { departure != null && it >= departure }
+            val completed = departure?.let { engine.buildSession(arrival, it, domain) }
+            val target = db.workRecordDao().getByDate(session.assignedDate)
+            if (target?.isManual == true) {
+                val snapshot = db.manualOverrideDao().latestForRecord(target.id)?.newValue
+                    ?.let { ManualOverrideSnapshot.parse(it) }
+                if (snapshot != null) {
+                    db.workRecordDao().update(target.copy(
+                        shift = snapshot.shift, startTime = snapshot.startTime, endTime = snapshot.endTime,
+                        finalMinutes = snapshot.finalMinutes, needsReview = false,
+                        updatedAt = System.currentTimeMillis()))
+                }
+                return@withTransaction
+            }
+            val repaired = (target ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK")).copy(
+                status = "WORK", shift = session.shiftType.name, startTime = arrival,
+                endTime = departure, homeDepartureTime = homeDeparture, homeArrivalTime = homeArrival,
+                actualMinutes = completed?.actualMinutes,
+                finalMinutes = completed?.finalMinutes ?: 0,
+                needsReview = departure != null,
+                note = null, updatedAt = System.currentTimeMillis())
+            if (target == null) db.workRecordDao().upsert(repaired) else db.workRecordDao().update(repaired)
+            val nextDate = LocalDate.parse(session.assignedDate).plusDays(1).toString()
+            db.workRecordDao().getByDate(nextDate)?.takeIf {
+                isCalibrationSplitDuplicate(it, homeDeparture, calibratedAt)
+            }?.let { db.workRecordDao().delete(it) }
+            state.sessionStart?.let { oldStart ->
+                val wrongDate = Instant.ofEpochMilli(oldStart).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                if (wrongDate != session.assignedDate) {
+                    db.workRecordDao().getByDate(wrongDate)?.takeIf { !it.isManual && it.endTime == null }?.let { db.workRecordDao().delete(it) }
+                }
+            }
+            db.workStateDao().save(state.copy(
+                currentState = if (state.currentState == "LEAVING_HOME") "WORKING" else state.currentState,
+                sessionStart = arrival, candidateCompanyArrivalTime = arrival,
+                companyArrivalConfirmedAt = calibratedAt, updatedAt = System.currentTimeMillis()))
+            db.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(
+                type = "CALIBRATION_REPLAY", content = "校准后回放当前会话并归入${session.assignedDate}"))
+        }
+    }
+
+    fun isCalibrationSplitDuplicate(record: WorkRecordEntity, homeDeparture: Long, calibratedAt: Long): Boolean =
+        !record.isManual && record.homeDepartureTime == homeDeparture &&
+            record.startTime?.let { it in calibratedAt..(calibratedAt + 2 * 60 * 60_000L) } == true
+
+    fun markAugustNineteenthIncomplete(record: WorkRecordEntity): WorkRecordEntity {
+        if (record.workDate != "2026-08-19" || record.endTime != null) return record
+        val evidence = "离岗候选约08:59，持续远离证据约09:14；09:46后定位中断，到家时间需人工确认"
+        return record.copy(needsReview = true, homeArrivalTime = null,
+            note = record.note?.takeIf { it.isNotBlank() }?.let { "$it；$evidence" } ?: evidence,
+            updatedAt = System.currentTimeMillis())
     }
 
     private suspend fun repairCrossMidnightSessions(

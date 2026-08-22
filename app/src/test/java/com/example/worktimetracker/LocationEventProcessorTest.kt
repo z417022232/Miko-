@@ -37,7 +37,9 @@ class LocationEventProcessorTest {
 
     @Test fun companyArrivalDoesNotIncludeCommuteTime() {
         val leaving = processor.nextState(WorkStateEntity(currentState = "REST"), LocationType.OTHER, 1_000L, settings)
-        val working = processor.nextState(leaving, LocationType.COMPANY, 2_000L, settings)
+        val near = processor.nextState(leaving, LocationType.COMPANY, 2_000L, settings)
+        assertEquals("NEAR_COMPANY", near.currentState)
+        val working = processor.nextState(near, LocationType.COMPANY, 3_000L, settings)
         assertEquals("WORKING", working.currentState)
         assertEquals(2_000L, working.sessionStart)
         assertEquals(1_000L, working.homeDepartureTime)
@@ -93,6 +95,24 @@ class LocationEventProcessorTest {
         assertEquals("WORKING", returned.currentState)
         assertEquals(null, returned.tempLeaveStart)
         assertEquals(null, returned.confirmedDepartureTime)
+    }
+
+    @Test fun newCommuteClearsPreviousSessionArrivalAndDeparture() {
+        val stale = WorkStateEntity(currentState = "REST", homeArrivalTime = 100L,
+            confirmedDepartureTime = 90L, tempLeaveStart = 80L)
+        val next = processor.nextState(stale, LocationType.OTHER, 200L, settings)
+        assertEquals(null, next.homeArrivalTime)
+        assertEquals(null, next.confirmedDepartureTime)
+        assertEquals(null, next.tempLeaveStart)
+    }
+
+    @Test fun firstReliableHomeTimeIsKeptUntilDepartureConfirmation() {
+        val working = WorkStateEntity(currentState = "WORKING", sessionStart = 1_000L)
+        val candidate = processor.nextState(working, LocationType.OTHER, 2_000L, settings)
+        val firstHome = processor.nextState(candidate, LocationType.HOME, 30 * 60_000L, settings, 2_000.0, true)
+        assertEquals(30 * 60_000L, firstHome.candidateHomeArrivalTime)
+        val confirmed = processor.nextState(firstHome, LocationType.HOME, 61 * 60_000L, settings, 2_000.0, true)
+        assertEquals(30 * 60_000L, confirmed.homeArrivalTime)
     }
 }
 
