@@ -15,6 +15,9 @@ interface ManualOverrideDao {
     @Query("SELECT COUNT(*) FROM manual_overrides WHERE recordId = :recordId")
     suspend fun countForRecord(recordId: Long): Int
 
+    @Query("SELECT * FROM manual_overrides WHERE recordId = :recordId ORDER BY modifiedAt DESC LIMIT 1")
+    suspend fun latestForRecord(recordId: Long): ManualOverrideEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(override: ManualOverrideEntity): Long
 

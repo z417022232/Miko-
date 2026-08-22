@@ -101,6 +101,17 @@ object HistoricalRecordRepair {
             val homeArrival = state.candidateHomeArrivalTime?.takeIf { departure != null && it >= departure }
             val completed = departure?.let { engine.buildSession(arrival, it, domain) }
             val target = db.workRecordDao().getByDate(session.assignedDate)
+            if (target?.isManual == true) {
+                val snapshot = db.manualOverrideDao().latestForRecord(target.id)?.newValue
+                    ?.let { ManualOverrideSnapshot.parse(it) }
+                if (snapshot != null) {
+                    db.workRecordDao().update(target.copy(
+                        shift = snapshot.shift, startTime = snapshot.startTime, endTime = snapshot.endTime,
+                        finalMinutes = snapshot.finalMinutes, needsReview = false,
+                        updatedAt = System.currentTimeMillis()))
+                }
+                return@withTransaction
+            }
             val repaired = (target ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK")).copy(
                 status = "WORK", shift = session.shiftType.name, startTime = arrival,
                 endTime = departure, homeDepartureTime = homeDeparture, homeArrivalTime = homeArrival,
