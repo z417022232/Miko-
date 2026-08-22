@@ -96,12 +96,17 @@ object HistoricalRecordRepair {
                         analyzer.distanceMeters(it.latitude, it.longitude, companyLat, companyLng),
                         it.accuracyMeters ?: 999f)
                 }) ?: return@withTransaction
-            if (state.sessionStart == arrival && state.companyArrivalConfirmedAt != null) return@withTransaction
             val session = engine.buildSession(arrival, null, domain)
+            val departure = state.candidateCompanyDepartureTime?.takeIf { it >= arrival }
+            val homeArrival = state.candidateHomeArrivalTime?.takeIf { departure != null && it >= departure }
+            val completed = departure?.let { engine.buildSession(arrival, it, domain) }
             val target = db.workRecordDao().getByDate(session.assignedDate)
             val repaired = (target ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK")).copy(
                 status = "WORK", shift = session.shiftType.name, startTime = arrival,
-                homeDepartureTime = homeDeparture, finalMinutes = 0, needsReview = false,
+                endTime = departure, homeDepartureTime = homeDeparture, homeArrivalTime = homeArrival,
+                actualMinutes = completed?.actualMinutes,
+                finalMinutes = completed?.finalMinutes ?: 0,
+                needsReview = departure != null,
                 note = null, updatedAt = System.currentTimeMillis())
             if (target == null) db.workRecordDao().upsert(repaired) else db.workRecordDao().update(repaired)
             val nextDate = LocalDate.parse(session.assignedDate).plusDays(1).toString()
