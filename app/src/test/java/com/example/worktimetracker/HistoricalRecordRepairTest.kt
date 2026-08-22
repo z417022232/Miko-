@@ -24,4 +24,12 @@ class HistoricalRecordRepairTest {
         assertFalse(marked.note!!.contains("18:55到家"))
         assertTrue(marked.homeArrivalTime == null)
     }
+
+    @Test fun calibrationSplitDuplicateIsSafeToRemoveOnlyWhenAutomaticAndSameCommute() {
+        val duplicate = WorkRecordEntity(workDate="2026-08-22", status="WORK", shift="DAY_SHIFT",
+            startTime=2_000, homeDepartureTime=100, finalMinutes=660)
+        assertTrue(HistoricalRecordRepair.isCalibrationSplitDuplicate(duplicate, 100, 1_900))
+        assertFalse(HistoricalRecordRepair.isCalibrationSplitDuplicate(duplicate.copy(isManual=true), 100, 1_900))
+        assertFalse(HistoricalRecordRepair.isCalibrationSplitDuplicate(duplicate.copy(homeDepartureTime=101), 100, 1_900))
+    }
 }

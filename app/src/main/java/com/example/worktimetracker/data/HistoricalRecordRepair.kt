@@ -10,6 +10,7 @@ import com.example.worktimetracker.location.service.ConfirmedSession
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import java.time.ZoneId
 import java.time.Instant
+import java.time.LocalDate
 import androidx.room.withTransaction
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
 import com.example.worktimetracker.location.service.CalibrationSessionReplay
@@ -103,6 +104,10 @@ object HistoricalRecordRepair {
                 homeDepartureTime = homeDeparture, finalMinutes = 0, needsReview = false,
                 note = null, updatedAt = System.currentTimeMillis())
             if (target == null) db.workRecordDao().upsert(repaired) else db.workRecordDao().update(repaired)
+            val nextDate = LocalDate.parse(session.assignedDate).plusDays(1).toString()
+            db.workRecordDao().getByDate(nextDate)?.takeIf {
+                isCalibrationSplitDuplicate(it, homeDeparture, calibratedAt)
+            }?.let { db.workRecordDao().delete(it) }
             state.sessionStart?.let { oldStart ->
                 val wrongDate = Instant.ofEpochMilli(oldStart).atZone(ZoneId.systemDefault()).toLocalDate().toString()
                 if (wrongDate != session.assignedDate) {
@@ -117,6 +122,10 @@ object HistoricalRecordRepair {
                 type = "CALIBRATION_REPLAY", content = "校准后回放当前会话并归入${session.assignedDate}"))
         }
     }
+
+    fun isCalibrationSplitDuplicate(record: WorkRecordEntity, homeDeparture: Long, calibratedAt: Long): Boolean =
+        !record.isManual && record.homeDepartureTime == homeDeparture &&
+            record.startTime?.let { it in calibratedAt..(calibratedAt + 2 * 60 * 60_000L) } == true
 
     fun markAugustNineteenthIncomplete(record: WorkRecordEntity): WorkRecordEntity {
         if (record.workDate != "2026-08-19" || record.endTime != null) return record
