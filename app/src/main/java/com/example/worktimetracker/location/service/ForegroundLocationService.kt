@@ -418,6 +418,7 @@ class ForegroundLocationService : Service(), LocationListener {
     private suspend fun reconcileIncompleteSession(app: WorkTimeApplication) {
         app.database.withTransaction {
             val state = app.database.workStateDao().getState() ?: return@withTransaction
+            if (state.currentState == "TEMP_LEAVE") return@withTransaction
             val start = state.sessionStart ?: return@withTransaction
             val date = Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).toLocalDate().toString()
             val record = app.database.workRecordDao().getByDate(date) ?: return@withTransaction
