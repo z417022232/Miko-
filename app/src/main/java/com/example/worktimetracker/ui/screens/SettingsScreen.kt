@@ -80,7 +80,11 @@ import com.example.worktimetracker.location.permission.PermissionStatus
 import com.example.worktimetracker.location.permission.AutostartState
 import com.example.worktimetracker.location.permission.AutostartVerificationStore
 import com.example.worktimetracker.location.service.ForegroundLocationService
+import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 private enum class SettingsPage { ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS }
 private enum class LocationTarget { COMPANY, HOME }
@@ -499,6 +503,8 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val status = remember(refresh) { PermissionManager.check(context) }
     val autostartStore = remember(context) { AutostartVerificationStore(context) }
     val autostartState = remember(refresh) { autostartStore.get() }
+    val lastSystemLocationDisabled = remember(refresh) { ServiceRecovery.lastSystemLocationDisabled(context) }
+    val lastSystemLocationRecovered = remember(refresh) { ServiceRecovery.lastSystemLocationRecovered(context) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     fun repair(item: PermissionItem) {
         when (item) {
@@ -570,6 +576,16 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             Text("启动自动记录服务")
         }
         if (serviceMessage.isNotBlank()) Text(serviceMessage, color = AppGreen, modifier = Modifier.padding(10.dp))
+        if (lastSystemLocationDisabled > 0L || lastSystemLocationRecovered > 0L) {
+            Spacer(Modifier.height(12.dp))
+            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("系统定位状态记录", fontWeight = FontWeight.Bold)
+                    Text("最近暂停：${locationEventTime(lastSystemLocationDisabled)}", color = AppMuted)
+                    Text("最近恢复：${locationEventTime(lastSystemLocationRecovered)}", color = AppMuted)
+                }
+            }
+        }
         Spacer(Modifier.height(16.dp))
         Card(colors = CardDefaults.cardColors(containerColor = AppOrange.copy(alpha = 0.09f)), shape = RoundedCornerShape(18.dp)) {
             Column(Modifier.padding(16.dp)) {
@@ -597,6 +613,10 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         )
     }
 }
+
+private fun locationEventTime(time: Long): String = if (time <= 0L) "暂无" else
+    Instant.ofEpochMilli(time).atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("MM-dd HH:mm:ss"))
 
 @Composable
 private fun PermissionRow(

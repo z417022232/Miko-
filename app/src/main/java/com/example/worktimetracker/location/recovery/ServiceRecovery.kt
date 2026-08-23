@@ -18,6 +18,8 @@ object ServiceRecovery {
     private const val CALLBACK = "last_location_callback"
     private const val RELIABLE = "last_reliable_location"
     private const val PROVIDER = "provider_available"
+    private const val SYSTEM_LOCATION_DISABLED_AT = "system_location_disabled_at"
+    private const val SYSTEM_LOCATION_RECOVERED_AT = "system_location_recovered_at"
 
     fun start(context: Context, trigger: ServiceRecoveryPolicy.RecoveryTrigger): Boolean {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -56,6 +58,22 @@ object ServiceRecovery {
     fun providerAvailable(context: Context, available: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(PROVIDER, available).apply()
     }
+
+    fun systemLocationDisabled(context: Context, now: Long) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(SYSTEM_LOCATION_DISABLED_AT, now).apply()
+    }
+
+    fun systemLocationRecovered(context: Context, now: Long) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(SYSTEM_LOCATION_RECOVERED_AT, now).apply()
+    }
+
+    fun lastSystemLocationDisabled(context: Context): Long =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(SYSTEM_LOCATION_DISABLED_AT, 0L)
+
+    fun lastSystemLocationRecovered(context: Context): Long =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(SYSTEM_LOCATION_RECOVERED_AT, 0L)
 
     fun snapshot(context: Context): ServiceHealthSnapshot = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).let {
         ServiceHealthSnapshot(it.getLong(HEARTBEAT, 0), it.getLong(CALLBACK, 0),

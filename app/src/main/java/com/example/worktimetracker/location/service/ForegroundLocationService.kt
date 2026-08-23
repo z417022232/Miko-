@@ -55,6 +55,7 @@ class ForegroundLocationService : Service(), LocationListener {
     private val safeProcessor = SafeLocationProcessor<Location>()
     private val failureLimiter = LocationFailureLimiter()
     private val providerRecoveryGate = ProviderRecoveryGate()
+    private val providerAlerts = ProviderAlertAggregator()
     private val processingSignal = Channel<Unit>(Channel.CONFLATED)
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
     @Volatile private var cachedSettings: com.example.worktimetracker.data.entity.UserSettingsEntity? = null
@@ -88,6 +89,18 @@ class ForegroundLocationService : Service(), LocationListener {
             watchdogHandler.postDelayed(this, 5 * 60_000L)
         }
     }
+    private val providerSummary = Runnable {
+        val providers = providerAlerts.disabledProviders()
+        if (providers.isNotEmpty()) logEvent("LOCATION_DISABLED", "系统定位Provider暂停：${providers.joinToString()}")
+    }
+    private val providerGlobalCheck = Runnable {
+        val enabled = locationManager?.isLocationEnabled ?: true
+        if (providerAlerts.shouldNotifyGlobal(enabled, System.currentTimeMillis())) {
+            ServiceRecovery.systemLocationDisabled(this, System.currentTimeMillis())
+            sendSimpleNotification("系统定位已暂停", "系统睡眠模式暂停定位，恢复后将自动继续")
+        }
+    }
+    private val departureConfirmation = Runnable { scope.launch { confirmDepartureIfDue() } }
 
     override fun onCreate() {
         super.onCreate()
@@ -95,10 +108,14 @@ class ForegroundLocationService : Service(), LocationListener {
         startForeground(NOTIFICATION_ID, buildNotification("正在记录工时"))
         val app = application as WorkTimeApplication
         scope.launch {
-            app.database.userSettingsDao().observeSettings().collectLatest { cachedSettings = it }
+            app.database.userSettingsDao().observeSettings().collectLatest {
+                cachedSettings = it
+                if (it != null) rescheduleDepartureConfirmation(it)
+            }
         }
         scope.launch {
             reconcileIncompleteSession(app)
+            app.database.userSettingsDao().getSettings()?.let { rescheduleDepartureConfirmation(it) }
             for (ignored in processingSignal) {
                 var pending = processingGate.takePending()
                 while (pending != null) {
@@ -135,6 +152,9 @@ class ForegroundLocationService : Service(), LocationListener {
         watchdogHandler.removeCallbacks(locationWatchdog)
         watchdogHandler.removeCallbacks(serviceHeartbeat)
         watchdogHandler.removeCallbacks(applySamplingInterval)
+        watchdogHandler.removeCallbacks(providerSummary)
+        watchdogHandler.removeCallbacks(providerGlobalCheck)
+        watchdogHandler.removeCallbacks(departureConfirmation)
         locationManager?.removeUpdates(this)
         processingSignal.close()
         scope.cancel()
@@ -217,43 +237,119 @@ class ForegroundLocationService : Service(), LocationListener {
             saveDraftRecord(app, next, settings)
         }
         if (previous.currentState != "FINISHED" && next.currentState == "FINISHED" && previous.sessionStart != null) {
-            val learned = learnedSettings(app, settings)
-            val typicalDuration = if (detectShift(previous.sessionStart, learned.first) == ShiftType.NIGHT_SHIFT) learned.second.nightTypicalDurationMinutes else learned.second.dayTypicalDurationMinutes
-            val maximumEnd = previous.sessionStart + profileLearner.maximumDurationMinutes(typicalDuration) * 60_000L
-            val confirmedEnd = next.confirmedDepartureTime ?: fixTime
-            val effectiveEnd = minOf(confirmedEnd, maximumEnd)
-            val capped = confirmedEnd > maximumEnd
-            val session = sessionEngine.buildSession(previous.sessionStart, effectiveEnd, learned.first)
-            val existing = app.database.workRecordDao().getByDate(session.assignedDate)
-            val recordToSave = ConfirmedSession.merge(
-                existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK"),
-                shift = session.shiftType.name,
-                companyArrival = previous.sessionStart,
-                companyDeparture = effectiveEnd,
-                homeDeparture = next.homeDepartureTime,
-                homeArrival = next.homeArrivalTime,
-                actualMinutes = session.actualMinutes,
-                calculatedMinutes = session.finalMinutes,
-                needsReview = session.needsReview || capped
-            )
-            app.database.workRecordDao().upsert(
-                if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave) else recordToSave
-            )
-            learnedCache.clear()
-            sendWorkRecordNotification(session)
+            finalizeSessionRecord(app, previous, next, fixTime, settings)
         }
         app.database.workStateDao().save(next)
+        scheduleDepartureConfirmation(next, settings)
         if (previous.currentState != next.currentState) {
             app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
         }
         }
     }
 
+    private fun scheduleDepartureConfirmation(
+        state: com.example.worktimetracker.data.entity.WorkStateEntity,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ) {
+        watchdogHandler.removeCallbacks(departureConfirmation)
+        val candidate = state.candidateCompanyDepartureTime ?: state.tempLeaveStart
+        if (state.currentState != "TEMP_LEAVE" || candidate == null) return
+        val deadline = candidate + settings.leaveCompanyConfirmMinutes.coerceAtLeast(5) * 60_000L
+        watchdogHandler.postDelayed(departureConfirmation, (deadline - System.currentTimeMillis()).coerceAtLeast(0L))
+    }
+
+    private suspend fun rescheduleDepartureConfirmation(settings: com.example.worktimetracker.data.entity.UserSettingsEntity) {
+        val state = (application as WorkTimeApplication).database.workStateDao().getState() ?: return
+        scheduleDepartureConfirmation(state, settings)
+    }
+
+    private suspend fun confirmDepartureIfDue() {
+        val app = application as WorkTimeApplication
+        app.database.withTransaction {
+            val state = app.database.workStateDao().getState() ?: return@withTransaction
+            val settings = app.database.userSettingsDao().getSettings() ?: return@withTransaction
+            val candidate = state.candidateCompanyDepartureTime ?: state.tempLeaveStart
+            when (DepartureConfirmationPolicy.evaluate(
+                state.currentState, candidate, state.candidateHomeArrivalTime,
+                state.movingAwayCount, state.lastCompanyDistanceMeters,
+                settings.companyRadiusMeters, settings.leaveCompanyConfirmMinutes,
+                System.currentTimeMillis()
+            )) {
+                DepartureConfirmationPolicy.Action.CANCEL -> watchdogHandler.removeCallbacks(departureConfirmation)
+                DepartureConfirmationPolicy.Action.WAIT -> scheduleDepartureConfirmation(state, settings)
+                DepartureConfirmationPolicy.Action.WAIT_FOR_EVIDENCE -> Unit
+                DepartureConfirmationPolicy.Action.CONFIRM -> {
+                    val now = System.currentTimeMillis()
+                    val firstHome = state.candidateHomeArrivalTime
+                    val next = state.copy(
+                        currentState = if (firstHome != null) "REST" else "FINISHED",
+                        confirmedDepartureTime = candidate,
+                        companyDepartureConfirmedAt = now,
+                        homeArrivalTime = firstHome,
+                        homeArrivalConfirmedAt = if (firstHome != null) now else null,
+                        sessionStart = if (firstHome != null) null else state.sessionStart,
+                        tempLeaveStart = null,
+                        updatedAt = now
+                    )
+                    finalizeSessionRecord(app, state, next, now, settings)
+                    app.database.workStateDao().save(next)
+                    app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(
+                        type = "STATE", content = "TEMP_LEAVE → ${next.currentState}（离岗计时确认）"))
+                }
+            }
+        }
+    }
+
+    private suspend fun finalizeSessionRecord(
+        app: WorkTimeApplication,
+        previous: com.example.worktimetracker.data.entity.WorkStateEntity,
+        next: com.example.worktimetracker.data.entity.WorkStateEntity,
+        confirmedAt: Long,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ) {
+        val start = previous.sessionStart ?: return
+        val learned = learnedSettings(app, settings)
+        val typicalDuration = if (detectShift(start, learned.first) == ShiftType.NIGHT_SHIFT) {
+            learned.second.nightTypicalDurationMinutes
+        } else learned.second.dayTypicalDurationMinutes
+        val maximumEnd = start + profileLearner.maximumDurationMinutes(typicalDuration) * 60_000L
+        val confirmedEnd = next.confirmedDepartureTime ?: confirmedAt
+        val effectiveEnd = minOf(confirmedEnd, maximumEnd)
+        val capped = confirmedEnd > maximumEnd
+        val session = sessionEngine.buildSession(start, effectiveEnd, learned.first)
+        val existing = app.database.workRecordDao().getByDate(session.assignedDate)
+        val recordToSave = ConfirmedSession.merge(
+            existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK"),
+            shift = session.shiftType.name,
+            companyArrival = start,
+            companyDeparture = effectiveEnd,
+            homeDeparture = next.homeDepartureTime,
+            homeArrival = next.homeArrivalTime,
+            actualMinutes = session.actualMinutes,
+            calculatedMinutes = session.finalMinutes,
+            needsReview = session.needsReview || capped
+        )
+        app.database.workRecordDao().upsert(
+            if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave) else recordToSave
+        )
+        learnedCache.clear()
+        sendWorkRecordNotification(session)
+    }
+
     override fun onProviderEnabled(provider: String) {
         providerRecoveryGate.providerEnabled(provider)
         ServiceRecovery.providerAvailable(this, true)
-        logEvent("LOCATION_ENABLED", "$provider 已开启，重新注册定位监听")
-        startLocationUpdates()
+        val notifiedGlobalPause = providerAlerts.wasGlobalNotified()
+        val recovered = providerAlerts.recovered(locationManager?.isLocationEnabled ?: true, System.currentTimeMillis())
+        if (recovered) {
+            watchdogHandler.removeCallbacks(providerSummary)
+            watchdogHandler.removeCallbacks(providerGlobalCheck)
+            if (notifiedGlobalPause) {
+                ServiceRecovery.systemLocationRecovered(this, System.currentTimeMillis())
+                logEvent("LOCATION_ENABLED", "系统定位已恢复，自动继续记录")
+            }
+            startLocationUpdates()
+        }
     }
 
     override fun onProviderDisabled(provider: String) {
@@ -261,8 +357,11 @@ class ForegroundLocationService : Service(), LocationListener {
         val anyAvailable = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
             .any { manager?.isProviderEnabled(it) == true }
         ServiceRecovery.providerAvailable(this, anyAvailable)
-        sendSimpleNotification("定位异常", "${provider} 已关闭，可能需要按参考上下班时间自动补全")
-        logEvent("LOCATION_DISABLED", "$provider 已关闭")
+        providerAlerts.disabled(provider, System.currentTimeMillis())
+        watchdogHandler.removeCallbacks(providerSummary)
+        watchdogHandler.postDelayed(providerSummary, 5_000L)
+        watchdogHandler.removeCallbacks(providerGlobalCheck)
+        watchdogHandler.postDelayed(providerGlobalCheck, 60_000L)
     }
     @Deprecated("Deprecated in Java") override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
 
