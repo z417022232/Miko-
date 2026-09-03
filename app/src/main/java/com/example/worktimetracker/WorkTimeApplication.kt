@@ -25,7 +25,7 @@ class WorkTimeApplication : Application() {
 
     val database: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, "work_time_tracker.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .build()
     }
 
@@ -104,6 +104,46 @@ class WorkTimeApplication : Application() {
                         " + CASE WHEN homeArrivalTime IS NOT NULL THEN 16 ELSE 0 END" +
                         " + CASE WHEN note IS NOT NULL THEN 64 ELSE 0 END" +
                         " WHERE isManual = 1"
+                )
+            }
+        }
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `environment_fingerprints` (`place` TEXT NOT NULL, " +
+                        "`source` TEXT NOT NULL, `identifierHash` TEXT NOT NULL, `observationCount` INTEGER NOT NULL, " +
+                        "`distinctDayCount` INTEGER NOT NULL, `lastObservedDay` TEXT NOT NULL, " +
+                        "`lastObservedAt` INTEGER NOT NULL, `minSignal` INTEGER NOT NULL, `maxSignal` INTEGER NOT NULL, " +
+                        "`level` TEXT NOT NULL, `discriminative` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`place`, `source`, `identifierHash`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_environment_fingerprints_lastObservedAt` " +
+                        "ON `environment_fingerprints` (`lastObservedAt`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_environment_fingerprints_place_source_level` " +
+                        "ON `environment_fingerprints` (`place`, `source`, `level`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `evidence_observations` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`eventTime` INTEGER NOT NULL, `receivedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, " +
+                        "`quality` REAL NOT NULL, `placeHint` TEXT NOT NULL, `identifierHash` TEXT, " +
+                        "`signal` INTEGER, `usedForEvent` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_evidence_observations_eventTime` " +
+                        "ON `evidence_observations` (`eventTime`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_evidence_observations_source_placeHint` " +
+                        "ON `evidence_observations` (`source`, `placeHint`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `location_health` (`name` TEXT NOT NULL, " +
+                        "`lastCallbackAt` INTEGER NOT NULL, `lastSuccessAt` INTEGER NOT NULL, " +
+                        "`registered` INTEGER NOT NULL, `recoveryCount` INTEGER NOT NULL, `lastFailure` TEXT, " +
+                        "PRIMARY KEY(`name`))"
                 )
             }
         }
