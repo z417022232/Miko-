@@ -20,6 +20,7 @@ object ServiceRecovery {
     private const val PROVIDER = "provider_available"
     private const val SYSTEM_LOCATION_DISABLED_AT = "system_location_disabled_at"
     private const val SYSTEM_LOCATION_RECOVERED_AT = "system_location_recovered_at"
+    private const val NOTIFY_PREFIX = "health_notified_"
 
     fun start(context: Context, trigger: ServiceRecoveryPolicy.RecoveryTrigger): Boolean {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -75,9 +76,19 @@ object ServiceRecovery {
     fun lastSystemLocationRecovered(context: Context): Long =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(SYSTEM_LOCATION_RECOVERED_AT, 0L)
 
-    fun snapshot(context: Context): ServiceHealthSnapshot = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).let {
-        ServiceHealthSnapshot(it.getLong(HEARTBEAT, 0), it.getLong(CALLBACK, 0),
-            it.getLong(RELIABLE, 0), it.getBoolean(PROVIDER, true))
+    fun snapshot(context: Context, sourceHealth: Map<String, SourceHealth> = emptyMap()): ServiceHealthSnapshot =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).let {
+            ServiceHealthSnapshot(it.getLong(HEARTBEAT, 0), it.getLong(CALLBACK, 0),
+                it.getLong(RELIABLE, 0), it.getBoolean(PROVIDER, true), sourceHealth)
+        }
+
+    /** 相同失败在 60 分钟内只通知一次；返回 true 表示本次需要通知。 */
+    fun shouldNotify(context: Context, key: String, now: Long = System.currentTimeMillis()): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val last = prefs.getLong(NOTIFY_PREFIX + key, 0L)
+        if (last > 0L && now - last < HealthNotificationGate.DEFAULT_WINDOW_MILLIS) return false
+        prefs.edit().putLong(NOTIFY_PREFIX + key, now).apply()
+        return true
     }
 
     fun isHealthy(context: Context, now: Long = System.currentTimeMillis()): Boolean {

@@ -212,6 +212,17 @@ class ForegroundLocationService : Service(), LocationListener {
         cellCollector?.stop()
         motionController = null
         evidenceCoordinator = null
+        // 独立协程写入运动来源停止状态，避免被随后的 scope.cancel() 取消
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                (application as WorkTimeApplication).database.environmentEvidenceDao().upsertHealth(
+                    com.example.worktimetracker.data.entity.LocationHealthEntity(
+                        name = "motion", lastCallbackAt = 0L, lastSuccessAt = 0L,
+                        registered = false, recoveryCount = 0, lastFailure = null
+                    )
+                )
+            }
+        }
         processingSignal.close()
         scope.cancel()
         logEvent("SERVICE", "前台定位服务已停止")
@@ -251,6 +262,20 @@ class ForegroundLocationService : Service(), LocationListener {
         val previous = app.database.workStateDao().getState() ?: com.example.worktimetracker.data.entity.WorkStateEntity()
         val persistedFixTime = if (location.provider == LocationManager.GPS_PROVIDER) previous.lastGpsFixTime else previous.lastNetworkFixTime
         if (persistedFixTime != null && fixTime <= persistedFixTime) return@withTransaction
+        // GNSS 来源健康状态：回调时间与可靠成功时间分开记录
+        runCatching {
+            val previousHealth = app.database.environmentEvidenceDao().health("gnss")
+            app.database.environmentEvidenceDao().upsertHealth(
+                com.example.worktimetracker.data.entity.LocationHealthEntity(
+                    name = "gnss",
+                    lastCallbackAt = now,
+                    lastSuccessAt = if (location.accuracy <= 100f) now else previousHealth?.lastSuccessAt ?: 0L,
+                    registered = true,
+                    recoveryCount = 0,
+                    lastFailure = null
+                )
+            )
+        }
         val classified = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
         val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
             locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
@@ -562,6 +587,16 @@ class ForegroundLocationService : Service(), LocationListener {
         bluetoothCollector = bluetooth
         cellCollector = cell
         motionController = MotionEvidenceController(this) { onSignificantMotionDetected(it) }
+        scope.launch {
+            runCatching {
+                app.database.environmentEvidenceDao().upsertHealth(
+                    com.example.worktimetracker.data.entity.LocationHealthEntity(
+                        name = "motion", lastCallbackAt = 0L, lastSuccessAt = 0L,
+                        registered = true, recoveryCount = 0, lastFailure = null
+                    )
+                )
+            }
+        }
     }
 
     /** 显著运动：记录运动证据并按省电策略请求一次短扫描。 */
