@@ -512,6 +512,17 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             PermissionItem.NOTIFICATIONS -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 permissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
             } else refresh++
+            PermissionItem.NEARBY_DEVICES -> {
+                val permissions = buildList {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Manifest.permission.BLUETOOTH_SCAN)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+                }
+                if (permissions.isEmpty()) refresh++
+                else permissionLauncher.launch(permissions.toTypedArray())
+            }
+            PermissionItem.ACTIVITY_RECOGNITION -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                permissionLauncher.launch(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION))
+            } else refresh++
             else -> {
                 if (item == PermissionItem.VIVO_AUTOSTART) awaitingAutostartConfirmation = true
                 serviceMessage = PermissionSettingsRouter.open(item, context)
@@ -540,6 +551,10 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             PermissionRow("精确定位", "用于判断公司和家庭范围", status.fineLocation) { repair(PermissionItem.FINE_LOCATION) }
             ThinDivider()
             PermissionRow("后台定位", "退出应用后继续记录", status.backgroundLocation) { repair(PermissionItem.BACKGROUND_LOCATION) }
+            ThinDivider()
+            PermissionRow("附近设备", "通过 Wi-Fi 和蓝牙识别公司与家庭环境", status.nearbyDevices) { repair(PermissionItem.NEARBY_DEVICES) }
+            ThinDivider()
+            PermissionRow("活动识别", "检测显著运动以唤醒环境扫描", status.activityRecognition) { repair(PermissionItem.ACTIVITY_RECOGNITION) }
             ThinDivider()
             PermissionRow("通知", "显示常驻记录状态和异常提醒", status.notifications) { repair(PermissionItem.NOTIFICATIONS) }
             ThinDivider()

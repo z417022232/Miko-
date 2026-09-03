@@ -6,12 +6,14 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 
-enum class PermissionItem { FINE_LOCATION, BACKGROUND_LOCATION, NOTIFICATIONS, BATTERY_UNRESTRICTED, VIVO_AUTOSTART }
+enum class PermissionItem { FINE_LOCATION, BACKGROUND_LOCATION, NEARBY_DEVICES, ACTIVITY_RECOGNITION, NOTIFICATIONS, BATTERY_UNRESTRICTED, VIVO_AUTOSTART }
 
 object PermissionRepairPriority {
     fun next(status: PermissionStatus): PermissionItem = when {
         !status.fineLocation -> PermissionItem.FINE_LOCATION
         !status.backgroundLocation -> PermissionItem.BACKGROUND_LOCATION
+        !status.nearbyDevices -> PermissionItem.NEARBY_DEVICES
+        !status.activityRecognition -> PermissionItem.ACTIVITY_RECOGNITION
         !status.notifications -> PermissionItem.NOTIFICATIONS
         !status.batteryUnrestricted -> PermissionItem.BATTERY_UNRESTRICTED
         else -> PermissionItem.VIVO_AUTOSTART
@@ -35,6 +37,8 @@ object PermissionSettingsRouter {
     fun candidates(item: PermissionItem, packageName: String): List<Intent> = when (item) {
         PermissionItem.FINE_LOCATION,
         PermissionItem.BACKGROUND_LOCATION,
+        PermissionItem.NEARBY_DEVICES,
+        PermissionItem.ACTIVITY_RECOGNITION,
         PermissionItem.NOTIFICATIONS -> listOf(appDetails(packageName))
         PermissionItem.BATTERY_UNRESTRICTED -> listOf(
             Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")),
