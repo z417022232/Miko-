@@ -40,6 +40,22 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
+import com.example.worktimetracker.location.evidence.AmbientScanPolicy
+import com.example.worktimetracker.location.evidence.BluetoothEvidenceCollector
+import com.example.worktimetracker.location.evidence.CellEvidenceCollector
+import com.example.worktimetracker.location.evidence.EnvironmentSaltStore
+import com.example.worktimetracker.location.evidence.EvidenceCoordinator
+import com.example.worktimetracker.location.evidence.GnssInput
+import com.example.worktimetracker.location.evidence.MotionEvidenceController
+import com.example.worktimetracker.location.evidence.ScanDecision
+import com.example.worktimetracker.location.evidence.ScanPolicyInput
+import com.example.worktimetracker.location.evidence.WifiEvidenceCollector
+import com.example.worktimetracker.domain.evidence.EvidenceFusionEngine
+import com.example.worktimetracker.domain.evidence.FingerprintLearningPolicy
+import com.example.worktimetracker.domain.evidence.FusedEvidence
+import com.example.worktimetracker.domain.evidence.ResolvedPlace
+import com.example.worktimetracker.domain.model.LocationType
+import java.time.Clock
 
 class ForegroundLocationService : Service(), LocationListener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -57,6 +73,21 @@ class ForegroundLocationService : Service(), LocationListener {
     private val providerRecoveryGate = ProviderRecoveryGate()
     private val providerAlerts = ProviderAlertAggregator()
     private val processingSignal = Channel<Unit>(Channel.CONFLATED)
+    private val registrationState = SourceRegistrationState()
+    private val ambientScanPolicy = AmbientScanPolicy()
+    private var evidenceCoordinator: EvidenceCoordinator? = null
+    private var motionController: MotionEvidenceController? = null
+    private var wifiCollector: WifiEvidenceCollector? = null
+    private var bluetoothCollector: BluetoothEvidenceCollector? = null
+    private var cellCollector: CellEvidenceCollector? = null
+    @Volatile private var lastAmbientScanAt = 0L
+    @Volatile private var ambientScanRequested = false
+    @Volatile private var ambientScanMayStartWifiScan = false
+    @Volatile private var pendingMotionAt: Long? = null
+    @Volatile private var lastGnssCallbackWallClock = 0L
+    @Volatile private var lastResolvedPlace = ResolvedPlace.UNKNOWN
+    @Volatile private var lastClassifiedPlace: LocationType? = null
+    @Volatile private var classifiedPlaceSince = 0L
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
     @Volatile private var cachedSettings: com.example.worktimetracker.data.entity.UserSettingsEntity? = null
     private var locationManager: LocationManager? = null
@@ -75,10 +106,17 @@ class ForegroundLocationService : Service(), LocationListener {
     private val locationWatchdog = object : Runnable {
         override fun run() {
             val now = System.currentTimeMillis()
+            val lastCallback = registrationState.lastCallback(SOURCE_LOCATION) ?: 0L
             val staleAfter = maxOf(LOCATION_STALE_MILLIS, currentSamplingIntervalMillis + 5 * 60_000L)
-            if (lastFixReceivedAt == 0L || now - lastFixReceivedAt >= staleAfter) {
-                logEvent("LOCATION_WATCHDOG", "超过15分钟未收到定位，正在重新注册定位监听")
-                startLocationUpdates()
+            if (lastCallback == 0L || now - lastCallback >= staleAfter) {
+                // 静止且设置了 50 米最小距离时无回调是正常现象：先请求环境快照补充证据
+                requestAmbientScan(significantMotion = false, now = now)
+                val hardStaleAfter = maxOf(staleAfter, currentSamplingIntervalMillis * 2)
+                if (lastCallback == 0L || now - lastCallback >= hardStaleAfter) {
+                    logEvent("LOCATION_WATCHDOG", "长时间未收到定位，正在重新注册定位监听")
+                    registrationState.invalidate(SOURCE_LOCATION)
+                    startLocationUpdates()
+                }
             }
             watchdogHandler.postDelayed(this, WATCHDOG_INTERVAL_MILLIS)
         }
@@ -107,6 +145,9 @@ class ForegroundLocationService : Service(), LocationListener {
         NotificationChannels.ensure(this)
         startForeground(NOTIFICATION_ID, buildNotification("正在记录工时"))
         val app = application as WorkTimeApplication
+        setupEvidenceComponents()
+        scope.launch { runCatching { evidenceCoordinator?.onServiceStart() } }
+        motionController?.start()
         scope.launch {
             app.database.userSettingsDao().observeSettings().collectLatest {
                 cachedSettings = it
@@ -135,6 +176,14 @@ class ForegroundLocationService : Service(), LocationListener {
                     }
                     pending = processingGate.takePending()
                 }
+                pendingMotionAt?.let { at ->
+                    pendingMotionAt = null
+                    runCatching { evidenceCoordinator?.onMotion(at) }
+                }
+                if (ambientScanRequested) {
+                    ambientScanRequested = false
+                    runCatching { runAmbientScan() }
+                }
             }
         }
         startLocationUpdates()
@@ -156,6 +205,13 @@ class ForegroundLocationService : Service(), LocationListener {
         watchdogHandler.removeCallbacks(providerGlobalCheck)
         watchdogHandler.removeCallbacks(departureConfirmation)
         locationManager?.removeUpdates(this)
+        // 停止传感器、Wi-Fi/蓝牙扫描及所有定位监听
+        motionController?.stop()
+        wifiCollector?.stop()
+        bluetoothCollector?.stop()
+        cellCollector?.stop()
+        motionController = null
+        evidenceCoordinator = null
         processingSignal.close()
         scope.cancel()
         logEvent("SERVICE", "前台定位服务已停止")
@@ -168,15 +224,20 @@ class ForegroundLocationService : Service(), LocationListener {
         val now = System.currentTimeMillis()
         ServiceRecovery.heartbeat(this@ForegroundLocationService, now)
         val fixTime = location.time
+        val provider = location.provider ?: "unknown"
         ServiceRecovery.locationCallback(this, location.accuracy <= 100f, now)
-        if (!providerRecoveryGate.shouldProcess(location.provider ?: "unknown")) {
+        registrationState.recordCallback(provider, now)
+        // Provider 恢复后的首次回调仅用于建立基线，不作为证据
+        if (!registrationState.mayEmitEvidence(provider)) {
             lastFixReceivedAt = now
-            logEvent("PROVIDER_BASELINE", "${location.provider ?: "unknown"} 恢复后的首个定位仅用于建立基线")
+            lastGnssCallbackWallClock = now
+            logEvent("PROVIDER_BASELINE", "$provider 恢复后的首个定位仅用于建立基线")
             return
         }
-        if (!fixGate.shouldAccept(location.provider, fixTime, now)) return
+        if (!fixGate.shouldAccept(provider, fixTime, now)) return
         lastFixReceivedAt = now
-        processingGate.offer(location.provider ?: "unknown", fixTime, Location(location))
+        lastGnssCallbackWallClock = now
+        processingGate.offer(provider, fixTime, Location(location))
         processingSignal.trySend(Unit)
     }
 
@@ -190,7 +251,7 @@ class ForegroundLocationService : Service(), LocationListener {
         val previous = app.database.workStateDao().getState() ?: com.example.worktimetracker.data.entity.WorkStateEntity()
         val persistedFixTime = if (location.provider == LocationManager.GPS_PROVIDER) previous.lastGpsFixTime else previous.lastNetworkFixTime
         if (persistedFixTime != null && fixTime <= persistedFixTime) return@withTransaction
-        val type = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
+        val classified = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
         val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
             locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
         } else null
@@ -198,7 +259,7 @@ class ForegroundLocationService : Service(), LocationListener {
             locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng)
         } else null
         // REST + HOME 永远不设置 movingAway：到家类型本身不是离开公司的通用移动证据
-        val movingAway = type != com.example.worktimetracker.domain.model.LocationType.HOME &&
+        val movingAway = classified != LocationType.HOME &&
             ((location.hasSpeed() && location.speed >= 1.5f) ||
                 (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
                     companyDistance >= previous.lastCompanyDistanceMeters + 50.0))
@@ -208,12 +269,33 @@ class ForegroundLocationService : Service(), LocationListener {
                 latitude = location.latitude,
                 longitude = location.longitude,
                 accuracyMeters = location.accuracy,
-                locationType = type.name,
+                locationType = classified.name,
                 provider = location.provider
             )
         )
         val calibration = LocationCalibrationStore(this)
-        val stateDecision = if (calibration.companyCalibratedAt() > 0L) {
+        val calibrated = calibration.companyCalibratedAt() > 0L
+        val coordinator = evidenceCoordinator
+        val fused: FusedEvidence? = if (coordinator != null) {
+            // GNSS 观察交给协调器学习与融合；异常上抛由 safeProcessor 记录
+            coordinator.onGnss(buildGnssInput(calibration, calibrated, classified, fixTime,
+                location.accuracy, companyDistance, homeDistance, settings))
+        } else null
+        if (fused != null && fused.place == ResolvedPlace.UNKNOWN) {
+            // 融合结果不确定：低精度定位只保留日志与去重字段，不得改变工时状态
+            lastResolvedPlace = ResolvedPlace.UNKNOWN
+            app.database.workStateDao().save(previous.copy(
+                lastLatitude = location.latitude,
+                lastLongitude = location.longitude,
+                lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
+                lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime,
+                updatedAt = now
+            ))
+            return@withTransaction
+        }
+        val type = if (fused != null) locationTypeOf(fused.place) else classified
+        if (fused != null) lastResolvedPlace = fused.place
+        val stateDecision = if (calibrated) {
             anchorEngine.next(previous, TrajectoryAnchorEngine.Fix(
                 time = fixTime, type = type, accuracyMeters = location.accuracy,
                 provider = location.provider ?: "unknown", companyDistanceMeters = companyDistance,
@@ -221,7 +303,7 @@ class ForegroundLocationService : Service(), LocationListener {
                 homeAnchorDistanceMeters = homeDistance, speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
                 movingAway = movingAway
             ), TrajectoryAnchorEngine.Config(settings.companyRadiusMeters, settings.homeRadiusMeters,
-                calibration.companyStableRadius(), 100, settings.leaveCompanyConfirmMinutes)).nextState
+                calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes)).nextState
         } else processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway)
         val next = stateDecision.copy(
             lastLatitude = location.latitude,
@@ -229,9 +311,24 @@ class ForegroundLocationService : Service(), LocationListener {
             lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
             lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
         )
-        updateSamplingPolicy(location, type.name, next.currentState, settings)
+        persistStateTransition(app, previous, next, fixTime, now, settings, type, location)
+        }
+    }
+
+    /** 状态机决策后的共享收尾：采样、外出标记、草稿与完结记录、状态保存与日志。 */
+    private suspend fun persistStateTransition(
+        app: WorkTimeApplication,
+        previous: com.example.worktimetracker.data.entity.WorkStateEntity,
+        next: com.example.worktimetracker.data.entity.WorkStateEntity,
+        fixTime: Long,
+        now: Long,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
+        type: LocationType,
+        location: Location?
+    ) {
+        if (location != null) updateSamplingPolicy(location, type.name, next.currentState, settings)
         maybeCreateOutsideRecord(app, previous, next, now, settings)
-        if (type == com.example.worktimetracker.domain.model.LocationType.COMPANY && previous.currentState == "REST") {
+        if (type == LocationType.COMPANY && previous.currentState == "REST") {
             applyCompanyPresenceFallback(app, fixTime, now, settings)
         }
         if (previous.currentState != "WORKING" && next.currentState == "WORKING" && next.sessionStart != null) {
@@ -245,7 +342,57 @@ class ForegroundLocationService : Service(), LocationListener {
         if (previous.currentState != next.currentState) {
             app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
         }
+    }
+
+    private fun buildGnssInput(
+        calibration: LocationCalibrationStore,
+        calibrated: Boolean,
+        classified: LocationType,
+        fixTime: Long,
+        accuracyMeters: Float,
+        companyDistance: Double?,
+        homeDistance: Double?,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ): GnssInput {
+        if (classified != lastClassifiedPlace) {
+            lastClassifiedPlace = classified
+            classifiedPlaceSince = fixTime
         }
+        val companyStableRadius = if (calibrated) calibration.companyStableRadius() else settings.companyRadiusMeters
+        val inCore = (classified == LocationType.COMPANY && companyDistance != null && companyDistance <= companyStableRadius) ||
+            (classified == LocationType.HOME && homeDistance != null && homeDistance <= HOME_STABLE_RADIUS_METERS)
+        return GnssInput(
+            eventTime = fixTime,
+            place = resolvedPlaceOf(classified),
+            accuracyMeters = accuracyMeters,
+            inCore = inCore,
+            stableSince = classifiedPlaceSince,
+            inferred = false,
+            manualReplay = false,
+            anomalousShift = isAnomalousShiftTime(fixTime, settings)
+        )
+    }
+
+    private fun resolvedPlaceOf(type: LocationType): ResolvedPlace = when (type) {
+        LocationType.HOME -> ResolvedPlace.HOME
+        LocationType.COMPANY -> ResolvedPlace.COMPANY
+        LocationType.OTHER -> ResolvedPlace.OTHER
+        LocationType.UNKNOWN -> ResolvedPlace.UNKNOWN
+    }
+
+    private fun locationTypeOf(place: ResolvedPlace): LocationType = when (place) {
+        ResolvedPlace.HOME -> LocationType.HOME
+        ResolvedPlace.COMPANY -> LocationType.COMPANY
+        ResolvedPlace.OTHER, ResolvedPlace.MOVING -> LocationType.OTHER
+        ResolvedPlace.UNKNOWN -> LocationType.UNKNOWN
+    }
+
+    private fun isAnomalousShiftTime(time: Long, settings: com.example.worktimetracker.data.entity.UserSettingsEntity): Boolean {
+        val minuteOfDay = Instant.ofEpochMilli(time).atZone(ZoneId.systemDefault()).let { it.hour * 60 + it.minute }
+        val start = settings.workStartMinutes - SHIFT_WINDOW_MARGIN_MINUTES
+        val end = settings.workEndMinutes + SHIFT_WINDOW_MARGIN_MINUTES
+        return if (start <= end) minuteOfDay < start || minuteOfDay > end
+        else minuteOfDay < start && minuteOfDay > end
     }
 
     private fun scheduleDepartureConfirmation(
@@ -338,6 +485,7 @@ class ForegroundLocationService : Service(), LocationListener {
     }
 
     override fun onProviderEnabled(provider: String) {
+        registrationState.providerRecovered(provider)
         providerRecoveryGate.providerEnabled(provider)
         ServiceRecovery.providerAvailable(this, true)
         val notifiedGlobalPause = providerAlerts.wasGlobalNotified()
@@ -384,8 +532,114 @@ class ForegroundLocationService : Service(), LocationListener {
         } else {
             ServiceRecovery.providerAvailable(this, true)
         }
+        // 同配置已注册时不重复注册，避免定位风暴与多 Provider 累积监听
+        if (!registrationState.begin(SOURCE_LOCATION, currentSamplingIntervalMillis)) return
+        // 重新配置前统一移除旧监听，每类来源至多一个活动监听
+        manager.removeUpdates(this)
         providers.forEach { provider ->
             manager.requestLocationUpdates(provider, currentSamplingIntervalMillis, 50f, this)
+        }
+    }
+
+    private fun setupEvidenceComponents() {
+        if (evidenceCoordinator != null) return
+        val app = application as WorkTimeApplication
+        val saltStore = EnvironmentSaltStore(this)
+        val saltProvider = { saltStore.getOrCreate() }
+        val wifi = WifiEvidenceCollector(this, saltProvider) { ambientScanMayStartWifiScan }
+        val bluetooth = BluetoothEvidenceCollector(this, saltProvider, scope)
+        val cell = CellEvidenceCollector(this, saltProvider)
+        evidenceCoordinator = EvidenceCoordinator(
+            store = app.database.environmentEvidenceDao(),
+            wifiCollector = wifi,
+            bluetoothCollector = bluetooth,
+            cellCollector = cell,
+            learningPolicy = FingerprintLearningPolicy(),
+            fusionEngine = EvidenceFusionEngine(),
+            clock = Clock.systemDefaultZone()
+        )
+        wifiCollector = wifi
+        bluetoothCollector = bluetooth
+        cellCollector = cell
+        motionController = MotionEvidenceController(this) { onSignificantMotionDetected(it) }
+    }
+
+    /** 显著运动：记录运动证据并按省电策略请求一次短扫描。 */
+    private fun onSignificantMotionDetected(eventTime: Long) {
+        val now = System.currentTimeMillis()
+        pendingMotionAt = now
+        requestAmbientScan(significantMotion = true, now = now)
+    }
+
+    private fun requestAmbientScan(significantMotion: Boolean, now: Long = System.currentTimeMillis()) {
+        val decision = ambientScanPolicy.evaluate(
+            ScanPolicyInput(
+                now = now,
+                lastScanAt = lastAmbientScanAt,
+                significantMotion = significantMotion,
+                gnssStale = lastGnssCallbackWallClock == 0L ||
+                    now - lastGnssCallbackWallClock >= GNSS_STALE_SCAN_MILLIS,
+                nearShiftWindow = nearShiftWindow(now),
+                stableKnownPlace = lastResolvedPlace == ResolvedPlace.HOME ||
+                    lastResolvedPlace == ResolvedPlace.COMPANY
+            )
+        )
+        if (decision == ScanDecision.NONE) return
+        // BURST 才允许主动 Wi-Fi 扫描；SNAPSHOT 只读取系统已有快照
+        ambientScanMayStartWifiScan = decision == ScanDecision.BURST
+        ambientScanRequested = true
+        processingSignal.trySend(Unit)
+    }
+
+    private fun nearShiftWindow(now: Long): Boolean {
+        val settings = cachedSettings ?: return false
+        val minuteOfDay = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).let { it.hour * 60 + it.minute }
+        val start = settings.workStartMinutes - SHIFT_WINDOW_MARGIN_MINUTES
+        val end = settings.workEndMinutes + SHIFT_WINDOW_MARGIN_MINUTES
+        return if (start <= end) minuteOfDay in start..end
+        else minuteOfDay >= start || minuteOfDay <= end
+    }
+
+    /** 环境扫描在串行消费者协程中执行，结果通过同一 Channel 串行处理，不并发写 Room。 */
+    private suspend fun runAmbientScan() {
+        val coordinator = evidenceCoordinator ?: return
+        val now = System.currentTimeMillis()
+        lastAmbientScanAt = now
+        val fused = runCatching { coordinator.collectAmbient(now) }.getOrNull()
+        ambientScanMayStartWifiScan = false
+        fused ?: return
+        lastResolvedPlace = fused.place
+        applyFusedEvidence(fused, now)
+    }
+
+    /** 环境融合确认的地点进入状态机：只在锚定距离上标记核心区，坐标距离未知。 */
+    private suspend fun applyFusedEvidence(fused: FusedEvidence, now: Long) {
+        if (fused.place == ResolvedPlace.UNKNOWN) return
+        val app = application as WorkTimeApplication
+        val settings = cachedSettings ?: app.database.userSettingsDao().getSettings()
+            ?.also { cachedSettings = it } ?: return
+        app.database.withTransaction {
+            val previous = app.database.workStateDao().getState()
+                ?: return@withTransaction
+            val calibration = LocationCalibrationStore(this@ForegroundLocationService)
+            if (calibration.companyCalibratedAt() <= 0L) return@withTransaction
+            val type = locationTypeOf(fused.place)
+            val fix = TrajectoryAnchorEngine.Fix(
+                time = now,
+                type = type,
+                accuracyMeters = AMBIENT_NOMINAL_ACCURACY_METERS,
+                provider = "ambient:" + fused.sources.joinToString("+") { it.name },
+                companyDistanceMeters = null,
+                companyAnchorDistanceMeters = if (fused.place == ResolvedPlace.COMPANY) AMBIENT_CORE_DISTANCE_METERS else null,
+                homeDistanceMeters = null,
+                homeAnchorDistanceMeters = if (fused.place == ResolvedPlace.HOME) AMBIENT_CORE_DISTANCE_METERS else null,
+                speedMetersPerSecond = 0f,
+                movingAway = false
+            )
+            val decision = anchorEngine.next(previous, fix, TrajectoryAnchorEngine.Config(
+                settings.companyRadiusMeters, settings.homeRadiusMeters,
+                calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes))
+            persistStateTransition(app, previous, decision.nextState, now, now, settings, type, null)
         }
     }
 
@@ -605,6 +859,12 @@ class ForegroundLocationService : Service(), LocationListener {
         private const val WATCHDOG_INTERVAL_MILLIS = 15 * 60_000L
         private const val LOCATION_STALE_MILLIS = 15 * 60_000L
         private const val LAST_KNOWN_MAX_AGE_MILLIS = 10 * 60_000L
+        private const val SOURCE_LOCATION = "location"
+        private const val GNSS_STALE_SCAN_MILLIS = 20 * 60_000L
+        private const val HOME_STABLE_RADIUS_METERS = 100
+        private const val SHIFT_WINDOW_MARGIN_MINUTES = 180
+        private const val AMBIENT_NOMINAL_ACCURACY_METERS = 50f
+        private const val AMBIENT_CORE_DISTANCE_METERS = 30.0
     }
 }
 
