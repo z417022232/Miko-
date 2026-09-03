@@ -4,7 +4,13 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
 import com.example.worktimetracker.domain.model.LocationType
 import java.util.UUID
 
-class TrajectoryAnchorEngine {
+/**
+ * 工时事件状态机：唯一负责事件顺序（在家 → 离家 → 到公司 → 工作中 → 离公司 → 到家）
+ * 与候选确认的组件。多源证据融合结果转换为 Fix 后进入本引擎。
+ */
+class TrajectoryAnchorEngine(
+    private val continuity: EvidenceContinuityPolicy = EvidenceContinuityPolicy()
+) {
     data class Config(
         val companyRadiusMeters: Int,
         val homeRadiusMeters: Int,
@@ -41,6 +47,7 @@ class TrajectoryAnchorEngine {
         }
         val companyStable = fix.companyAnchorDistanceMeters?.let { it <= config.companyStableRadiusMeters } == true
         val homeStable = fix.homeAnchorDistanceMeters?.let { it <= config.homeStableRadiusMeters } == true
+        val continuous = continuity.isContinuous(previous.lastLocationTime, fix.time)
         val events = mutableListOf<Event>()
         val next = when (previous.currentState) {
             "REST" -> when {
@@ -54,8 +61,10 @@ class TrajectoryAnchorEngine {
                 else -> previous
             }
             "LEAVING_HOME", "NEAR_COMPANY" -> if (companyStable) {
-                val candidate = previous.candidateCompanyArrivalTime ?: fix.time
-                val count = previous.stableCompanyCount + 1
+                // 连续性中断（超过 20 分钟回调空窗）时，旧候选到达失效，从当前修复重新开始
+                val priorCount = if (continuous) previous.stableCompanyCount else 0
+                val candidate = if (continuous) previous.candidateCompanyArrivalTime ?: fix.time else fix.time
+                val count = priorCount + 1
                 if (count >= 2) {
                     events += Event.CompanyArrival(candidate, fix.time)
                     previous.copy(currentState = "WORKING", sessionStart = candidate,
@@ -68,8 +77,18 @@ class TrajectoryAnchorEngine {
                     candidateCompanyDepartureTime = previous.candidateCompanyDepartureTime ?: fix.time,
                     movingAwayCount = 1, stableCompanyCount = 0)
             } else previous.copy(stableCompanyCount = if (companyStable) previous.stableCompanyCount + 1 else 0)
-            "TEMP_LEAVE" -> updateTemporaryLeave(previous, fix, config, companyStable, homeStable, events)
-            "FINISHED" -> if (homeStable) previous.copy(currentState = "REST", sessionStart = null) else previous
+            "TEMP_LEAVE" -> updateTemporaryLeave(
+                if (continuous) previous else previous.copy(movingAwayCount = 0, stableHomeCount = 0),
+                fix, config, companyStable, homeStable, events
+            )
+            "FINISHED" -> if (homeStable) {
+                if (previous.homeArrivalTime == null) {
+                    // 晚到家：只补齐同一 sessionId 的到家证据，不创建新会话
+                    events += Event.HomeArrival(fix.time, fix.time)
+                    previous.copy(currentState = "REST", sessionStart = null,
+                        homeArrivalTime = fix.time, homeArrivalConfirmedAt = fix.time)
+                } else previous.copy(currentState = "REST", sessionStart = null)
+            } else previous
             else -> previous
         }
         return Decision(next.copy(lastLocationTime = fix.time, updatedAt = fix.time), events)
@@ -92,7 +111,8 @@ class TrajectoryAnchorEngine {
         }
         val candidate = previous.candidateCompanyDepartureTime ?: fix.time
         val firstHome = if (homeStable) previous.candidateHomeArrivalTime ?: fix.time else previous.candidateHomeArrivalTime
-        val movingCount = previous.movingAwayCount + if (fix.movingAway || fix.type == LocationType.HOME) 1 else 0
+        // type == HOME 不再作为离开公司的通用移动证据；只有显式移动证据才计数
+        val movingCount = previous.movingAwayCount + if (fix.movingAway) 1 else 0
         val homeCount = if (homeStable) previous.stableHomeCount + 1 else 0
         val elapsed = fix.time - candidate
         val farEnough = fix.companyDistanceMeters?.let { it >= config.companyRadiusMeters + 100.0 } == true
@@ -101,11 +121,13 @@ class TrajectoryAnchorEngine {
             candidateHomeArrivalTime = firstHome, movingAwayCount = movingCount,
             stableHomeCount = homeCount, stableCompanyCount = 0)
         events += Event.CompanyDeparture(candidate, fix.time)
-        if (firstHome != null) events += Event.HomeArrival(firstHome, fix.time)
+        // 到家时间必须不早于离岗时间，否则按顺序规则拒绝该到家事件
+        val validHome = firstHome?.takeIf { it >= candidate }
+        if (validHome != null) events += Event.HomeArrival(validHome, fix.time)
         return previous.copy(currentState = "FINISHED", candidateCompanyDepartureTime = candidate,
             confirmedDepartureTime = candidate, companyDepartureConfirmedAt = fix.time,
-            candidateHomeArrivalTime = firstHome, homeArrivalTime = firstHome,
-            homeArrivalConfirmedAt = if (firstHome != null) fix.time else null,
+            candidateHomeArrivalTime = validHome, homeArrivalTime = validHome,
+            homeArrivalConfirmedAt = if (validHome != null) fix.time else null,
             movingAwayCount = movingCount, stableHomeCount = homeCount, stableCompanyCount = 0)
     }
 

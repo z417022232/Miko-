@@ -197,10 +197,11 @@ class ForegroundLocationService : Service(), LocationListener {
         val homeDistance = if (settings.homeLat != null && settings.homeLng != null) {
             locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng)
         } else null
-        val movingAway = type == com.example.worktimetracker.domain.model.LocationType.HOME ||
-            (location.hasSpeed() && location.speed >= 1.5f) ||
-            (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
-                companyDistance >= previous.lastCompanyDistanceMeters + 50.0)
+        // REST + HOME 永远不设置 movingAway：到家类型本身不是离开公司的通用移动证据
+        val movingAway = type != com.example.worktimetracker.domain.model.LocationType.HOME &&
+            ((location.hasSpeed() && location.speed >= 1.5f) ||
+                (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
+                    companyDistance >= previous.lastCompanyDistanceMeters + 50.0))
         app.database.locationLogDao().insert(
             LocationLogEntity(
                 time = fixTime,
