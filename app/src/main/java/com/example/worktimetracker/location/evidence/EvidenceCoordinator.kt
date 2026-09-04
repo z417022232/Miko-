@@ -290,8 +290,10 @@ class EvidenceCoordinator(
     private suspend fun runCleanup(now: Long) {
         lastCleanupDay = dayOf(now)
         store.deleteObservationsBefore(now - OBSERVATION_RETENTION_MILLIS)
-        for (source in listOf(EvidenceSource.GNSS, EvidenceSource.CELL, EvidenceSource.WIFI,
-                EvidenceSource.BLUETOOTH, EvidenceSource.MOTION)) {
+        // 每来源限量：Network Location 与 GNSS 同为绝对定位来源，一并限量；
+        // Motion 已不产生新观察，但旧版本遗留行在 30 天内仍需按来源限量清理
+        for (source in listOf(EvidenceSource.GNSS, EvidenceSource.NETWORK_LOCATION, EvidenceSource.CELL,
+                EvidenceSource.WIFI, EvidenceSource.BLUETOOTH, EvidenceSource.MOTION)) {
             store.trimObservations(source.name, MAX_OBSERVATIONS_PER_SOURCE)
         }
         for (fingerprint in store.allFingerprints()) {

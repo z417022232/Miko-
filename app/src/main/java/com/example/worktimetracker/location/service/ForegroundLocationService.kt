@@ -85,8 +85,17 @@ class ForegroundLocationService : Service(), LocationListener {
     @Volatile private var ambientScanRequested = false
     @Volatile private var ambientScanMayStartWifiScan = false
     @Volatile private var motionBurstUntil: Long = 0L
+
+    /** Burst 起始时间：硬顶上限从这里起算，顺延不能突破（方案二修正） */
+    private var burstStartedAt: Long = 0L
+
+    /** 硬顶阶段标记：0~10 分钟 1 分钟档，之后仍在移动降为 5 分钟档 */
+    private var burstMediumPhase = false
     private var burstConfirmPlace: LocationType? = null
     private var burstConfirmCount = 0
+
+    /** 最近一次定位：Burst 结束后供常规采样策略重算距离/速度 */
+    @Volatile private var lastLocation: Location? = null
     private val endMotionBurstRunnable = Runnable { endMotionBurst("窗口结束") }
     @Volatile private var lastGnssCallbackWallClock = 0L
     @Volatile private var lastResolvedPlace = ResolvedPlace.UNKNOWN
@@ -262,6 +271,7 @@ class ForegroundLocationService : Service(), LocationListener {
         val app = application as WorkTimeApplication
         val now = System.currentTimeMillis()
         val fixTime = location.time
+        lastLocation = location
         val settings = cachedSettings ?: app.database.userSettingsDao().getSettings()
             ?.also { cachedSettings = it } ?: com.example.worktimetracker.data.entity.UserSettingsEntity()
         app.database.withTransaction {
@@ -319,11 +329,13 @@ class ForegroundLocationService : Service(), LocationListener {
             if (location.hasSpeed() && location.speed >= 1.5f) {
                 extendMotionBurst(now)
             } else if (fused.decision == FusedDecision.CONFIRMED && location.accuracy <= 100f) {
-                if (burstConfirmPlace == classified) burstConfirmCount++ else {
-                    burstConfirmPlace = classified
+                // 语义是「连续两个可靠融合结果」：以融合地点为准，而不是单次经纬度分类
+                val confirmedPlace = locationTypeOf(fused.place)
+                if (burstConfirmPlace == confirmedPlace) burstConfirmCount++ else {
+                    burstConfirmPlace = confirmedPlace
                     burstConfirmCount = 1
                 }
-                if (burstConfirmCount >= 2) endMotionBurst("连续确认 $classified")
+                if (burstConfirmCount >= 2) endMotionBurst("连续确认 $confirmedPlace")
             }
         }
         if (fused != null && fused.decision != FusedDecision.CONFIRMED) {
@@ -634,13 +646,16 @@ class ForegroundLocationService : Service(), LocationListener {
     }
 
     /**
-     * Movement Burst：立即把定位切到 1 分钟档并保持最多 10 分钟。
+     * Movement Burst：立即把定位切到 1 分钟档，硬顶 10 分钟（从首次触发起算）。
      * - 确认还在原地点（连续 2 个可靠 CONFIRMED 结果）→ 提前回到常规档；
-     * - 确认正在移动（速度 ≥1.5m/s）→ 保持 1 分钟档并顺延窗口；
-     * - 窗口结束 → 按 stableKnownPlace 回到 30/10 分钟档。
+     * - 确认正在移动（速度 ≥1.5m/s）→ 顺延窗口，但不能突破 10 分钟硬顶；
+     *   硬顶后仍在移动 → 降为 5 分钟档继续跟踪（长途不再保持 1 分钟档）；
+     * - Burst 结束 → 重新执行 LocationSamplingPolicy，由唯一采样策略决定 1/5/10/30 分钟档。
      */
     private fun startMotionBurst(now: Long) {
         watchdogHandler.removeCallbacks(endMotionBurstRunnable)
+        burstStartedAt = now
+        burstMediumPhase = false
         motionBurstUntil = now + MOTION_BURST_MILLIS
         burstConfirmPlace = null
         burstConfirmCount = 0
@@ -651,32 +666,89 @@ class ForegroundLocationService : Service(), LocationListener {
             registrationState.invalidate(SOURCE_LOCATION)
             startLocationUpdates()
         }
-        logEvent("MOTION_BURST", "检测到移动：定位切至1分钟档，环境扫描BURST（最长10分钟）")
+        logEvent("MOTION_BURST", "检测到移动：定位切至1分钟档，环境扫描BURST（硬顶10分钟）")
     }
 
     private fun extendMotionBurst(now: Long) {
-        motionBurstUntil = now + MOTION_BURST_MILLIS
+        val hardEnd = burstStartedAt + MOTION_BURST_MILLIS
+        if (now >= hardEnd) {
+            // 10 分钟硬顶已到：仍在移动不再顺延 1 分钟档，降为 5 分钟档继续跟踪
+            if (!burstMediumPhase) {
+                burstMediumPhase = true
+                if (currentSamplingIntervalMillis != LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS) {
+                    currentSamplingIntervalMillis = LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS
+                    pendingSamplingIntervalMillis = currentSamplingIntervalMillis
+                    registrationState.invalidate(SOURCE_LOCATION)
+                    startLocationUpdates()
+                }
+                logEvent("MOTION_BURST", "Burst达10分钟硬顶：仍在移动，降为5分钟档继续跟踪")
+            }
+            motionBurstUntil = now + MOTION_BURST_MILLIS
+            burstConfirmPlace = null
+            burstConfirmCount = 0
+            return
+        }
+        // 硬顶内顺延：上限锁死在硬顶时间点，而不是 now+10 分钟
+        motionBurstUntil = hardEnd
         burstConfirmPlace = null
         burstConfirmCount = 0
         watchdogHandler.removeCallbacks(endMotionBurstRunnable)
-        watchdogHandler.postDelayed(endMotionBurstRunnable, MOTION_BURST_MILLIS)
+        watchdogHandler.postDelayed(endMotionBurstRunnable, hardEnd - now)
     }
 
     private fun endMotionBurst(reason: String) {
         if (motionBurstUntil == 0L) return
         motionBurstUntil = 0L
+        burstStartedAt = 0L
+        burstMediumPhase = false
         burstConfirmPlace = null
         burstConfirmCount = 0
         watchdogHandler.removeCallbacks(endMotionBurstRunnable)
-        val stable = lastResolvedPlace == ResolvedPlace.HOME || lastResolvedPlace == ResolvedPlace.COMPANY
-        val target = if (stable) LocationSamplingPolicy.STABLE_INTERVAL_MILLIS else LocationSamplingPolicy.DEFAULT_INTERVAL_MILLIS
-        if (target != currentSamplingIntervalMillis) {
-            currentSamplingIntervalMillis = target
-            pendingSamplingIntervalMillis = target
-            registrationState.invalidate(SOURCE_LOCATION)
-            startLocationUpdates()
+        // 不自建第二套采样规则：Burst 结束后按常规 LocationSamplingPolicy 重算，
+        // 让下班窗口回 5 分钟、稳定家/公司回 30 分钟、其他回 10 分钟
+        scope.launch {
+            runCatching { recomputeSamplingPolicyAfterBurst(reason) }
+                .onFailure { logEvent("MOTION_BURST", "恢复常规采样失败：${it.message}") }
         }
-        logEvent("MOTION_BURST", "恢复常规采样${target / 60_000}分钟档（$reason）")
+    }
+
+    /** Burst 结束后用最近一次定位与当前状态重算常规采样间隔。 */
+    private suspend fun recomputeSamplingPolicyAfterBurst(reason: String) {
+        val app = application as WorkTimeApplication
+        val settings = cachedSettings ?: app.database.userSettingsDao().getSettings()
+            ?.also { cachedSettings = it } ?: return
+        val state = app.database.workStateDao().getState() ?: return
+        val location = lastLocation
+        val locationType = locationTypeOf(lastResolvedPlace).name
+        val fences = listOfNotNull(
+            if (settings.companyLat != null && settings.companyLng != null && location != null) {
+                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng) to
+                    settings.companyRadiusMeters
+            } else null,
+            if (settings.homeLat != null && settings.homeLng != null && location != null) {
+                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng) to
+                    settings.homeRadiusMeters
+            } else null
+        )
+        val nearestFence = fences.minByOrNull { kotlin.math.abs(it.first - it.second) }
+        val interval = samplingPolicy.intervalMillis(
+            currentState = state.currentState,
+            locationType = locationType,
+            distanceToFenceMeters = nearestFence?.first,
+            fenceRadiusMeters = nearestFence?.second ?: 0,
+            speedMetersPerSecond = if (location != null && location.hasSpeed()) location.speed else 0f,
+            nowMillis = System.currentTimeMillis(),
+            workStartMinutes = settings.workStartMinutes,
+            workEndMinutes = settings.workEndMinutes
+        )
+        val decision = LocationRegistrationPolicy.intervalChange(currentSamplingIntervalMillis, interval)
+        pendingSamplingIntervalMillis = interval
+        watchdogHandler.removeCallbacks(applySamplingInterval)
+        if (decision.reconfigure) {
+            if (decision.delayMillis == 0L) watchdogHandler.post(applySamplingInterval)
+            else watchdogHandler.postDelayed(applySamplingInterval, decision.delayMillis)
+        }
+        logEvent("MOTION_BURST", "恢复常规采样${interval / 60_000}分钟档（$reason）")
     }
 
     private fun requestAmbientScan(significantMotion: Boolean, now: Long = System.currentTimeMillis()) {
@@ -722,6 +794,10 @@ class ForegroundLocationService : Service(), LocationListener {
 
     /** 环境融合确认的地点进入状态机：只在锚定距离上标记核心区，坐标距离未知。 */
     private suspend fun applyFusedEvidence(fused: FusedEvidence, now: Long) {
+        // 与 GPS 路径同一原则：只有 CONFIRMED 才能进入状态机（方案三）。
+        // MAINTAINED/UNKNOWN 由协调器更新 lastResolvedPlace 与诊断，这里直接放弃，
+        // 防止 TEMP_LEAVE 中弱公司证据累计两次就把状态推回 WORKING。
+        if (fused.decision != FusedDecision.CONFIRMED) return
         if (fused.place == ResolvedPlace.UNKNOWN) return
         val app = application as WorkTimeApplication
         val settings = cachedSettings ?: app.database.userSettingsDao().getSettings()

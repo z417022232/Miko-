@@ -94,7 +94,7 @@ class EvidenceRetentionPolicyTest {
         assertTrue(dao.observations.isEmpty())
         val trimmedSources = dao.trimmed.map { it.first }.toSet()
         assertEquals(
-            setOf("GNSS", "CELL", "WIFI", "BLUETOOTH", "MOTION"),
+            setOf("GNSS", "NETWORK_LOCATION", "CELL", "WIFI", "BLUETOOTH", "MOTION"),
             trimmedSources
         )
         assertTrue(dao.trimmed.all { it.second == EvidenceCoordinator.MAX_OBSERVATIONS_PER_SOURCE })
