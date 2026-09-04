@@ -162,9 +162,26 @@ private fun OnboardingScreen(vm: WorkTimeViewModel) {
     var startMinutes by remember(settings.workStartMinutes) { mutableIntStateOf(settings.workStartMinutes) }
     var endMinutes by remember(settings.workEndMinutes) { mutableIntStateOf(settings.workEndMinutes) }
     var showTimePicker by remember { mutableStateOf(false) }
-    val permissionLauncher = rememberLauncherForActivityResult(
+    // 第二段：后台定位（Android 11+ 必须在精确定位授予后单独申请）+ 蓝牙/运动识别
+    val stage2Launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        ) {
+            stage2Launcher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+                    Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission.BLUETOOTH_CONNECT,
+                    Manifest.permission.ACTIVITY_RECOGNITION
+                )
+            )
+        }
+    }
 
     Column(
         Modifier

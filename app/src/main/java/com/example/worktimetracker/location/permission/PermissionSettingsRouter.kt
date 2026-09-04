@@ -9,14 +9,20 @@ import android.provider.Settings
 enum class PermissionItem { FINE_LOCATION, BACKGROUND_LOCATION, NEARBY_DEVICES, ACTIVITY_RECOGNITION, NOTIFICATIONS, BATTERY_UNRESTRICTED, VIVO_AUTOSTART }
 
 object PermissionRepairPriority {
-    fun next(status: PermissionStatus): PermissionItem = when {
+    /**
+     * 返回下一个待修复项；全部就绪时返回 null。
+     * vivo 自启动无法用标准 API 检测，用用户确认/开机验证状态代替
+     * （AutostartVerificationStore），已确认后不再重复跳转。
+     */
+    fun next(status: PermissionStatus, autostartVerified: Boolean = false): PermissionItem? = when {
         !status.fineLocation -> PermissionItem.FINE_LOCATION
         !status.backgroundLocation -> PermissionItem.BACKGROUND_LOCATION
         !status.nearbyDevices -> PermissionItem.NEARBY_DEVICES
         !status.activityRecognition -> PermissionItem.ACTIVITY_RECOGNITION
         !status.notifications -> PermissionItem.NOTIFICATIONS
         !status.batteryUnrestricted -> PermissionItem.BATTERY_UNRESTRICTED
-        else -> PermissionItem.VIVO_AUTOSTART
+        !autostartVerified -> PermissionItem.VIVO_AUTOSTART
+        else -> null
     }
 }
 

@@ -692,9 +692,12 @@ class ForegroundLocationService : Service(), LocationListener {
             ShiftProfileLearner.Sample(shift, minute, ((end - start) / 60_000L).toInt(), true)
         }
         val profile = profileLearner.learn(samples, settings.workStartMinutes, settings.workEndMinutes)
+        // 到岗异常/班次判定必须以用户声明的上下班时间为准；
+        // 学习值是历史到达时刻的中位数，用它判定迟到会天然误报约一半的日子。
+        // Profile 仅用于 typicalDuration 推导最长在场时长上限（见 maximumDurationMinutes）。
         val domain = WorkSettings(
-            profile.dayStartMinutes,
-            profile.nightStartMinutes,
+            settings.workStartMinutes,
+            settings.workEndMinutes,
             settings.hasDefaultHours,
             settings.defaultWorkMinutes,
             settings.restDeductionMinutes,

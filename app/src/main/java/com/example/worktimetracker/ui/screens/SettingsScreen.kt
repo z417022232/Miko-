@@ -572,7 +572,14 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             ) { repair(PermissionItem.VIVO_AUTOSTART) }
         }
         Spacer(Modifier.height(14.dp))
-        Button(onClick = { repair(PermissionRepairPriority.next(status)) }, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = {
+            val next = PermissionRepairPriority.next(status, autostartState != AutostartState.UNKNOWN)
+            if (next == null) {
+                serviceMessage = "全部权限已就绪：定位、后台运行与自启动确认均已完成，自动记录环境完整。"
+            } else {
+                repair(next)
+            }
+        }, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Outlined.Security, null, modifier = Modifier.size(18.dp))
             Spacer(Modifier.size(8.dp))
             Text("修复下一项")

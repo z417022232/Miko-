@@ -34,6 +34,9 @@ object ServiceRecovery {
     }
 
     fun schedule(context: Context): Boolean = runCatching {
+        // 精确闹钟看门狗：与 WorkManager 健康巡检同时布防，
+        // 闹钟触发时应用处于临时白名单窗口，可直接拉起前台服务
+        AlarmWatchdog.scheduleNext(context)
         val request = PeriodicWorkRequestBuilder<LocationHealthWorker>(
             ServiceRecoveryPolicy.healthCheckMinutes,
             TimeUnit.MINUTES
@@ -48,6 +51,14 @@ object ServiceRecovery {
 
     fun heartbeat(context: Context, now: Long = System.currentTimeMillis()) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putLong(HEARTBEAT, now).apply()
+        // 心跳喂狗：每次心跳把看门狗闹钟推到 10 分钟后，服务存活时闹钟永不触发
+        runCatching { AlarmWatchdog.scheduleNext(context, now) }
+    }
+
+    /** 最近一次心跳距今的毫秒数；无心跳记录返回 Long.MAX_VALUE。 */
+    fun heartbeatAge(context: Context, now: Long = System.currentTimeMillis()): Long {
+        val last = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(HEARTBEAT, 0L)
+        return if (last <= 0L) Long.MAX_VALUE else now - last
     }
 
     fun locationCallback(context: Context, reliable: Boolean, now: Long = System.currentTimeMillis()) {

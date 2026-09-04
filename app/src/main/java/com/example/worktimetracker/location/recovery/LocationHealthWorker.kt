@@ -52,14 +52,22 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
             }
             HealthAction.REREGISTER_LOCATION,
             HealthAction.REREGISTER_GNSS,
-            HealthAction.REREGISTER_MOTION,
+            HealthAction.REREGISTER_MOTION -> if (ServiceRecovery.shouldNotify(applicationContext, action.name, now)) {
+                // 自愈类信号：室内/静止时 GNSS 静默超过阈值属正常现象，
+                // 服务内看门狗会自动重新注册监听，不打扰用户。
+                app.database.appLogDao().insert(AppLogEntity(
+                    type = "LOCATION_HEALTH",
+                    content = "定位链路健康检查：${action.name}（来源状态=${sourceHealth.keys.sorted().joinToString()}）"
+                ))
+            }
             HealthAction.PROVIDER_UNAVAILABLE -> if (ServiceRecovery.shouldNotify(applicationContext, action.name, now)) {
+                // 系统定位开关被关闭或提供器不可用，需要用户介入，保留通知。
                 app.database.appLogDao().insert(AppLogEntity(
                     type = "LOCATION_HEALTH",
                     content = "定位链路健康检查：${action.name}（来源状态=${sourceHealth.keys.sorted().joinToString()}）"
                 ))
                 sendRecoveryNotification("定位记录可能中断",
-                    "检测到定位链路异常（${actionLabel(action)}），点击查看恢复方法")
+                    "系统定位已关闭或不可用，点击查看恢复方法")
             }
             HealthAction.AUXILIARY_DEGRADED -> if (ServiceRecovery.shouldNotify(applicationContext, action.name, now)) {
                 // 辅助来源失效只降级环境证据，不算定位服务故障

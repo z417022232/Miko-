@@ -41,25 +41,31 @@ class BluetoothEvidenceCollector(
             ?: return CollectorResult.failed(CollectorFailure.DISABLED, now)
 
         discovered.clear()
+        val canReadNames = hasConnectPermission()
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val record = result.scanRecord ?: return
-                val device = result.device
-                val serviceUuids = record.serviceUuids?.mapNotNull { it.uuid.toString() }?.sorted().orEmpty()
-                val manufacturerKeys = record.manufacturerSpecificData?.let { data ->
-                    (0 until data.size()).mapNotNull { index ->
-                        data.valueAt(index)?.let { index.toString() }
-                    }?.sorted()
-                }.orEmpty()
-                val hash = EnvironmentIdentifierHasher.hash(saltProvider(), listOf(
-                    "ble",
-                    device.name.orEmpty(),
-                    device.address,
-                    serviceUuids.joinToString(","),
-                    manufacturerKeys.joinToString(",")
-                ))
-                val previous = discovered[hash]
-                if (previous == null || result.rssi > previous) discovered[hash] = result.rssi
+                // 回调运行在 binder 线程，任何异常都会直接杀死进程，
+                // 必须在这里兜底（历史教训：BLUETOOTH_CONNECT 缺失时
+                // device.name 抛 SecurityException 导致应用整天反复崩溃）。
+                runCatching {
+                    val record = result.scanRecord ?: return
+                    val device = result.device
+                    val serviceUuids = record.serviceUuids?.mapNotNull { it.uuid.toString() }?.sorted().orEmpty()
+                    val manufacturerKeys = record.manufacturerSpecificData?.let { data ->
+                        (0 until data.size()).mapNotNull { index ->
+                            data.valueAt(index)?.let { index.toString() }
+                        }?.sorted()
+                    }.orEmpty()
+                    val hash = EnvironmentIdentifierHasher.hash(saltProvider(), listOf(
+                        "ble",
+                        if (canReadNames) device.name.orEmpty() else "",
+                        device.address,
+                        serviceUuids.joinToString(","),
+                        manufacturerKeys.joinToString(",")
+                    ))
+                    val previous = discovered[hash]
+                    if (previous == null || result.rssi > previous) discovered[hash] = result.rssi
+                }
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -98,6 +104,12 @@ class BluetoothEvidenceCollector(
     private fun hasScanPermission(): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) ==
+            PackageManager.PERMISSION_GRANTED
+
+    /** device.name 需要 BLUETOOTH_CONNECT；缺失时跳过设备名，扫描与哈希照常进行。 */
+    private fun hasConnectPermission(): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
             PackageManager.PERMISSION_GRANTED
 
     companion object {

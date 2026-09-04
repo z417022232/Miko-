@@ -1,7 +1,7 @@
 package com.example.worktimetracker.location.recovery
 
 object ServiceRecoveryPolicy {
-    enum class RecoveryTrigger { USER_VISIBLE, BOOT, GEOFENCE, BACKGROUND_HEALTH_CHECK }
+    enum class RecoveryTrigger { USER_VISIBLE, BOOT, GEOFENCE, ALARM, BACKGROUND_HEALTH_CHECK }
     val actions = setOf(
         "android.intent.action.BOOT_COMPLETED",
         "android.intent.action.USER_UNLOCKED",
@@ -18,6 +18,7 @@ object ServiceRecoveryPolicy {
         RecoveryTrigger.USER_VISIBLE -> hasFineLocation || hasCoarseLocation
         RecoveryTrigger.BOOT -> hasBackgroundLocation && (hasFineLocation || hasCoarseLocation)
         RecoveryTrigger.GEOFENCE -> hasBackgroundLocation && (hasFineLocation || hasCoarseLocation)
+        RecoveryTrigger.ALARM -> hasBackgroundLocation && (hasFineLocation || hasCoarseLocation)
         RecoveryTrigger.BACKGROUND_HEALTH_CHECK -> false
     }
 
