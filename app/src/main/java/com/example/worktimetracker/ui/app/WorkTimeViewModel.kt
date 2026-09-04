@@ -76,6 +76,10 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private val _companyCalibrationProposal = MutableStateFlow<CompanyCalibrationProposal?>(null)
     val companyCalibrationProposal: StateFlow<CompanyCalibrationProposal?> = _companyCalibrationProposal
 
+    /** 融合定位判断实时通道：前台服务每次融合后覆盖，UI 展示"当前判断" */
+    val fusedStatus: StateFlow<com.example.worktimetracker.domain.evidence.FusedStatusSnapshot?> =
+        (application as WorkTimeApplication).fusedStatus
+
     init {
         viewModelScope.launch {
             val saved = db.userSettingsDao().getSettings() ?: UserSettingsEntity().also { db.userSettingsDao().save(it) }

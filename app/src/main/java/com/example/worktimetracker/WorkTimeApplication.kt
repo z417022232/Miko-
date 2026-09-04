@@ -5,12 +5,14 @@ import androidx.room.Room
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.worktimetracker.data.database.AppDatabase
+import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.GeofenceRecovery
 import com.example.worktimetracker.data.HistoricalRecordRepair
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class WorkTimeApplication : Application() {
@@ -22,6 +24,12 @@ class WorkTimeApplication : Application() {
             database.userSettingsDao().getSettings()?.let { GeofenceRecovery.register(this@WorkTimeApplication, it) }
         }
     }
+
+    /**
+     * 融合状态实时通道（方案十 UI）：前台服务每次融合后覆盖最新快照，
+     * ViewModel/UI 订阅展示"当前判断"。进程内单例，服务与界面同进程直接共享。
+     */
+    val fusedStatus = MutableStateFlow<FusedStatusSnapshot?>(null)
 
     val database: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, "work_time_tracker.db")

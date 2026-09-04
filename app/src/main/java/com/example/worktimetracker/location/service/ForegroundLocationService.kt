@@ -54,6 +54,7 @@ import com.example.worktimetracker.domain.evidence.EvidenceFusionEngine
 import com.example.worktimetracker.domain.evidence.FingerprintLearningPolicy
 import com.example.worktimetracker.domain.evidence.FusedDecision
 import com.example.worktimetracker.domain.evidence.FusedEvidence
+import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.domain.evidence.ResolvedPlace
 import com.example.worktimetracker.domain.model.LocationType
 import java.time.Clock
@@ -323,6 +324,7 @@ class ForegroundLocationService : Service(), LocationListener {
                 location.accuracy, companyDistance, homeDistance, settings,
                 location.provider ?: "gps"))
         } else null
+        if (fused != null) publishFusedStatus(fused, now)
         // Movement Burst 管理（方案二）：确认正在移动→顺延窗口保持 1 分钟档；
         // 连续 2 个可靠 CONFIRMED 结果→提前收敛回常规档
         if (motionBurstUntil > 0L && fused != null) {
@@ -789,7 +791,21 @@ class ForegroundLocationService : Service(), LocationListener {
         ambientScanMayStartWifiScan = false
         fused ?: return
         lastResolvedPlace = fused.place
+        publishFusedStatus(fused, now)
         applyFusedEvidence(fused, now)
+    }
+
+    /** 融合状态实时发布（方案十 UI）：GPS 与环境两条路径每次融合后都覆盖最新快照。 */
+    private fun publishFusedStatus(fused: FusedEvidence, now: Long) {
+        (application as WorkTimeApplication).fusedStatus.value = FusedStatusSnapshot(
+            place = fused.place,
+            decision = fused.decision,
+            reason = fused.reason,
+            confidence = fused.confidence,
+            sources = fused.sources,
+            sourceBreakdown = evidenceCoordinator?.lastSourceBreakdown,
+            updatedAt = now
+        )
     }
 
     /** 环境融合确认的地点进入状态机：只在锚定距离上标记核心区，坐标距离未知。 */

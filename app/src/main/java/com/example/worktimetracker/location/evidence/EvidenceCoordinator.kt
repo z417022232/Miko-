@@ -251,6 +251,10 @@ class EvidenceCoordinator(
         )
     }
 
+    /** 最近一次融合的各来源证据明细：供 UI 实时展示（每次融合都刷新，与日志无关） */
+    @Volatile var lastSourceBreakdown: String? = null
+        private set
+
     /** 诊断日志（方案十）：结果或原因变化时输出一次各来源最新证据明细。 */
     private fun logDiagnostics(
         resolved: FusedEvidence,
@@ -258,15 +262,16 @@ class EvidenceCoordinator(
         now: Long
     ) {
         val logger = diagnosticLogger ?: return
-        val key = "${resolved.place.name}/${resolved.decision.name}/${resolved.reason}"
-        if (key == lastLoggedFusionKey) return
-        lastLoggedFusionKey = key
         val breakdown = stored.groupBy { it.source }.mapNotNull { (source, list) ->
             val latest = list.maxByOrNull { it.eventTime } ?: return@mapNotNull null
             val age = ((now - latest.eventTime).coerceAtLeast(0)) / 1000
             "$source=${latest.placeHint} q${"%.2f".format(latest.quality)} ${age}s前" +
                 (latest.provider?.let { "($it ${"%.0f".format(latest.accuracyMeters ?: 0f)}m)" } ?: "")
         }.joinToString(" | ")
+        lastSourceBreakdown = breakdown.ifEmpty { null }
+        val key = "${resolved.place.name}/${resolved.decision.name}/${resolved.reason}"
+        if (key == lastLoggedFusionKey) return
+        lastLoggedFusionKey = key
         val content = "融合结果=${resolved.place.name}(${resolved.decision.name}/${resolved.reason}) " +
             "conf=${"%.2f".format(resolved.confidence)}" + if (breakdown.isEmpty()) "" else " 证据: $breakdown"
         runCatching { logger("FUSION", content) }

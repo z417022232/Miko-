@@ -72,6 +72,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.worktimetracker.data.entity.UserSettingsEntity
+import com.example.worktimetracker.domain.evidence.FusedDecision
+import com.example.worktimetracker.domain.evidence.FusedStatusFormatter
+import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.location.permission.PermissionManager
 import com.example.worktimetracker.location.permission.PermissionItem
 import com.example.worktimetracker.location.permission.PermissionRepairPriority
@@ -270,10 +273,63 @@ private fun DefaultHoursDialog(settings: UserSettingsEntity, vm: WorkTimeViewMod
     }
 }
 
+/** 当前定位判断卡片：实时展示融合决策、置信度、原因与各来源证据明细。 */
+@Composable
+private fun FusedStatusCard(snapshot: FusedStatusSnapshot?) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.fillMaxWidth().padding(15.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.LocationOn, null,
+                    tint = when (snapshot?.decision) {
+                        FusedDecision.CONFIRMED -> AppBlue
+                        FusedDecision.MAINTAINED -> AppBlue.copy(alpha = 0.6f)
+                        FusedDecision.UNKNOWN -> MaterialTheme.colorScheme.error
+                        null -> AppMuted
+                    }
+                )
+                Spacer(Modifier.size(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(FusedStatusFormatter.headline(snapshot), fontWeight = FontWeight.SemiBold)
+                    if (snapshot == null) {
+                        Text(
+                            "服务尚未运行或还没有任何位置证据",
+                            color = AppMuted, style = MaterialTheme.typography.bodySmall
+                        )
+                    } else {
+                        val decision = FusedStatusFormatter.decisionLabel(snapshot.decision)
+                        val confidence = FusedStatusFormatter.confidenceLabel(snapshot)
+                        Text(
+                            if (confidence != null) "$decision · $confidence" else decision,
+                            color = AppMuted, style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+            if (snapshot != null) {
+                Spacer(Modifier.size(8.dp))
+                Text(FusedStatusFormatter.reasonLabel(snapshot.reason),
+                    color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                FusedStatusFormatter.sourcesLabel(snapshot)?.let {
+                    Text("证据来源：$it", color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                }
+                snapshot.sourceBreakdown?.takeIf { it.isNotEmpty() }?.let {
+                    Text(it, color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun LocationSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val settings by vm.settings.collectAsState()
     val lastLocation by vm.lastKnownLocationText.collectAsState()
+    val fusedStatus by vm.fusedStatus.collectAsState()
     val searchMessage by vm.placeSearchMessage.collectAsState()
     val calibrationProposal by vm.companyCalibrationProposal.collectAsState()
     var companyLat by remember(settings.companyLat) { mutableStateOf(settings.companyLat?.toString().orEmpty()) }
@@ -305,6 +361,8 @@ private fun LocationSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
                 IconButton(onClick = { vm.refreshLastKnownLocation() }) { Icon(Icons.Outlined.Refresh, "刷新") }
             }
         }
+        Spacer(Modifier.height(12.dp))
+        FusedStatusCard(fusedStatus)
         Spacer(Modifier.height(14.dp))
         LocationCard(
             title = "公司",
