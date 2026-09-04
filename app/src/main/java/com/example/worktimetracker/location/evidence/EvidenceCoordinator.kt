@@ -10,14 +10,17 @@ import com.example.worktimetracker.domain.evidence.EvidenceSource
 import com.example.worktimetracker.domain.evidence.FingerprintLearningPolicy
 import com.example.worktimetracker.domain.evidence.FingerprintLevel
 import com.example.worktimetracker.domain.evidence.FingerprintState
+import com.example.worktimetracker.domain.evidence.FusedDecision
 import com.example.worktimetracker.domain.evidence.FusedEvidence
 import com.example.worktimetracker.domain.evidence.LearningGate
 import com.example.worktimetracker.domain.evidence.LearningSample
 import com.example.worktimetracker.domain.evidence.ResolvedPlace
+import com.example.worktimetracker.location.service.EvidenceContinuityPolicy
 import java.time.Clock
+import java.time.Instant
 import java.time.LocalDate
 
-/** GNSS 输入：经纬度分类结果、精度、核心区域标记、稳定开始时间与推算/回放/异常标记。 */
+/** GNSS/Network 输入：经纬度分类结果、精度、核心区域标记、稳定开始时间与推算/回放/异常标记。 */
 data class GnssInput(
     val eventTime: Long,
     val place: ResolvedPlace,
@@ -26,12 +29,17 @@ data class GnssInput(
     val stableSince: Long,
     val inferred: Boolean = false,
     val manualReplay: Boolean = false,
-    val anomalousShift: Boolean = false
+    val anomalousShift: Boolean = false,
+    /** 定位提供者：gps → GNSS，network/passive → NETWORK_LOCATION，用于区分两类绝对定位 */
+    val provider: String = "gps"
 )
 
 /**
  * 证据协调器：采集、学习、持久化与融合的单一编排入口。
  * - 手动记录和人工修正优先，学习与推算不得覆盖。
+ * - Motion 不再产生地点证据：它只负责唤醒服务层重新取证（Movement Burst）。
+ * - 连续性维持：20 分钟窗口内上一地点的最新证据未中断时，无/陈旧证据保持上一地点
+ *   （MAINTAINED），避免 COMPANY → UNKNOWN → COMPANY 抖动。
  * - 环境原始标识只在内存短暂存在，数据库只保存加盐哈希。
  * - 观察明细只保留 30 天，每个来源最多 10,000 条；指纹 30 天衰减、90 天停用。
  */
@@ -42,10 +50,14 @@ class EvidenceCoordinator(
     private val cellCollector: AmbientCollector,
     private val learningPolicy: FingerprintLearningPolicy,
     private val fusionEngine: EvidenceFusionEngine,
-    private val clock: Clock
+    private val clock: Clock,
+    /** 诊断日志回调（方案十）：每次融合结果/原因变化时输出证据明细 */
+    private val diagnosticLogger: ((type: String, content: String) -> Unit)? = null
 ) {
     private var lastResolvedPlace: ResolvedPlace = ResolvedPlace.UNKNOWN
     private var lastCleanupDay: String? = null
+    private var lastLoggedFusionKey: String? = null
+    private val continuity = EvidenceContinuityPolicy()
 
     /** 服务启动时调用一次：执行限量清理并初始化健康状态。 */
     suspend fun onServiceStart(now: Long = clock.millis()) {
@@ -59,11 +71,13 @@ class EvidenceCoordinator(
             EvidenceObservation(
                 eventTime = input.eventTime,
                 receivedAt = clock.millis(),
-                source = EvidenceSource.GNSS,
+                source = absoluteSourceOf(input.provider),
                 quality = quality,
                 placeHint = input.place,
                 identifierHash = null,
-                signal = null
+                signal = null,
+                provider = input.provider,
+                accuracyMeters = input.accuracyMeters
             )
         )
         val gate = LearningGate(
@@ -74,25 +88,11 @@ class EvidenceCoordinator(
             manualReplay = input.manualReplay,
             anomalousShift = input.anomalousShift
         )
-        if (learningPolicy.accepts(gate)) {
+        if (input.provider == "gps" && learningPolicy.accepts(gate)) {
+            // 指纹学习只信任真正 GPS：Network Location 精度波动大，不适合做环境指纹
             learnFingerprints(input)
         }
         return fuse(input.eventTime)
-    }
-
-    suspend fun onMotion(at: Long) {
-        maybeCleanup(at)
-        insertOncePerMinute(
-            EvidenceObservation(
-                eventTime = at,
-                receivedAt = clock.millis(),
-                source = EvidenceSource.MOTION,
-                quality = MOTION_QUALITY,
-                placeHint = if (lastResolvedPlace == ResolvedPlace.UNKNOWN) ResolvedPlace.HOME else lastResolvedPlace,
-                identifierHash = null,
-                signal = null
-            )
-        )
     }
 
     /** 采集一次环境快照并融合；采集失败只更新健康状态，不改变已知地点。 */
@@ -125,6 +125,9 @@ class EvidenceCoordinator(
         "bluetooth" to bluetoothCollector.snapshot(now),
         "cell" to cellCollector.snapshot(now)
     )
+
+    private fun absoluteSourceOf(provider: String): EvidenceSource =
+        if (provider.equals("gps", ignoreCase = true)) EvidenceSource.GNSS else EvidenceSource.NETWORK_LOCATION
 
     private suspend fun learnFingerprints(input: GnssInput) {
         val results = collectAll(input.eventTime)
@@ -197,7 +200,8 @@ class EvidenceCoordinator(
                     quality = bestQuality,
                     placeHint = bestPlace!!,
                     identifierHash = null,
-                    signal = null
+                    signal = null,
+                    provider = source.name.lowercase()
                 )
             }
         }
@@ -205,19 +209,67 @@ class EvidenceCoordinator(
     }
 
     private suspend fun fuse(now: Long): FusedEvidence {
-        val since = now - AMBIENT_WINDOW_MILLIS
+        // 查询窗口放宽到 20 分钟连续性窗口；各来源的真实新鲜度由融合引擎按 TTL 过滤
+        val since = now - CONTINUITY_WINDOW_MILLIS
         val stored = store.recentObservations(since)
         val observations = stored.map { it.toDomain() }
         val fused = fusionEngine.resolve(observations, now, lastResolvedPlace)
-        if (fused.place != ResolvedPlace.UNKNOWN) {
-            lastResolvedPlace = fused.place
+        val resolved = maintainContinuity(fused, stored, now)
+        if (resolved.place != ResolvedPlace.UNKNOWN) {
+            lastResolvedPlace = resolved.place
             for (entity in stored) {
-                if (entity.source in fused.sources.map { it.name } && entity.placeHint == fused.place.name) {
+                if (entity.source in resolved.sources.map { it.name } && entity.placeHint == resolved.place.name) {
                     store.markUsedForEvent(entity.id, true)
                 }
             }
         }
-        return fused
+        logDiagnostics(resolved, stored, now)
+        return resolved
+    }
+
+    /**
+     * 连续性维持（方案八）：引擎因无证据/证据陈旧返回 UNKNOWN 时，若上一地点的
+     * 最新证据仍在 20 分钟连续性窗口内，则维持上一地点而不是打断状态连续性。
+     */
+    private fun maintainContinuity(
+        fused: FusedEvidence,
+        stored: List<EvidenceObservationEntity>,
+        now: Long
+    ): FusedEvidence {
+        if (fused.decision != FusedDecision.UNKNOWN) return fused
+        if (lastResolvedPlace == ResolvedPlace.UNKNOWN) return fused
+        val isNoEvidence = fused.reason.startsWith("UNKNOWN_NO_DATA") || fused.reason.startsWith("UNKNOWN_STALE")
+        if (!isNoEvidence) return fused
+        val newestForPrevious = stored
+            .filter { it.placeHint == lastResolvedPlace.name }
+            .maxByOrNull { it.eventTime } ?: return fused
+        if (!continuity.isContinuous(newestForPrevious.eventTime, now)) return fused
+        return fused.copy(
+            place = lastResolvedPlace,
+            decision = FusedDecision.MAINTAINED,
+            reason = "MAINTAIN_CONTINUITY"
+        )
+    }
+
+    /** 诊断日志（方案十）：结果或原因变化时输出一次各来源最新证据明细。 */
+    private fun logDiagnostics(
+        resolved: FusedEvidence,
+        stored: List<EvidenceObservationEntity>,
+        now: Long
+    ) {
+        val logger = diagnosticLogger ?: return
+        val key = "${resolved.place.name}/${resolved.decision.name}/${resolved.reason}"
+        if (key == lastLoggedFusionKey) return
+        lastLoggedFusionKey = key
+        val breakdown = stored.groupBy { it.source }.mapNotNull { (source, list) ->
+            val latest = list.maxByOrNull { it.eventTime } ?: return@mapNotNull null
+            val age = ((now - latest.eventTime).coerceAtLeast(0)) / 1000
+            "$source=${latest.placeHint} q${"%.2f".format(latest.quality)} ${age}s前" +
+                (latest.provider?.let { "($it ${"%.0f".format(latest.accuracyMeters ?: 0f)}m)" } ?: "")
+        }.joinToString(" | ")
+        val content = "融合结果=${resolved.place.name}(${resolved.decision.name}/${resolved.reason}) " +
+            "conf=${"%.2f".format(resolved.confidence)}" + if (breakdown.isEmpty()) "" else " 证据: $breakdown"
+        runCatching { logger("FUSION", content) }
     }
 
     private suspend fun insertOncePerMinute(observation: EvidenceObservation) {
@@ -256,7 +308,7 @@ class EvidenceCoordinator(
         failure != null && failure != CollectorFailure.EMPTY
 
     private fun dayOf(time: Long): String =
-        LocalDate.ofInstant(java.time.Instant.ofEpochMilli(time), clock.zone).toString()
+        LocalDate.ofInstant(Instant.ofEpochMilli(time), clock.zone).toString()
 
     private fun gnssQuality(accuracyMeters: Float): Double =
         (1.0 - accuracyMeters / 150.0).coerceIn(0.0, 1.0)
@@ -290,11 +342,13 @@ class EvidenceCoordinator(
     private fun EvidenceObservationEntity.toDomain() = EvidenceObservation(
         eventTime = eventTime,
         receivedAt = receivedAt,
-        source = EvidenceSource.valueOf(source),
+        source = runCatching { EvidenceSource.valueOf(source) }.getOrDefault(EvidenceSource.NETWORK_LOCATION),
         quality = quality,
         placeHint = ResolvedPlace.valueOf(placeHint),
         identifierHash = identifierHash,
-        signal = signal
+        signal = signal,
+        provider = provider,
+        accuracyMeters = accuracyMeters
     )
 
     private fun EvidenceObservation.toEntity() = EvidenceObservationEntity(
@@ -305,12 +359,16 @@ class EvidenceCoordinator(
         placeHint = placeHint.name,
         identifierHash = identifierHash,
         signal = signal,
-        usedForEvent = false
+        usedForEvent = false,
+        provider = provider,
+        accuracyMeters = accuracyMeters
     )
 
     companion object {
-        const val MOTION_QUALITY = 0.90
         const val AMBIENT_WINDOW_MILLIS = 10 * 60_000L
+
+        /** 连续性窗口：与 EvidenceContinuityPolicy 默认 20 分钟一致 */
+        const val CONTINUITY_WINDOW_MILLIS = 20 * 60_000L
         const val OBSERVATION_RETENTION_MILLIS = 30L * 24 * 60 * 60 * 1000
         const val MAX_OBSERVATIONS_PER_SOURCE = 10_000
         const val MAX_FEATURES_PER_ROUND = 60

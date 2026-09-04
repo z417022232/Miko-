@@ -1,0 +1,1031 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 9,
+    "identityHash": "24b1a04ab38c9333680c532ec42e21cc",
+    "entities": [
+      {
+        "tableName": "user_settings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `companyLat` REAL, `companyLng` REAL, `companyRadiusMeters` INTEGER NOT NULL, `homeLat` REAL, `homeLng` REAL, `homeRadiusMeters` INTEGER NOT NULL, `workStartMinutes` INTEGER NOT NULL, `workEndMinutes` INTEGER NOT NULL, `hasDefaultHours` INTEGER NOT NULL, `defaultWorkMinutes` INTEGER, `restDeductionMinutes` INTEGER NOT NULL, `outsideThresholdMinutes` INTEGER NOT NULL, `leaveCompanyConfirmMinutes` INTEGER NOT NULL, `earlyLeaveToleranceMinutes` INTEGER NOT NULL, `notificationEnabled` INTEGER NOT NULL, `onboardingDone` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "companyLat",
+            "columnName": "companyLat",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "companyLng",
+            "columnName": "companyLng",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "companyRadiusMeters",
+            "columnName": "companyRadiusMeters",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "homeLat",
+            "columnName": "homeLat",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeLng",
+            "columnName": "homeLng",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeRadiusMeters",
+            "columnName": "homeRadiusMeters",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "workStartMinutes",
+            "columnName": "workStartMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "workEndMinutes",
+            "columnName": "workEndMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hasDefaultHours",
+            "columnName": "hasDefaultHours",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "defaultWorkMinutes",
+            "columnName": "defaultWorkMinutes",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "restDeductionMinutes",
+            "columnName": "restDeductionMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outsideThresholdMinutes",
+            "columnName": "outsideThresholdMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "leaveCompanyConfirmMinutes",
+            "columnName": "leaveCompanyConfirmMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "earlyLeaveToleranceMinutes",
+            "columnName": "earlyLeaveToleranceMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "notificationEnabled",
+            "columnName": "notificationEnabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "onboardingDone",
+            "columnName": "onboardingDone",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "work_records",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `workDate` TEXT NOT NULL, `status` TEXT NOT NULL, `shift` TEXT, `startTime` INTEGER, `endTime` INTEGER, `homeDepartureTime` INTEGER, `homeArrivalTime` INTEGER, `actualMinutes` INTEGER, `finalMinutes` INTEGER NOT NULL, `isManual` INTEGER NOT NULL, `manualFieldsMask` INTEGER NOT NULL, `needsReview` INTEGER NOT NULL, `note` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "workDate",
+            "columnName": "workDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "shift",
+            "columnName": "shift",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "startTime",
+            "columnName": "startTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "endTime",
+            "columnName": "endTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeDepartureTime",
+            "columnName": "homeDepartureTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeArrivalTime",
+            "columnName": "homeArrivalTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "actualMinutes",
+            "columnName": "actualMinutes",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "finalMinutes",
+            "columnName": "finalMinutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "isManual",
+            "columnName": "isManual",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "manualFieldsMask",
+            "columnName": "manualFieldsMask",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "needsReview",
+            "columnName": "needsReview",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_work_records_workDate",
+            "unique": true,
+            "columnNames": [
+              "workDate"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_work_records_workDate` ON `${TABLE_NAME}` (`workDate`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "work_segments",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `recordId` INTEGER NOT NULL, `startTime` INTEGER NOT NULL, `endTime` INTEGER NOT NULL, `minutes` INTEGER NOT NULL, `deductRest` INTEGER NOT NULL, `note` TEXT, FOREIGN KEY(`recordId`) REFERENCES `work_records`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordId",
+            "columnName": "recordId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startTime",
+            "columnName": "startTime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endTime",
+            "columnName": "endTime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "minutes",
+            "columnName": "minutes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "deductRest",
+            "columnName": "deductRest",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_work_segments_recordId",
+            "unique": false,
+            "columnNames": [
+              "recordId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_work_segments_recordId` ON `${TABLE_NAME}` (`recordId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "work_records",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "recordId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "location_logs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `time` INTEGER NOT NULL, `latitude` REAL NOT NULL, `longitude` REAL NOT NULL, `accuracyMeters` REAL, `locationType` TEXT NOT NULL, `provider` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "time",
+            "columnName": "time",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "latitude",
+            "columnName": "latitude",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "longitude",
+            "columnName": "longitude",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "accuracyMeters",
+            "columnName": "accuracyMeters",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "locationType",
+            "columnName": "locationType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provider",
+            "columnName": "provider",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_location_logs_time",
+            "unique": false,
+            "columnNames": [
+              "time"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_location_logs_time` ON `${TABLE_NAME}` (`time`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "holidays",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`date` TEXT NOT NULL, `name` TEXT NOT NULL, `type` TEXT NOT NULL, `source` TEXT NOT NULL, PRIMARY KEY(`date`))",
+        "fields": [
+          {
+            "fieldPath": "date",
+            "columnName": "date",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "date"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "manual_overrides",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `recordId` INTEGER NOT NULL, `oldValue` TEXT, `newValue` TEXT NOT NULL, `reason` TEXT, `modifiedAt` INTEGER NOT NULL, FOREIGN KEY(`recordId`) REFERENCES `work_records`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordId",
+            "columnName": "recordId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "oldValue",
+            "columnName": "oldValue",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "newValue",
+            "columnName": "newValue",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reason",
+            "columnName": "reason",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "modifiedAt",
+            "columnName": "modifiedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_manual_overrides_recordId",
+            "unique": false,
+            "columnNames": [
+              "recordId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_manual_overrides_recordId` ON `${TABLE_NAME}` (`recordId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "work_records",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "recordId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "work_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `currentState` TEXT NOT NULL, `lastLocationTime` INTEGER, `lastLatitude` REAL, `lastLongitude` REAL, `sessionStart` INTEGER, `tempLeaveStart` INTEGER, `confirmedDepartureTime` INTEGER, `homeDepartureTime` INTEGER, `homeArrivalTime` INTEGER, `lastGpsFixTime` INTEGER, `lastNetworkFixTime` INTEGER, `lastCompanyDistanceMeters` REAL, `sessionType` TEXT, `sessionId` TEXT, `candidateHomeDepartureTime` INTEGER, `candidateCompanyArrivalTime` INTEGER, `candidateCompanyDepartureTime` INTEGER, `candidateHomeArrivalTime` INTEGER, `companyArrivalConfirmedAt` INTEGER, `companyDepartureConfirmedAt` INTEGER, `homeArrivalConfirmedAt` INTEGER, `stableCompanyCount` INTEGER NOT NULL, `stableHomeCount` INTEGER NOT NULL, `movingAwayCount` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "currentState",
+            "columnName": "currentState",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastLocationTime",
+            "columnName": "lastLocationTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastLatitude",
+            "columnName": "lastLatitude",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastLongitude",
+            "columnName": "lastLongitude",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sessionStart",
+            "columnName": "sessionStart",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "tempLeaveStart",
+            "columnName": "tempLeaveStart",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "confirmedDepartureTime",
+            "columnName": "confirmedDepartureTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeDepartureTime",
+            "columnName": "homeDepartureTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeArrivalTime",
+            "columnName": "homeArrivalTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastGpsFixTime",
+            "columnName": "lastGpsFixTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastNetworkFixTime",
+            "columnName": "lastNetworkFixTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "lastCompanyDistanceMeters",
+            "columnName": "lastCompanyDistanceMeters",
+            "affinity": "REAL",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sessionType",
+            "columnName": "sessionType",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "sessionId",
+            "columnName": "sessionId",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "candidateHomeDepartureTime",
+            "columnName": "candidateHomeDepartureTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "candidateCompanyArrivalTime",
+            "columnName": "candidateCompanyArrivalTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "candidateCompanyDepartureTime",
+            "columnName": "candidateCompanyDepartureTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "candidateHomeArrivalTime",
+            "columnName": "candidateHomeArrivalTime",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "companyArrivalConfirmedAt",
+            "columnName": "companyArrivalConfirmedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "companyDepartureConfirmedAt",
+            "columnName": "companyDepartureConfirmedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "homeArrivalConfirmedAt",
+            "columnName": "homeArrivalConfirmedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "stableCompanyCount",
+            "columnName": "stableCompanyCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stableHomeCount",
+            "columnName": "stableHomeCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "movingAwayCount",
+            "columnName": "movingAwayCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "app_logs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `time` INTEGER NOT NULL, `type` TEXT NOT NULL, `content` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "time",
+            "columnName": "time",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "type",
+            "columnName": "type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "content",
+            "columnName": "content",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_app_logs_time",
+            "unique": false,
+            "columnNames": [
+              "time"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_app_logs_time` ON `${TABLE_NAME}` (`time`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "monthly_salaries",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`month` TEXT NOT NULL, `netSalaryCents` INTEGER NOT NULL, `payrollMonth` TEXT NOT NULL, `paymentDate` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`month`))",
+        "fields": [
+          {
+            "fieldPath": "month",
+            "columnName": "month",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "netSalaryCents",
+            "columnName": "netSalaryCents",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payrollMonth",
+            "columnName": "payrollMonth",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "paymentDate",
+            "columnName": "paymentDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "month"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "environment_fingerprints",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`place` TEXT NOT NULL, `source` TEXT NOT NULL, `identifierHash` TEXT NOT NULL, `observationCount` INTEGER NOT NULL, `distinctDayCount` INTEGER NOT NULL, `lastObservedDay` TEXT NOT NULL, `lastObservedAt` INTEGER NOT NULL, `minSignal` INTEGER NOT NULL, `maxSignal` INTEGER NOT NULL, `level` TEXT NOT NULL, `discriminative` INTEGER NOT NULL, PRIMARY KEY(`place`, `source`, `identifierHash`))",
+        "fields": [
+          {
+            "fieldPath": "place",
+            "columnName": "place",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "identifierHash",
+            "columnName": "identifierHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "observationCount",
+            "columnName": "observationCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "distinctDayCount",
+            "columnName": "distinctDayCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastObservedDay",
+            "columnName": "lastObservedDay",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastObservedAt",
+            "columnName": "lastObservedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "minSignal",
+            "columnName": "minSignal",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "maxSignal",
+            "columnName": "maxSignal",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "level",
+            "columnName": "level",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "discriminative",
+            "columnName": "discriminative",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "place",
+            "source",
+            "identifierHash"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_environment_fingerprints_lastObservedAt",
+            "unique": false,
+            "columnNames": [
+              "lastObservedAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_environment_fingerprints_lastObservedAt` ON `${TABLE_NAME}` (`lastObservedAt`)"
+          },
+          {
+            "name": "index_environment_fingerprints_place_source_level",
+            "unique": false,
+            "columnNames": [
+              "place",
+              "source",
+              "level"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_environment_fingerprints_place_source_level` ON `${TABLE_NAME}` (`place`, `source`, `level`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "evidence_observations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `eventTime` INTEGER NOT NULL, `receivedAt` INTEGER NOT NULL, `source` TEXT NOT NULL, `quality` REAL NOT NULL, `placeHint` TEXT NOT NULL, `identifierHash` TEXT, `signal` INTEGER, `usedForEvent` INTEGER NOT NULL, `provider` TEXT, `accuracyMeters` REAL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventTime",
+            "columnName": "eventTime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "receivedAt",
+            "columnName": "receivedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "source",
+            "columnName": "source",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quality",
+            "columnName": "quality",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "placeHint",
+            "columnName": "placeHint",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "identifierHash",
+            "columnName": "identifierHash",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "signal",
+            "columnName": "signal",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "usedForEvent",
+            "columnName": "usedForEvent",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "provider",
+            "columnName": "provider",
+            "affinity": "TEXT",
+            "notNull": false
+          },
+          {
+            "fieldPath": "accuracyMeters",
+            "columnName": "accuracyMeters",
+            "affinity": "REAL",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_evidence_observations_eventTime",
+            "unique": false,
+            "columnNames": [
+              "eventTime"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_evidence_observations_eventTime` ON `${TABLE_NAME}` (`eventTime`)"
+          },
+          {
+            "name": "index_evidence_observations_source_placeHint",
+            "unique": false,
+            "columnNames": [
+              "source",
+              "placeHint"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_evidence_observations_source_placeHint` ON `${TABLE_NAME}` (`source`, `placeHint`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "location_health",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`name` TEXT NOT NULL, `lastCallbackAt` INTEGER NOT NULL, `lastSuccessAt` INTEGER NOT NULL, `registered` INTEGER NOT NULL, `recoveryCount` INTEGER NOT NULL, `lastFailure` TEXT, PRIMARY KEY(`name`))",
+        "fields": [
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastCallbackAt",
+            "columnName": "lastCallbackAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSuccessAt",
+            "columnName": "lastSuccessAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "registered",
+            "columnName": "registered",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recoveryCount",
+            "columnName": "recoveryCount",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastFailure",
+            "columnName": "lastFailure",
+            "affinity": "TEXT",
+            "notNull": false
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "name"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '24b1a04ab38c9333680c532ec42e21cc')"
+    ]
+  }
+}

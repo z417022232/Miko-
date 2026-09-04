@@ -52,6 +52,7 @@ import com.example.worktimetracker.location.evidence.ScanPolicyInput
 import com.example.worktimetracker.location.evidence.WifiEvidenceCollector
 import com.example.worktimetracker.domain.evidence.EvidenceFusionEngine
 import com.example.worktimetracker.domain.evidence.FingerprintLearningPolicy
+import com.example.worktimetracker.domain.evidence.FusedDecision
 import com.example.worktimetracker.domain.evidence.FusedEvidence
 import com.example.worktimetracker.domain.evidence.ResolvedPlace
 import com.example.worktimetracker.domain.model.LocationType
@@ -83,7 +84,10 @@ class ForegroundLocationService : Service(), LocationListener {
     @Volatile private var lastAmbientScanAt = 0L
     @Volatile private var ambientScanRequested = false
     @Volatile private var ambientScanMayStartWifiScan = false
-    @Volatile private var pendingMotionAt: Long? = null
+    @Volatile private var motionBurstUntil: Long = 0L
+    private var burstConfirmPlace: LocationType? = null
+    private var burstConfirmCount = 0
+    private val endMotionBurstRunnable = Runnable { endMotionBurst("窗口结束") }
     @Volatile private var lastGnssCallbackWallClock = 0L
     @Volatile private var lastResolvedPlace = ResolvedPlace.UNKNOWN
     @Volatile private var lastClassifiedPlace: LocationType? = null
@@ -176,10 +180,8 @@ class ForegroundLocationService : Service(), LocationListener {
                     }
                     pending = processingGate.takePending()
                 }
-                pendingMotionAt?.let { at ->
-                    pendingMotionAt = null
-                    runCatching { evidenceCoordinator?.onMotion(at) }
-                }
+                // Motion 不再产生地点证据（方案一）：它只负责 Movement Burst 唤醒重新取证，
+                // 已在 onSignificantMotionDetected 中处理
                 if (ambientScanRequested) {
                     ambientScanRequested = false
                     runCatching { runAmbientScan() }
@@ -204,6 +206,7 @@ class ForegroundLocationService : Service(), LocationListener {
         watchdogHandler.removeCallbacks(providerSummary)
         watchdogHandler.removeCallbacks(providerGlobalCheck)
         watchdogHandler.removeCallbacks(departureConfirmation)
+        watchdogHandler.removeCallbacks(endMotionBurstRunnable)
         locationManager?.removeUpdates(this)
         // 停止传感器、Wi-Fi/蓝牙扫描及所有定位监听
         motionController?.stop()
@@ -307,11 +310,29 @@ class ForegroundLocationService : Service(), LocationListener {
         val fused: FusedEvidence? = if (coordinator != null) {
             // GNSS 观察交给协调器学习与融合；异常上抛由 safeProcessor 记录
             coordinator.onGnss(buildGnssInput(calibration, calibrated, classified, fixTime,
-                location.accuracy, companyDistance, homeDistance, settings))
+                location.accuracy, companyDistance, homeDistance, settings,
+                location.provider ?: "gps"))
         } else null
-        if (fused != null && fused.place == ResolvedPlace.UNKNOWN) {
-            // 融合结果不确定：低精度定位只保留日志与去重字段，不得改变工时状态
-            lastResolvedPlace = ResolvedPlace.UNKNOWN
+        // Movement Burst 管理（方案二）：确认正在移动→顺延窗口保持 1 分钟档；
+        // 连续 2 个可靠 CONFIRMED 结果→提前收敛回常规档
+        if (motionBurstUntil > 0L && fused != null) {
+            if (location.hasSpeed() && location.speed >= 1.5f) {
+                extendMotionBurst(now)
+            } else if (fused.decision == FusedDecision.CONFIRMED && location.accuracy <= 100f) {
+                if (burstConfirmPlace == classified) burstConfirmCount++ else {
+                    burstConfirmPlace = classified
+                    burstConfirmCount = 1
+                }
+                if (burstConfirmCount >= 2) endMotionBurst("连续确认 $classified")
+            }
+        }
+        if (fused != null && fused.decision != FusedDecision.CONFIRMED) {
+            if (fused.decision == FusedDecision.UNKNOWN) {
+                // 融合结果不确定：低精度定位只保留日志与去重字段，不得改变工时状态
+                lastResolvedPlace = ResolvedPlace.UNKNOWN
+            }
+            // MAINTAINED（弱证据/连续性维持）：只能维持状态（方案三/四/八），
+            // 不得触发状态转换，也不打断已确认会话
             app.database.workStateDao().save(previous.copy(
                 lastLatitude = location.latitude,
                 lastLongitude = location.longitude,
@@ -380,7 +401,8 @@ class ForegroundLocationService : Service(), LocationListener {
         accuracyMeters: Float,
         companyDistance: Double?,
         homeDistance: Double?,
-        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
+        provider: String
     ): GnssInput {
         if (classified != lastClassifiedPlace) {
             lastClassifiedPlace = classified
@@ -397,7 +419,8 @@ class ForegroundLocationService : Service(), LocationListener {
             stableSince = classifiedPlaceSince,
             inferred = false,
             manualReplay = false,
-            anomalousShift = isAnomalousShiftTime(fixTime, settings)
+            anomalousShift = isAnomalousShiftTime(fixTime, settings),
+            provider = provider
         )
     }
 
@@ -584,7 +607,8 @@ class ForegroundLocationService : Service(), LocationListener {
             cellCollector = cell,
             learningPolicy = FingerprintLearningPolicy(),
             fusionEngine = EvidenceFusionEngine(),
-            clock = Clock.systemDefaultZone()
+            clock = Clock.systemDefaultZone(),
+            diagnosticLogger = { type, content -> logEvent(type, content) }
         )
         wifiCollector = wifi
         bluetoothCollector = bluetooth
@@ -602,11 +626,57 @@ class ForegroundLocationService : Service(), LocationListener {
         }
     }
 
-    /** 显著运动：记录运动证据并按省电策略请求一次短扫描。 */
+    /** 显著运动：触发 Movement Burst——环境 BURST + GPS 临时 1 分钟档（方案二）。 */
     private fun onSignificantMotionDetected(eventTime: Long) {
         val now = System.currentTimeMillis()
-        pendingMotionAt = now
         requestAmbientScan(significantMotion = true, now = now)
+        startMotionBurst(now)
+    }
+
+    /**
+     * Movement Burst：立即把定位切到 1 分钟档并保持最多 10 分钟。
+     * - 确认还在原地点（连续 2 个可靠 CONFIRMED 结果）→ 提前回到常规档；
+     * - 确认正在移动（速度 ≥1.5m/s）→ 保持 1 分钟档并顺延窗口；
+     * - 窗口结束 → 按 stableKnownPlace 回到 30/10 分钟档。
+     */
+    private fun startMotionBurst(now: Long) {
+        watchdogHandler.removeCallbacks(endMotionBurstRunnable)
+        motionBurstUntil = now + MOTION_BURST_MILLIS
+        burstConfirmPlace = null
+        burstConfirmCount = 0
+        watchdogHandler.postDelayed(endMotionBurstRunnable, MOTION_BURST_MILLIS)
+        if (currentSamplingIntervalMillis != LocationSamplingPolicy.FAST_INTERVAL_MILLIS) {
+            currentSamplingIntervalMillis = LocationSamplingPolicy.FAST_INTERVAL_MILLIS
+            pendingSamplingIntervalMillis = currentSamplingIntervalMillis
+            registrationState.invalidate(SOURCE_LOCATION)
+            startLocationUpdates()
+        }
+        logEvent("MOTION_BURST", "检测到移动：定位切至1分钟档，环境扫描BURST（最长10分钟）")
+    }
+
+    private fun extendMotionBurst(now: Long) {
+        motionBurstUntil = now + MOTION_BURST_MILLIS
+        burstConfirmPlace = null
+        burstConfirmCount = 0
+        watchdogHandler.removeCallbacks(endMotionBurstRunnable)
+        watchdogHandler.postDelayed(endMotionBurstRunnable, MOTION_BURST_MILLIS)
+    }
+
+    private fun endMotionBurst(reason: String) {
+        if (motionBurstUntil == 0L) return
+        motionBurstUntil = 0L
+        burstConfirmPlace = null
+        burstConfirmCount = 0
+        watchdogHandler.removeCallbacks(endMotionBurstRunnable)
+        val stable = lastResolvedPlace == ResolvedPlace.HOME || lastResolvedPlace == ResolvedPlace.COMPANY
+        val target = if (stable) LocationSamplingPolicy.STABLE_INTERVAL_MILLIS else LocationSamplingPolicy.DEFAULT_INTERVAL_MILLIS
+        if (target != currentSamplingIntervalMillis) {
+            currentSamplingIntervalMillis = target
+            pendingSamplingIntervalMillis = target
+            registrationState.invalidate(SOURCE_LOCATION)
+            startLocationUpdates()
+        }
+        logEvent("MOTION_BURST", "恢复常规采样${target / 60_000}分钟档（$reason）")
     }
 
     private fun requestAmbientScan(significantMotion: Boolean, now: Long = System.currentTimeMillis()) {
@@ -666,7 +736,7 @@ class ForegroundLocationService : Service(), LocationListener {
                 time = now,
                 type = type,
                 accuracyMeters = AMBIENT_NOMINAL_ACCURACY_METERS,
-                provider = "ambient:" + fused.sources.joinToString("+") { it.name },
+                provider = "ambient:" + fused.sources.joinToString("+") { it.name } + "/${fused.reason}",
                 companyDistanceMeters = null,
                 companyAnchorDistanceMeters = if (fused.place == ResolvedPlace.COMPANY) AMBIENT_CORE_DISTANCE_METERS else null,
                 homeDistanceMeters = null,
@@ -796,6 +866,8 @@ class ForegroundLocationService : Service(), LocationListener {
         currentState: String,
         settings: com.example.worktimetracker.data.entity.UserSettingsEntity
     ) {
+        // Movement Burst 期间采样间隔由 Burst 管理，常规策略不得降档
+        if (motionBurstUntil > System.currentTimeMillis()) return
         val fences = listOfNotNull(
             if (settings.companyLat != null && settings.companyLng != null) {
                 locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng) to
@@ -902,6 +974,9 @@ class ForegroundLocationService : Service(), LocationListener {
         private const val LAST_KNOWN_MAX_AGE_MILLIS = 10 * 60_000L
         private const val SOURCE_LOCATION = "location"
         private const val GNSS_STALE_SCAN_MILLIS = 20 * 60_000L
+
+        /** Movement Burst 窗口：Motion 触发后定位 1 分钟档最长保持时长（方案二） */
+        const val MOTION_BURST_MILLIS = 10 * 60_000L
         private const val HOME_STABLE_RADIUS_METERS = 100
         private const val SHIFT_WINDOW_MARGIN_MINUTES = 180
         private const val AMBIENT_NOMINAL_ACCURACY_METERS = 50f

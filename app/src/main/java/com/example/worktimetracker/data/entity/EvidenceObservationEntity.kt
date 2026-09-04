@@ -20,5 +20,9 @@ data class EvidenceObservationEntity(
     val placeHint: String,
     val identifierHash: String?,
     val signal: Int?,
-    val usedForEvent: Boolean
+    val usedForEvent: Boolean,
+    /** 绝对定位来源标记（gps/network/passive），环境证据为 wifi/bluetooth/cell */
+    val provider: String? = null,
+    /** 原始精度（米），环境证据为 null；排查误判时区分 GPS 15m 与 Network 25m */
+    val accuracyMeters: Float? = null
 )

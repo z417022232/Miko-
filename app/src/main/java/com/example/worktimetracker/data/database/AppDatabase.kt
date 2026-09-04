@@ -40,7 +40,7 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         EvidenceObservationEntity::class,
         LocationHealthEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

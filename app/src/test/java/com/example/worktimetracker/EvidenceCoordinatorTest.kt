@@ -8,6 +8,7 @@ import com.example.worktimetracker.domain.evidence.EvidenceFusionEngine
 import com.example.worktimetracker.domain.evidence.EvidenceSource
 import com.example.worktimetracker.domain.evidence.FingerprintLearningPolicy
 import com.example.worktimetracker.domain.evidence.FingerprintLevel
+import com.example.worktimetracker.domain.evidence.FusedDecision
 import com.example.worktimetracker.domain.evidence.ResolvedPlace
 import com.example.worktimetracker.location.evidence.AmbientCollector
 import com.example.worktimetracker.location.evidence.CollectorFeature
@@ -199,10 +200,44 @@ class EvidenceCoordinatorTest {
         assertTrue(dao.usedForEventCount >= 2)
     }
 
-    @Test fun motionObservationSupportsFusion() = runTest {
+    @Test fun staleEvidenceMaintainsPlaceWithinContinuityWindow() = runTest {
+        // 方案八：强证据确认 COMPANY 后证据全部陈旧，20 分钟连续性窗口内维持 COMPANY
+        dao.insertObservation(EvidenceObservationEntity(
+            eventTime = 1_000_000L, receivedAt = 1_000_000L,
+            source = EvidenceSource.WIFI.name, quality = 0.90, placeHint = ResolvedPlace.COMPANY.name,
+            identifierHash = null, signal = null, usedForEvent = false
+        ))
+        dao.insertObservation(EvidenceObservationEntity(
+            eventTime = 1_000_000L, receivedAt = 1_000_000L,
+            source = EvidenceSource.CELL.name, quality = 0.90, placeHint = ResolvedPlace.COMPANY.name,
+            identifierHash = null, signal = null, usedForEvent = false
+        ))
         val coordinator = coordinator()
-        coordinator.onMotion(1_000_000L)
-        assertEquals(1, dao.observations.count { it.source == EvidenceSource.MOTION.name })
+        val confirmed = coordinator.collectAmbient(1_000_000L)
+        assertEquals(FusedDecision.CONFIRMED, confirmed.decision)
+        assertEquals(ResolvedPlace.COMPANY, confirmed.place)
+        // 12 分钟后所有来源均超过各自 TTL：连续性窗口内维持，而非打断为 UNKNOWN
+        val maintained = coordinator.collectAmbient(1_000_000L + 12 * 60_000L)
+        assertEquals(ResolvedPlace.COMPANY, maintained.place)
+        assertEquals(FusedDecision.MAINTAINED, maintained.decision)
+        assertEquals("MAINTAIN_CONTINUITY", maintained.reason)
+        // 25 分钟后连续性中断：回到 UNKNOWN
+        val interrupted = coordinator.collectAmbient(1_000_000L + 25 * 60_000L)
+        assertEquals(ResolvedPlace.UNKNOWN, interrupted.place)
+        assertEquals(FusedDecision.UNKNOWN, interrupted.decision)
+    }
+
+    @Test fun networkLocationObservationsDoNotLearnFingerprints() = runTest {
+        // 方案六：指纹学习只信任真正 GPS；Network Location 只参与融合
+        val wifi = FakeCollector(CollectorResult(features(EvidenceSource.WIFI, 2), 1_000_000L))
+        val coordinator = coordinator(wifi = wifi)
+        coordinator.onGnss(
+            GnssInput(1_000_000L, ResolvedPlace.COMPANY, 20f, true, 1_000_000L - 6 * 60_000L, provider = "network")
+        )
+        assertEquals(0, dao.fingerprints.size)
+        val obs = dao.observations.single { it.source == EvidenceSource.NETWORK_LOCATION.name }
+        assertEquals("network", obs.provider)
+        assertEquals(20f, obs.accuracyMeters)
     }
 
     @Test fun sharedFingerprintAcrossPlacesLosesDiscriminative() = runTest {

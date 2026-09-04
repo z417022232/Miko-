@@ -25,7 +25,7 @@ class WorkTimeApplication : Application() {
 
     val database: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, "work_time_tracker.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             .build()
     }
 
@@ -105,6 +105,13 @@ class WorkTimeApplication : Application() {
                         " + CASE WHEN note IS NOT NULL THEN 64 ELSE 0 END" +
                         " WHERE isManual = 1"
                 )
+            }
+        }
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 证据观察保留定位来源与原始精度，便于区分 GPS 与 Network Location 排查误判
+                db.execSQL("ALTER TABLE evidence_observations ADD COLUMN provider TEXT")
+                db.execSQL("ALTER TABLE evidence_observations ADD COLUMN accuracyMeters REAL")
             }
         }
         val MIGRATION_7_8 = object : Migration(7, 8) {
