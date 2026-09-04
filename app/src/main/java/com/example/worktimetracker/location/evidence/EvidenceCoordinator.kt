@@ -130,9 +130,31 @@ class EvidenceCoordinator(
         val results = collectAll(input.eventTime)
         val features = CollectorSnapshot.merge(results.map { it.second }).take(MAX_FEATURES_PER_ROUND)
         val day = dayOf(input.eventTime)
+        val otherPlaces = listOf(ResolvedPlace.HOME, ResolvedPlace.COMPANY).filter { it != input.place }
         for (feature in features) {
             val existing = store.fingerprints(input.place.name, feature.source.name)
                 .firstOrNull { it.identifierHash == feature.identifierHash }
+            // 跨地点共享指纹检测：同一标识同时属于家和公司（随身热点、蓝牙设备等）
+            // 时，两边都失去地点判别资格，防止同一设备成为两地的可靠特征
+            val crossMatch = otherPlaces.firstNotNullOfOrNull { other ->
+                store.fingerprints(other.name, feature.source.name)
+                    .firstOrNull { it.identifierHash == feature.identifierHash }
+                    ?.let { other to it }
+            }
+            if (crossMatch != null) {
+                val (otherPlace, otherEntity) = crossMatch
+                store.upsertFingerprint(
+                    learningPolicy.markCrossPlace(otherEntity.toState())
+                        .toEntity(otherPlace.name, otherEntity.source, otherEntity.identifierHash)
+                )
+                if (existing != null) {
+                    store.upsertFingerprint(
+                        learningPolicy.markCrossPlace(existing.toState())
+                            .toEntity(input.place.name, feature.source.name, feature.identifierHash)
+                    )
+                }
+                continue
+            }
             val state = learningPolicy.update(existing?.toState(), LearningSample(day, input.eventTime, feature.signal))
             store.upsertFingerprint(state.toEntity(input.place.name, feature.source.name, feature.identifierHash))
         }

@@ -205,6 +205,32 @@ class EvidenceCoordinatorTest {
         assertEquals(1, dao.observations.count { it.source == EvidenceSource.MOTION.name })
     }
 
+    @Test fun sharedFingerprintAcrossPlacesLosesDiscriminative() = runTest {
+        // 公司已学到 hash=shared-wifi 的 STABLE 指纹；在家再次观察到同一 hash
+        //（如随身热点）：两边都应被 markCrossPlace 取消判别资格
+        dao.fingerprints += EnvironmentFingerprintEntity(
+            place = ResolvedPlace.COMPANY.name, source = EvidenceSource.WIFI.name,
+            identifierHash = "shared-wifi", observationCount = 6, distinctDayCount = 3,
+            lastObservedDay = "2026-09-01", lastObservedAt = 900_000L,
+            minSignal = -70, maxSignal = -50, level = FingerprintLevel.STABLE.name, discriminative = true
+        )
+        val wifi = FakeCollector(
+            CollectorResult(listOf(CollectorFeature(EvidenceSource.WIFI, "shared-wifi", -60)), 1_000_000L)
+        )
+        val coordinator = coordinator(wifi = wifi)
+        coordinator.onGnss(
+            GnssInput(1_000_000L, ResolvedPlace.HOME, 20f, true, 1_000_000L - 6 * 60_000L)
+        )
+        val company = dao.fingerprints.first { it.place == ResolvedPlace.COMPANY.name }
+        assertTrue(!company.discriminative)
+        // 该 hash 不应为家建立新的可用指纹（或已有也必须取消资格）
+        assertTrue(
+            dao.fingerprints.none {
+                it.place == ResolvedPlace.HOME.name && it.identifierHash == "shared-wifi" && it.discriminative
+            }
+        )
+    }
+
     @Test fun poorAccuracyGnssDoesNotConfirmPlace() = runTest {
         val coordinator = coordinator()
         val result = coordinator.onGnss(GnssInput(1_000_000L, ResolvedPlace.HOME, 120f, true, 1_000_000L))

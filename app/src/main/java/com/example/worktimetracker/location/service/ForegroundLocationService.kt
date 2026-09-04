@@ -238,6 +238,9 @@ class ForegroundLocationService : Service(), LocationListener {
         val provider = location.provider ?: "unknown"
         ServiceRecovery.locationCallback(this, location.accuracy <= 100f, now)
         registrationState.recordCallback(provider, now)
+        // 同步更新聚合键：定位看护检查读取 SOURCE_LOCATION 的回调时间，
+        // 与各 Provider（gps/network）分开记录，缺少会导致看护一直误判陈旧并反复重注册
+        registrationState.recordCallback(SOURCE_LOCATION, now)
         // Provider 恢复后的首次回调仅用于建立基线，不作为证据
         if (!registrationState.mayEmitEvidence(provider)) {
             lastFixReceivedAt = now

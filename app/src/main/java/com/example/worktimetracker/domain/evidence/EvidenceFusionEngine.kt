@@ -6,9 +6,10 @@ package com.example.worktimetracker.domain.evidence
  * 优先级规则：
  * 1. 过滤未来时间、GNSS 超过 2 分钟、环境证据超过 10 分钟的观察。
  * 2. 质量至少 0.80 的 GNSS 直接优先。
- * 3. 无 GNSS 时，相同地点至少两类 CELL/WIFI/BLUETOOTH 且质量和不低于 1.40 才返回地点。
+ * 3. 无 GNSS 时，相同地点至少两类 CELL/WIFI/BLUETOOTH 且质量和不低于 1.40 才返回地点；
+ *    每个来源只取最新一条有效观察，重复扫描不累加质量。
  * 4. 只有一类环境来源时保持 UNKNOWN，除非同时存在 MOTION 且总质量不低于 1.80。
- * 5. 家和公司得分差小于 0.15 时返回 UNKNOWN。
+ * 5. 家和公司得分差小于 0.15 时返回 UNKNOWN；否则返回得分更高的一方。
  */
 class EvidenceFusionEngine {
 
@@ -42,6 +43,9 @@ class EvidenceFusionEngine {
         }
 
         val winner = when {
+            homeSupported && companySupported ->
+                // 冲突检查通过（分差足够大）后必须选最高分，而不是固定优先某地点
+                if (company.score > home.score) company else home
             homeSupported -> home
             companySupported -> company
             else -> null
@@ -62,10 +66,14 @@ class EvidenceFusionEngine {
             it.source in AMBIENT_SOURCES && it.placeHint == place
         }
         if (envObservations.isEmpty()) return null
-        val classes = envObservations.map { it.source }.toSet()
-        val envSum = envObservations.sumOf { it.quality }
+        // 每个来源只保留最新一条有效观察：重复扫描不能累加质量，
+        // 扫描次数不能替代证据质量（低质量来源重复采样不应凑成确认）
+        val latestPerSource = envObservations.groupBy { it.source }
+            .map { (_, sameSource) -> sameSource.maxByOrNull { it.eventTime }!! }
+        val classes = latestPerSource.map { it.source }.toSet()
+        val envSum = latestPerSource.sumOf { it.quality }
         val motion = fresh.filter { it.source == EvidenceSource.MOTION && it.placeHint == place }
-            .maxByOrNull { it.quality }
+            .maxByOrNull { it.eventTime }
 
         val supported = when {
             classes.size >= 2 && envSum >= AMBIENT_CONFIRM_SUM -> true
@@ -74,7 +82,7 @@ class EvidenceFusionEngine {
         }
         if (!supported) return null
 
-        val supporting = if (motion != null) envObservations + motion else envObservations
+        val supporting = if (motion != null) latestPerSource + motion else latestPerSource
         return PlaceScore(
             place = place,
             score = envSum,
