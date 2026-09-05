@@ -302,7 +302,7 @@ class ForegroundLocationService : Service(), LocationListener {
         } else null
         // REST + HOME 永远不设置 movingAway：到家类型本身不是离开公司的通用移动证据
         val movingAway = classified != LocationType.HOME &&
-            ((location.hasSpeed() && location.speed >= 1.5f) ||
+            ((location.hasSpeed() && location.speed >= MOVING_SPEED_METERS_PER_SECOND) ||
                 (companyDistance != null && previous.lastCompanyDistanceMeters != null &&
                     companyDistance >= previous.lastCompanyDistanceMeters + 50.0))
         app.database.locationLogDao().insert(
@@ -328,7 +328,7 @@ class ForegroundLocationService : Service(), LocationListener {
         // Movement Burst 管理（方案二）：确认正在移动→顺延窗口保持 1 分钟档；
         // 连续 2 个可靠 CONFIRMED 结果→提前收敛回常规档
         if (motionBurstUntil > 0L && fused != null) {
-            if (location.hasSpeed() && location.speed >= 1.5f) {
+            if (location.hasSpeed() && location.speed >= MOVING_SPEED_METERS_PER_SECOND) {
                 extendMotionBurst(now)
             } else if (fused.decision == FusedDecision.CONFIRMED && location.accuracy <= 100f) {
                 // 语义是「连续两个可靠融合结果」：以融合地点为准，而不是单次经纬度分类
@@ -358,16 +358,16 @@ class ForegroundLocationService : Service(), LocationListener {
         }
         val type = if (fused != null) locationTypeOf(fused.place) else classified
         if (fused != null) lastResolvedPlace = fused.place
-        val stateDecision = if (calibrated) {
-            anchorEngine.next(previous, TrajectoryAnchorEngine.Fix(
-                time = fixTime, type = type, accuracyMeters = location.accuracy,
-                provider = location.provider ?: "unknown", companyDistanceMeters = companyDistance,
-                companyAnchorDistanceMeters = companyDistance, homeDistanceMeters = homeDistance,
-                homeAnchorDistanceMeters = homeDistance, speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
-                movingAway = movingAway
-            ), TrajectoryAnchorEngine.Config(settings.companyRadiusMeters, settings.homeRadiusMeters,
-                calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes)).nextState
-        } else processor.nextState(previous, type, fixTime, settings, companyDistance, movingAway)
+        // 唯一工时状态机：TrajectoryAnchorEngine。校准只影响公司稳定半径（未校准用 100m 默认值）
+        // 与证据可信度，不再切换到第二套降级状态机
+        val stateDecision = anchorEngine.next(previous, TrajectoryAnchorEngine.Fix(
+            time = fixTime, type = type, accuracyMeters = location.accuracy,
+            provider = location.provider ?: "unknown", companyDistanceMeters = companyDistance,
+            companyAnchorDistanceMeters = companyDistance, homeDistanceMeters = homeDistance,
+            homeAnchorDistanceMeters = homeDistance, speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
+            movingAway = movingAway
+        ), TrajectoryAnchorEngine.Config(settings.companyRadiusMeters, settings.homeRadiusMeters,
+            calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes)).nextState
         val next = stateDecision.copy(
             lastLatitude = location.latitude,
             lastLongitude = location.longitude,
@@ -399,6 +399,11 @@ class ForegroundLocationService : Service(), LocationListener {
         }
         if (previous.currentState != "FINISHED" && next.currentState == "FINISHED" && previous.sessionStart != null) {
             finalizeSessionRecord(app, previous, next, fixTime, settings)
+        }
+        if (previous.currentState == "FINISHED" && next.currentState == "REST" && next.homeArrivalTime != null) {
+            // 迟到家证据：工时记录已在 FINISHED 时落库，必须把到家时间补写进当天 WorkRecord，
+            // 否则记录永远缺 homeArrivalTime 被标记 needsReview
+            backfillHomeArrival(app, next.homeArrivalTime)
         }
         app.database.workStateDao().save(next)
         scheduleDepartureConfirmation(next, settings)
@@ -549,6 +554,16 @@ class ForegroundLocationService : Service(), LocationListener {
         sendWorkRecordNotification(session)
     }
 
+    /** 迟到家证据补写：把 FINISHED→REST 时才拿到的 homeArrivalTime 写回当天已完结的工时记录。 */
+    private suspend fun backfillHomeArrival(app: WorkTimeApplication, arrival: Long) {
+        val record = app.database.workRecordDao().latestFinishedWithoutHomeArrival(arrival) ?: return
+        if (com.example.worktimetracker.data.entity.ManualFieldMask.contains(
+                record.manualFieldsMask, com.example.worktimetracker.data.entity.ManualField.HOME_ARRIVAL)) return
+        app.database.workRecordDao().upsert(record.copy(
+            homeArrivalTime = arrival, updatedAt = System.currentTimeMillis()))
+        logEvent("RECORD", "迟到到家证据：已补写 " + record.workDate + " 记录的到家时间")
+    }
+
     override fun onProviderEnabled(provider: String) {
         registrationState.providerRecovered(provider)
         providerRecoveryGate.providerEnabled(provider)
@@ -674,7 +689,7 @@ class ForegroundLocationService : Service(), LocationListener {
     private fun extendMotionBurst(now: Long) {
         val hardEnd = burstStartedAt + MOTION_BURST_MILLIS
         if (now >= hardEnd) {
-            // 10 分钟硬顶已到：仍在移动不再顺延 1 分钟档，降为 5 分钟档继续跟踪
+            // 10 分钟硬顶已到：仍在移动不再顺延 1 分钟档，降为 5 分钟档继续跟踪（MOVING_TRACK 阶段）
             if (!burstMediumPhase) {
                 burstMediumPhase = true
                 if (currentSamplingIntervalMillis != LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS) {
@@ -685,9 +700,13 @@ class ForegroundLocationService : Service(), LocationListener {
                 }
                 logEvent("MOTION_BURST", "Burst达10分钟硬顶：仍在移动，降为5分钟档继续跟踪")
             }
+            // 关键：MOVING_TRACK 阶段每次移动证据都要重排结束回调，
+            // 否则硬顶时刻的旧回调触发 endMotionBurst → 重算策略 → 移动又被映射回 1 分钟档
             motionBurstUntil = now + MOTION_BURST_MILLIS
             burstConfirmPlace = null
             burstConfirmCount = 0
+            watchdogHandler.removeCallbacks(endMotionBurstRunnable)
+            watchdogHandler.postDelayed(endMotionBurstRunnable, MOTION_BURST_MILLIS)
             return
         }
         // 硬顶内顺延：上限锁死在硬顶时间点，而不是 now+10 分钟
@@ -733,24 +752,32 @@ class ForegroundLocationService : Service(), LocationListener {
             } else null
         )
         val nearestFence = fences.minByOrNull { kotlin.math.abs(it.first - it.second) }
+        val speed = if (location != null && location.hasSpeed()) location.speed else 0f
         val interval = samplingPolicy.intervalMillis(
             currentState = state.currentState,
             locationType = locationType,
             distanceToFenceMeters = nearestFence?.first,
             fenceRadiusMeters = nearestFence?.second ?: 0,
-            speedMetersPerSecond = if (location != null && location.hasSpeed()) location.speed else 0f,
+            speedMetersPerSecond = speed,
             nowMillis = System.currentTimeMillis(),
             workStartMinutes = settings.workStartMinutes,
             workEndMinutes = settings.workEndMinutes
         )
-        val decision = LocationRegistrationPolicy.intervalChange(currentSamplingIntervalMillis, interval)
-        pendingSamplingIntervalMillis = interval
+        // MOVING_TRACK 保护：Burst 结束时若判定仍在移动，普通策略会把移动映射回 1 分钟档；
+        // 长途移动最低保持 5 分钟档，只有停止移动后才交回普通策略的 1/5/10/30 分钟档
+        val effectiveInterval = if (speed >= MOVING_SPEED_METERS_PER_SECOND &&
+            interval < LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS) {
+            logEvent("MOTION_BURST", "结束时机仍在移动：最低保持5分钟档，不回1分钟档")
+            LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS
+        } else interval
+        val decision = LocationRegistrationPolicy.intervalChange(currentSamplingIntervalMillis, effectiveInterval)
+        pendingSamplingIntervalMillis = effectiveInterval
         watchdogHandler.removeCallbacks(applySamplingInterval)
         if (decision.reconfigure) {
             if (decision.delayMillis == 0L) watchdogHandler.post(applySamplingInterval)
             else watchdogHandler.postDelayed(applySamplingInterval, decision.delayMillis)
         }
-        logEvent("MOTION_BURST", "恢复常规采样${interval / 60_000}分钟档（$reason）")
+        logEvent("MOTION_BURST", "恢复常规采样${effectiveInterval / 60_000}分钟档（$reason）")
     }
 
     private fun requestAmbientScan(significantMotion: Boolean, now: Long = System.currentTimeMillis()) {
@@ -1069,6 +1096,7 @@ class ForegroundLocationService : Service(), LocationListener {
 
         /** Movement Burst 窗口：Motion 触发后定位 1 分钟档最长保持时长（方案二） */
         const val MOTION_BURST_MILLIS = 10 * 60_000L
+        const val MOVING_SPEED_METERS_PER_SECOND = 1.5f
         private const val HOME_STABLE_RADIUS_METERS = 100
         private const val SHIFT_WINDOW_MARGIN_MINUTES = 180
         private const val AMBIENT_NOMINAL_ACCURACY_METERS = 50f
