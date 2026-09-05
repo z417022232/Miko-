@@ -116,7 +116,11 @@ class TrajectoryAnchorEngine(
         val homeCount = if (homeStable) previous.stableHomeCount + 1 else 0
         val elapsed = fix.time - candidate
         val farEnough = fix.companyDistanceMeters?.let { it >= config.companyRadiusMeters + 100.0 } == true
-        val confirmed = elapsed >= config.leaveConfirmMinutes * 60_000L && (farEnough || movingCount >= 2 || homeCount >= 2)
+        // 强到家证据（到家核心区 + 远离公司）本身足以证明下班到家，立即确认；
+        // confirmMinutes 只作为弱证据（移动/远距/多次计数）的兜底等待时间
+        val strongHomeArrival = homeStable && farEnough
+        val confirmed = strongHomeArrival ||
+            (elapsed >= config.leaveConfirmMinutes * 60_000L && (farEnough || movingCount >= 2 || homeCount >= 2))
         if (!confirmed) return previous.copy(candidateCompanyDepartureTime = candidate,
             candidateHomeArrivalTime = firstHome, movingAwayCount = movingCount,
             stableHomeCount = homeCount, stableCompanyCount = 0)

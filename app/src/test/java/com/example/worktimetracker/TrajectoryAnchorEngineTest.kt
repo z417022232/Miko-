@@ -40,14 +40,28 @@ class TrajectoryAnchorEngineTest {
         assertEquals("WORKING", deep2.nextState.currentState)
     }
 
-    @Test fun firstHomeTimeSurvivesLaterConfirmation() {
+    @Test fun strongHomeEvidenceConfirmsDepartureImmediately() {
+        // 强到家证据（到家核心区 + 远离公司）不等 confirmMinutes，立即确认离岗到家
         val state = WorkStateEntity(currentState = "TEMP_LEAVE", sessionId = "s", sessionStart = 1L,
-            candidateCompanyDepartureTime = 100L, movingAwayCount = 2)
-        val firstHome = engine.next(state, fix(200, LocationType.HOME, company=2000.0, companyAnchor=1900.0, homeAnchor=40.0), config)
-        val confirmed = engine.next(firstHome.nextState, fix(1_300_000, LocationType.HOME, company=2000.0, companyAnchor=1900.0, homeAnchor=20.0), config)
-        val home = confirmed.events.filterIsInstance<TrajectoryAnchorEngine.Event.HomeArrival>().single()
+            candidateCompanyDepartureTime = 100L, movingAwayCount = 1)
+        val decision = engine.next(state,
+            fix(200, LocationType.HOME, company = 2000.0, companyAnchor = 1900.0, homeAnchor = 40.0), config)
+        assertEquals("FINISHED", decision.nextState.currentState)
+        assertEquals(100L, decision.nextState.confirmedDepartureTime)
+        val home = decision.events.filterIsInstance<TrajectoryAnchorEngine.Event.HomeArrival>().single()
         assertEquals(200L, home.occurredAt)
-        assertEquals(1_300_000L, home.confirmedAt)
+        assertEquals(200L, home.confirmedAt)
+    }
+
+    @Test fun homeNearCompanyStillWaitsForConfirmWindow() {
+        // 家在公司附近（farEnough 不成立）时，单次到家证据不足，仍需计时兜底
+        val state = WorkStateEntity(currentState = "TEMP_LEAVE", sessionId = "s", sessionStart = 1L,
+            candidateCompanyDepartureTime = 1_000_000L)
+        val decision = engine.next(state,
+            fix(1_060_000L, LocationType.HOME, company = 100.0, companyAnchor = 150.0, homeAnchor = 20.0), config)
+        assertEquals("TEMP_LEAVE", decision.nextState.currentState)
+        assertEquals(1_060_000L, decision.nextState.candidateHomeArrivalTime)
+        assertTrue(decision.events.isEmpty())
     }
 
     @Test fun newSessionClearsPreviousSessionFields() {
