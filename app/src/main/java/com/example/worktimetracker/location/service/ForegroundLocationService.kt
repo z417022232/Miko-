@@ -409,6 +409,10 @@ class ForegroundLocationService : Service(), LocationListener {
         scheduleDepartureConfirmation(next, settings)
         if (previous.currentState != next.currentState) {
             app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "STATE", content = "${previous.currentState} → ${next.currentState}（${type.name}）"))
+            // 真机轨迹验证 TRACE（测试工具）：状态变化时一行记录融合判断/状态前后/采样档位/Burst 阶段
+            app.database.appLogDao().insert(com.example.worktimetracker.data.entity.AppLogEntity(type = "TRACE", content = VerificationTrace.stateLine(
+                previous, next, lastResolvedPlace.name, currentSamplingIntervalMillis,
+                motionBurstUntil, burstMediumPhase, now)))
         }
     }
 
