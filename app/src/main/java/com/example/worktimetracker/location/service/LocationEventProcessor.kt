@@ -76,7 +76,13 @@ class LocationEventProcessor(private val analyzer: LocationStatusAnalyzer = Loca
                 }
             }
             "FINISHED" -> when (type) {
-                LocationType.HOME -> previous.copy(currentState = "REST", sessionStart = null)
+                LocationType.HOME -> if (previous.homeArrivalTime == null) previous.copy(
+                    currentState = "REST", sessionStart = null,
+                    // 与 TrajectoryAnchorEngine.FINISHED 分支语义一致：迟到到家证据必须补齐到家时间，
+                    // 否则记录缺 homeArrivalTime 会被标记 needsReview 要求手动确认
+                    homeArrivalTime = previous.candidateHomeArrivalTime ?: now,
+                    homeArrivalConfirmedAt = now
+                ) else previous.copy(currentState = "REST", sessionStart = null)
                 LocationType.COMPANY -> previous.copy(currentState = "WORKING", sessionStart = now)
                 LocationType.OTHER -> previous.copy(currentState = "LEAVING_HOME", sessionStart = now)
                 LocationType.UNKNOWN -> previous
