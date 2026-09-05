@@ -852,8 +852,9 @@ class ForegroundLocationService : Service(), LocationListener {
         app.database.withTransaction {
             val previous = app.database.workStateDao().getState()
                 ?: return@withTransaction
+            // 校准只影响公司稳定半径（未校准回落 100m 默认值），不再禁用环境证据路径——
+            // 与 GPS 路径收敛原则一致：校准改可信度，不切路径（2026-09-05）
             val calibration = LocationCalibrationStore(this@ForegroundLocationService)
-            if (calibration.companyCalibratedAt() <= 0L) return@withTransaction
             val type = locationTypeOf(fused.place)
             val fix = TrajectoryAnchorEngine.Fix(
                 time = now,
