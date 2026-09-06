@@ -541,7 +541,7 @@ class ForegroundLocationService : Service(), LocationListener {
         val session = sessionEngine.buildSession(start, effectiveEnd, learned.first)
         val existing = app.database.workRecordDao().getByDate(session.assignedDate)
         val recordToSave = ConfirmedSession.merge(
-            existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = "WORK"),
+            existing = existing ?: WorkRecordEntity(workDate = session.assignedDate, status = session.status.name),
             shift = session.shiftType.name,
             companyArrival = start,
             companyDeparture = effectiveEnd,
@@ -549,10 +549,12 @@ class ForegroundLocationService : Service(), LocationListener {
             homeArrival = next.homeArrivalTime,
             actualMinutes = session.actualMinutes,
             calculatedMinutes = session.finalMinutes,
-            needsReview = session.needsReview || capped
+            needsReview = session.needsReview || capped,
+            status = session.status.name,
+            mode = MergeMode.FINALIZE_SESSION
         )
         app.database.workRecordDao().upsert(
-            if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave) else recordToSave
+            if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave, MergeMode.FINALIZE_SESSION) else recordToSave
         )
         learnedCache.clear()
         sendWorkRecordNotification(session)
