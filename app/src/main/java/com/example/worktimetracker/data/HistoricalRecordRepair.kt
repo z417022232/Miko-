@@ -22,6 +22,12 @@ object HistoricalRecordRepair {
     private const val CROSS_MIDNIGHT_KEY = "cross_midnight_sessions_v7"
     private const val AUGUST_19_KEY = "august_19_incomplete_v8"
 
+    /** 校准日回放只允许在会话进行中执行，避免覆盖已完结（REST/FINISHED）记录。 */
+    private val CALIBRATION_REPLAY_ACTIVE_STATES = setOf("LEAVING_HOME", "NEAR_COMPANY", "WORKING", "TEMP_LEAVE")
+
+    fun shouldReplayCalibrationSession(currentState: String?): Boolean =
+        currentState in CALIBRATION_REPLAY_ACTIVE_STATES
+
     fun shouldRepair(record: WorkRecordEntity): Boolean =
         !record.isManual && !record.needsReview && record.startTime != null && record.endTime != null
 
@@ -87,6 +93,10 @@ object HistoricalRecordRepair {
         val db = app.database
         db.withTransaction {
             val state = db.workStateDao().getState() ?: return@withTransaction
+            // 校准日回放只对"校准后仍在进行中的会话"有意义。会话已完结（REST/FINISHED）时
+            // 若仍按 离家→校准时间 回放，会用日志重建值覆盖已完结记录：清空 homeArrivalTime、
+            // 强制 needsReview=true、改写 startTime——必须先跳过（2026-09-07 B3 复现）。
+            if (!shouldReplayCalibrationSession(state.currentState)) return@withTransaction
             val homeDeparture = state.candidateHomeDepartureTime ?: state.homeDepartureTime ?: return@withTransaction
             val logs = db.locationLogDao().getLogs(homeDeparture, calibratedAt)
             val analyzer = LocationStatusAnalyzer()

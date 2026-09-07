@@ -14,6 +14,18 @@ class HistoricalRecordRepairTest {
         assertFalse(HistoricalRecordRepair.shouldRepair(normal.copy(isManual = true)))
     }
 
+    @Test fun calibrationReplayOnlyAppliesToInProgressSessionStates() {
+        // 会话进行中才允许回放（校准日场景）
+        assertTrue(HistoricalRecordRepair.shouldReplayCalibrationSession("WORKING"))
+        assertTrue(HistoricalRecordRepair.shouldReplayCalibrationSession("TEMP_LEAVE"))
+        assertTrue(HistoricalRecordRepair.shouldReplayCalibrationSession("LEAVING_HOME"))
+        assertTrue(HistoricalRecordRepair.shouldReplayCalibrationSession("NEAR_COMPANY"))
+        // 会话已完结：回放会用日志重建值覆盖已完结记录，必须跳过（2026-09-07 B3 复现）
+        assertFalse(HistoricalRecordRepair.shouldReplayCalibrationSession("REST"))
+        assertFalse(HistoricalRecordRepair.shouldReplayCalibrationSession("FINISHED"))
+        assertFalse(HistoricalRecordRepair.shouldReplayCalibrationSession(null))
+    }
+
     @Test fun augustNineteenthKeepsHomeUnknownAndExplainsDepartureEvidence() {
         val record = WorkRecordEntity(workDate="2026-08-19", status="MANUAL", shift="NIGHT_SHIFT",
             startTime=100, endTime=null, homeArrivalTime=null, finalMinutes=660, isManual=true)
