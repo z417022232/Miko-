@@ -559,22 +559,27 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         _settings.value = updated
     }
 
-    private fun WorkRecordEntity.toUi(date: LocalDate): UiDayRecord = UiDayRecord(
-        date = date,
-        status = when (status) { "WORK" -> if (shift == "NIGHT_SHIFT") "夜班" else "白班"; "REST" -> "休息"; "OUTSIDE" -> "外出"; "EARLY_LEAVE" -> "下早班"; "ARRIVAL_EXCEPTION" -> "到岗异常"; "MANUAL" -> "手动"; "LEAVE" -> "请假"; else -> status },
-        shift = when (shift) { "DAY_SHIFT", "白班" -> "白班"; "NIGHT_SHIFT", "夜班" -> "夜班"; else -> null },
-        startText = startTime?.timeText(),
-        endText = endTime?.timeText(startTime),
-        actualMinutes = actualMinutes,
-        finalMinutes = finalMinutes,
-        needsReview = needsReview,
-        note = note,
-        holidayName = ChinaHolidayProvider.name(date),
-        companyArrivalText = startTime?.timeText(),
-        companyDepartureText = endTime?.timeText(startTime),
-        homeDepartureText = homeDepartureTime?.timeText(),
-        homeArrivalText = homeArrivalTime?.timeText(startTime)
-    )
+    private fun WorkRecordEntity.toUi(date: LocalDate): UiDayRecord {
+        val dayInfo = ChinaHolidayProvider.info(date)
+        return UiDayRecord(
+            date = date,
+            status = when (status) { "WORK" -> if (shift == "NIGHT_SHIFT") "夜班" else "白班"; "REST" -> "休息"; "OUTSIDE" -> "外出"; "EARLY_LEAVE" -> "下早班"; "ARRIVAL_EXCEPTION" -> "到岗异常"; "MANUAL" -> "手动"; "LEAVE" -> "请假"; else -> status },
+            shift = when (shift) { "DAY_SHIFT", "白班" -> "白班"; "NIGHT_SHIFT", "夜班" -> "夜班"; else -> null },
+            startText = startTime?.timeText(),
+            endText = endTime?.timeText(startTime),
+            actualMinutes = actualMinutes,
+            finalMinutes = finalMinutes,
+            needsReview = needsReview,
+            note = note,
+            holidayName = dayInfo.festivalName,
+            dayKind = dayInfo.kind,
+            dayBadge = dayInfo.festivalName ?: dayInfo.kind.shortLabel,
+            companyArrivalText = startTime?.timeText(),
+            companyDepartureText = endTime?.timeText(startTime),
+            homeDepartureText = homeDepartureTime?.timeText(),
+            homeArrivalText = homeArrivalTime?.timeText(startTime)
+        )
+    }
 
     private fun UserSettingsEntity.toDomain(): WorkSettings = WorkSettings(workStartMinutes, workEndMinutes, hasDefaultHours, defaultWorkMinutes, restDeductionMinutes, outsideThresholdMinutes, leaveCompanyConfirmMinutes, earlyLeaveToleranceMinutes)
     private fun LocalDateTime.ms(): Long = atZone(zone).toInstant().toEpochMilli()

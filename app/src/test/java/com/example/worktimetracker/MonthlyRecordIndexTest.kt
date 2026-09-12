@@ -1,6 +1,7 @@
 package com.example.worktimetracker
 
 import com.example.worktimetracker.data.entity.WorkRecordEntity
+import com.example.worktimetracker.domain.engine.DayKind
 import com.example.worktimetracker.ui.MonthlyRecordIndex
 import com.example.worktimetracker.ui.calendarDayLabel
 import org.junit.Assert.assertEquals
@@ -51,5 +52,43 @@ class MonthlyRecordIndexTest {
             LocalDate.of(2026, 9, 30), ZoneId.of("Asia/Shanghai")
         )
         assertNull(unknown[4].shift)
+    }
+
+    /**
+     * 用户 2026-09-13 需求：节日当天上班显示 `白/夜 11h + 中秋节`，休息日上班显示 `白/夜 11h + 休`，
+     * 调休上班日显示 `白/夜 11h + 班`。网格口径 = dayBadge（第一行）+ calendarDayLabel（第二行）。
+     */
+    @Test
+    fun `workingOnFestivalRestOrMakeupDayKeepsBothDayKindAndHours`() {
+        val rows = listOf(
+            WorkRecordEntity(workDate = "2026-09-20", status = "WORK", shift = "DAY_SHIFT", finalMinutes = 660),
+            WorkRecordEntity(workDate = "2026-09-25", status = "WORK", shift = "DAY_SHIFT", finalMinutes = 660),
+            WorkRecordEntity(workDate = "2026-09-26", status = "WORK", shift = "NIGHT_SHIFT", finalMinutes = 660)
+        )
+        val days = MonthlyRecordIndex.build(YearMonth.of(2026, 9), rows, LocalDate.of(2026, 9, 30), ZoneId.of("Asia/Shanghai"))
+
+        fun lines(i: Int) = listOf(days[i].dayBadge, calendarDayLabel(days[i].shift, days[i].finalMinutes))
+
+        assertEquals("9/20 调休上班 + 白班", listOf("班", "白 11h"), lines(19))
+        assertEquals("9/25 中秋节 + 白班", listOf("中秋节", "白 11h"), lines(24))
+        assertEquals("9/26 假期休息日 + 夜班", listOf("休", "夜 11h"), lines(25))
+        assertEquals(DayKind.MAKEUP_WORKDAY, days[19].dayKind)
+        assertEquals(DayKind.FESTIVAL, days[24].dayKind)
+        assertEquals(DayKind.HOLIDAY_REST, days[25].dayKind)
+
+        // 9/27 无记录 → 仍显示"休"
+        assertEquals("休", days[26].dayBadge)
+        assertEquals(0, days[26].finalMinutes)
+    }
+
+    @Test
+    fun `ordinaryWorkdayHasNoHolidayBadgeAndWeekendShowsRest`() {
+        val days = MonthlyRecordIndex.build(
+            YearMonth.of(2026, 9), emptyList(), LocalDate.of(2026, 8, 31), ZoneId.of("Asia/Shanghai")
+        )
+        assertEquals(DayKind.WORKDAY, days[13].dayKind) // 9/14 周一
+        assertNull("普通工作日不应有公休标签", days[13].dayBadge)
+        assertEquals(DayKind.WEEKEND, days[18].dayKind) // 9/19 周六
+        assertEquals("休", days[18].dayBadge)
     }
 }

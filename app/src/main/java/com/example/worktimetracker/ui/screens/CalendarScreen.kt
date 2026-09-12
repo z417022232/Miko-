@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.UiDayRecord
 import com.example.worktimetracker.ui.calendarDayLabel
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
+import com.example.worktimetracker.domain.engine.DayKind
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import java.time.LocalDate
 import java.time.YearMonth
@@ -324,13 +325,25 @@ private fun CalendarCard(
 @Composable
 private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecord) -> Unit) {
     val today = record.date == LocalDate.now()
-    val color = statusColor(record.status)
-    val subLabel = when {
-        record.finalMinutes > 0 -> calendarDayLabel(record.shift, record.finalMinutes)
-        !record.holidayName.isNullOrBlank() -> record.holidayName.take(3)
-        record.status.isNotBlank() -> shortStatus(record.status)
-        else -> ""
-    }
+    val worked = record.finalMinutes > 0
+    val badge = record.dayBadge
+    val hours = if (worked) calendarDayLabel(record.shift, record.finalMinutes) else ""
+    val statusLabel = if (record.status.isNotBlank()) shortStatus(record.status) else ""
+    // 只有"发生了具体事件"的状态（请假/外出/早退/异常/手动）才压过公休标签；"休息"不算
+    val meaningfulStatus = record.status.isNotBlank() && record.status != "休息"
+    // 最多两行：第一行公休性质（中秋节 / 休 / 班），第二行工时或状态。
+    // 于是"节假日本身上班" = 白 11h + 中秋节，"休息日上班" = 白 11h + 休。
+    val lines: List<Pair<String, Color>> = buildList {
+        if (worked) {
+            badge?.let { add(it to dayBadgeColor(record.dayKind)) }
+            add(hours to statusColor(record.status))
+        } else {
+            if (badge != null) add(badge to dayBadgeColor(record.dayKind))
+            if (meaningfulStatus || badge == null) {
+                if (statusLabel.isNotBlank()) add(statusLabel to statusColor(record.status))
+            }
+        }
+    }.take(2)
     Box(modifier = Modifier.fillMaxWidth().height(62.dp).padding(2.dp)) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -338,7 +351,7 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
                 .fillMaxWidth()
                 .height(62.dp)
                 .clip(RoundedCornerShape(12.dp))
-                .background(if (selected) AppBlue.copy(alpha = 0.11f) else Color.Transparent)
+                .background(dayCellBackground(record.dayKind, selected))
                 .then(if (today && !selected) Modifier.border(1.dp, AppBlue.copy(alpha = 0.45f), RoundedCornerShape(12.dp)) else Modifier)
                 .clickable { onClick(record) }
                 .padding(top = 4.dp)
@@ -348,16 +361,8 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
                 fontWeight = if (selected || today) FontWeight.Bold else FontWeight.Normal,
                 color = if (selected) AppBlue else MaterialTheme.colorScheme.onSurface
             )
-            if (!record.holidayName.isNullOrBlank()) {
-                Text(
-                    record.holidayName.take(3),
-                    color = AppOrange,
-                    style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1
-                )
-            }
-            if (subLabel.isNotBlank() && (record.finalMinutes > 0 || record.holidayName.isNullOrBlank())) {
-                Text(subLabel, color = color, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            lines.forEach { (text, tint) ->
+                Text(text, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
             }
         }
         // A6: 待确认角标——让用户在主日历上就能看到哪天需要处理
@@ -371,6 +376,37 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
             )
         }
     }
+}
+
+/**
+ * 日历格子的公休底色。只看"这天本来的日历身份"，与用户是否上班无关：
+ * - 调休上班日 → 浅橙（提醒这是被调来的班，别当成普通工作日）
+ * - 法定节日当天 → 浅红
+ * - 周末 / 假期休息日 → 浅灰
+ * - 普通工作日 → 透明
+ * 选中态优先，避免底色盖住选中反馈。
+ */
+private fun dayCellBackground(kind: DayKind, selected: Boolean): Color = when {
+    selected -> AppBlue.copy(alpha = 0.11f)
+    kind == DayKind.MAKEUP_WORKDAY -> AppOrange.copy(alpha = 0.18f)
+    kind == DayKind.FESTIVAL -> AppRed.copy(alpha = 0.12f)
+    kind == DayKind.WEEKEND || kind == DayKind.HOLIDAY_REST -> AppMuted.copy(alpha = 0.10f)
+    else -> Color.Transparent
+}
+
+private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
+    DayKind.FESTIVAL -> AppRed
+    DayKind.MAKEUP_WORKDAY -> AppOrange
+    else -> AppMuted
+}
+
+/** 详情卡片/弹窗用的完整公休说明（格子空间小，只放短标签）。 */
+private fun dayKindText(kind: DayKind, festivalName: String?): String? = when (kind) {
+    DayKind.FESTIVAL -> festivalName
+    DayKind.HOLIDAY_REST -> "假期休息"
+    DayKind.MAKEUP_WORKDAY -> "调休上班"
+    DayKind.WEEKEND -> "周末休息"
+    DayKind.WORKDAY -> null
 }
 
 @Composable
@@ -431,8 +467,8 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                     Text("没有到达和离开记录", color = AppMuted)
                 }
             }
-            if (!record.holidayName.isNullOrBlank()) {
-                Text(record.holidayName, color = AppOrange, modifier = Modifier.padding(top = 6.dp))
+            dayKindText(record.dayKind, record.holidayName)?.let {
+                Text(it, color = dayBadgeColor(record.dayKind), modifier = Modifier.padding(top = 6.dp))
             }
         }
     }
@@ -568,7 +604,7 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
         ) {
             Text("${record.date.monthValue}月${record.date.dayOfMonth}日", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
-                listOfNotNull(record.holidayName, record.status.ifBlank { null }).joinToString(" · ").ifBlank { "暂无记录" },
+                listOfNotNull(dayKindText(record.dayKind, record.holidayName), record.status.ifBlank { null }).joinToString(" · ").ifBlank { "暂无记录" },
                 color = statusColor(record.status)
             )
             Spacer(Modifier.height(16.dp))
