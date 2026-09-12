@@ -23,8 +23,9 @@ interface WorkRecordDao {
     @Query("SELECT * FROM work_records WHERE isManual = 0 AND startTime IS NOT NULL AND endTime IS NOT NULL AND needsReview = 0 AND status = 'WORK' ORDER BY startTime DESC LIMIT 14")
     suspend fun latestValidForLearning(): List<WorkRecordEntity>
 
-    /** 迟到家证据补写目标：最近一条已完结（离岗时间早于到家时间）且缺到家时间的自动记录 */
-    @Query("SELECT * FROM work_records WHERE status = 'WORK' AND homeArrivalTime IS NULL AND startTime IS NOT NULL AND endTime IS NOT NULL AND endTime <= :arrival ORDER BY endTime DESC LIMIT 1")
+    /** 迟到家证据补写目标：最近一条已完结（离岗时间早于到家时间）且缺到家时间的自动记录。
+     *  注意不能限定 status='WORK'：迟到日记录是 ARRIVAL_EXCEPTION（见 b2fca68 状态透传），同样需要补写。 */
+    @Query("SELECT * FROM work_records WHERE status != 'REST' AND homeArrivalTime IS NULL AND startTime IS NOT NULL AND endTime IS NOT NULL AND endTime <= :arrival ORDER BY endTime DESC LIMIT 1")
     suspend fun latestFinishedWithoutHomeArrival(arrival: Long): WorkRecordEntity?
 
     @Query("SELECT COALESCE(MAX(updatedAt), 0) FROM work_records WHERE isManual = 0 AND startTime IS NOT NULL AND endTime IS NOT NULL AND needsReview = 0 AND status = 'WORK'")
