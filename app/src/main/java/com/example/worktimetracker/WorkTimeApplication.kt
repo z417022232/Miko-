@@ -33,7 +33,7 @@ class WorkTimeApplication : Application() {
 
     val database: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, "work_time_tracker.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
             .build()
     }
 
@@ -113,6 +113,12 @@ class WorkTimeApplication : Application() {
                         " + CASE WHEN note IS NOT NULL THEN 64 ELSE 0 END" +
                         " WHERE isManual = 1"
                 )
+            }
+        }
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // A2: needsReview 结构化原因（如 "R3 21:00-21:29 灰区"），UI 直接展示
+                db.execSQL("ALTER TABLE work_records ADD COLUMN reviewReason TEXT")
             }
         }
         val MIGRATION_8_9 = object : Migration(8, 9) {

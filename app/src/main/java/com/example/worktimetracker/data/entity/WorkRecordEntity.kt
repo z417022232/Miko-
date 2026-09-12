@@ -22,6 +22,8 @@ data class WorkRecordEntity(
     val isManual: Boolean = false,
     val manualFieldsMask: Int = 0,
     val needsReview: Boolean = false,
+    /** A2: needsReview 的结构化原因（如 "R3 21:00-21:29 灰区"）。null 表示无需复核。 */
+    val reviewReason: String? = null,
     val note: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()

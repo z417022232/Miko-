@@ -22,7 +22,9 @@ object ConfirmedSession {
         /** v1 算法对齐后的有效 start（迟到向上取整后的整点）。finalize 时由 WorkSessionEngine 填充。 */
         v1EffectiveStartMillis: Long? = null,
         /** v1 算法对齐后的有效 end。灰区/超限不计加班时为 expectedEnd；正常为 endMillis。 */
-        v1EffectiveEndMillis: Long? = null
+        v1EffectiveEndMillis: Long? = null,
+        /** A2: needsReview 结构化原因。null = 无需复核。 */
+        reviewReason: String? = null
     ): WorkRecordEntity {
         val validDeparture = companyDeparture?.takeIf { it >= companyArrival }
         val validHomeDeparture = homeDeparture?.takeIf { it <= companyArrival }
@@ -51,6 +53,7 @@ object ConfirmedSession {
             actualMinutes = actualMinutes,
             finalMinutes = if (base.isManual) base.finalMinutes else calculatedMinutes,
             needsReview = review,
+            reviewReason = if (base.isManual) base.reviewReason else reviewReason,
             note = if (base.isManual) base.note else v1Note ?: base.note,
             manualFieldsMask = newMask,
             updatedAt = System.currentTimeMillis()

@@ -7,6 +7,7 @@ import com.example.worktimetracker.domain.model.WorkSettings
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.concurrent.TimeUnit
 
 class WorkSessionEngine(
     private val zoneId: ZoneId = ZoneId.systemDefault(),
@@ -33,12 +34,20 @@ class WorkSessionEngine(
             settings = settings
         )
 
-        val needsReview = finalStatus == RecordStatus.EARLY_LEAVE ||
-            arrivalLate ||
-            startMillis == null ||
-            endMillis == null ||
-            v1Result.ruleTrace.contains("R3_GREY") ||
-            v1Result.ruleTrace.contains("R4_NO_OVERTIME")
+        // A2: needsReview 结构化原因（对照 verification/工时计薪规则.md §3 触发矩阵）
+        val reviewReasons = mutableListOf<String>()
+        if (finalStatus == RecordStatus.EARLY_LEAVE && endMillis != null) {
+            val earlyMin = TimeUnit.MILLISECONDS.toMinutes(expectedEnd - effectiveEnd).toInt()
+            reviewReasons.add("R7 早退 ${earlyMin}min")
+        }
+        if (arrivalLate) {
+            val lateMin = TimeUnit.MILLISECONDS.toMinutes(effectiveStart - expectedStart).toInt()
+            reviewReasons.add("R1 迟到 ${lateMin}min")
+        }
+        if (startMillis == null) reviewReasons.add("缺上班时间")
+        if (endMillis == null) reviewReasons.add("缺下班时间")
+        if (v1Result.ruleTrace.contains("R3_GREY")) reviewReasons.add("R3 21:00-21:29 灰区")
+        if (v1Result.ruleTrace.contains("R4_NO_OVERTIME")) reviewReasons.add("R4 21:30+ 不计加班")
 
         return WorkSession(
             startMillis = effectiveStart,
@@ -48,10 +57,11 @@ class WorkSessionEngine(
             status = finalStatus,
             actualMinutes = actual,
             finalMinutes = v1Result.finalMinutes,
-            needsReview = needsReview,
+            needsReview = reviewReasons.isNotEmpty(),
             v1EffectiveStartMillis = v1Result.effectiveStartMillis,
             v1EffectiveEndMillis = v1Result.effectiveEndMillis,
-            v1RuleTrace = v1Result.ruleTrace
+            v1RuleTrace = v1Result.ruleTrace,
+            reviewReason = reviewReasons.takeIf { it.isNotEmpty() }?.joinToString("；")
         )
     }
 

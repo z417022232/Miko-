@@ -9,6 +9,7 @@ import com.example.worktimetracker.location.service.ProtectedRecordMerge
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDateTime
@@ -48,7 +49,8 @@ class WorkRecordFinalizeFlowTest {
             mode = MergeMode.FINALIZE_SESSION,
             v1RuleTrace = session.v1RuleTrace,
             v1EffectiveStartMillis = session.v1EffectiveStartMillis,
-            v1EffectiveEndMillis = session.v1EffectiveEndMillis
+            v1EffectiveEndMillis = session.v1EffectiveEndMillis,
+            reviewReason = session.reviewReason
         )
         return if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave, MergeMode.FINALIZE_SESSION)
         else recordToSave
@@ -138,5 +140,51 @@ class WorkRecordFinalizeFlowTest {
         // manualFieldsMask 应标 FINAL_MINUTES 位（v1 自动算的）
         val finalBit = 1 shl 5 // ManualField.FINAL_MINUTES.bit
         assertTrue("manualFieldsMask 应标 FINAL_MINUTES 位", (final.manualFieldsMask and finalBit) != 0)
+    }
+
+    // ---------- A2: reviewReason 结构化原因 ----------
+
+    @Test
+    fun reviewReasonIsNullForCleanDay() {
+        // 准点上下班 → needsReview=false 且 reviewReason=null
+        val final = finalize(at("08:39:21"), at("21:00:00"), draft(at("08:39:21")))
+        assertFalse(final.needsReview)
+        assertNull("干净日不应有 reviewReason", final.reviewReason)
+    }
+
+    @Test
+    fun reviewReasonCapturesLateArrival() {
+        // 迟到 10min → reviewReason 含 "R1 迟到 10min"
+        val final = finalize(at("09:10:00"), at("21:00:00"), draft(at("09:10:00")))
+        assertTrue(final.needsReview)
+        assertNotNull(final.reviewReason)
+        assertTrue("应含迟到原因", final.reviewReason!!.contains("迟到"))
+        assertTrue("应含 R1 规则号", final.reviewReason!!.contains("R1"))
+    }
+
+    @Test
+    fun reviewReasonCapturesGreyZoneAndLateArrival() {
+        // 迟到 + R3 灰区 → reviewReason 同时含两种原因（用；分隔）
+        val final = finalize(at("09:49:00"), at("21:06:00"), draft(at("09:49:00")))
+        assertTrue(final.needsReview)
+        assertNotNull(final.reviewReason)
+        assertTrue("应含 R1 迟到", final.reviewReason!!.contains("R1"))
+        assertTrue("应含 R3 灰区", final.reviewReason!!.contains("R3"))
+    }
+
+    @Test
+    fun reviewReasonCapturesNoOvertime() {
+        // 21:30 离岗（R4）→ reviewReason 含 R4
+        val final = finalize(at("09:10:00"), at("21:30:00"), draft(at("09:10:00")))
+        assertTrue(final.needsReview)
+        assertTrue("应含 R4", final.reviewReason!!.contains("R4"))
+    }
+
+    @Test
+    fun reviewReasonCapturesEarlyLeave() {
+        // 18:00 早退 → reviewReason 含 R7
+        val final = finalize(at("08:50:00"), at("18:00:00"), draft(at("08:50:00")))
+        assertTrue(final.needsReview)
+        assertTrue("应含 R7", final.reviewReason!!.contains("R7"))
     }
 }

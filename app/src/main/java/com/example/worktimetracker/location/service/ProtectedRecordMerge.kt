@@ -33,6 +33,8 @@ object ProtectedRecordMerge {
             actualMinutes = automatic.actualMinutes ?: existing.actualMinutes,
             finalMinutes = if (protected(ManualField.FINAL_MINUTES)) existing.finalMinutes else automatic.finalMinutes,
             note = if (protected(ManualField.NOTE)) existing.note else automatic.note ?: existing.note,
+            // A2: 复核原因以自动计算为准；无新原因时保留原值
+            reviewReason = automatic.reviewReason ?: existing.reviewReason,
             // 合并 mask：草稿的 manualFieldsMask (人工保护) + automatic 的 mask (v1 自动算标记)
             manualFieldsMask = existing.manualFieldsMask or automatic.manualFieldsMask,
             needsReview = when (mode) {

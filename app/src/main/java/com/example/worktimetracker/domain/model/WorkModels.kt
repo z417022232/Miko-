@@ -37,7 +37,9 @@ data class WorkSession(
     /** v1 规则按 status 分支对齐后的有效结束时间（早退时保留原始 endTime，灰区/超限不计加班时 == endMillis 或 null）。 */
     val v1EffectiveEndMillis: Long? = null,
     /** 触发的 v1 规则 ID 列表，如 listOf("R1","R2","R8")，供 UI / note 复用。 */
-    val v1RuleTrace: List<String> = emptyList()
+    val v1RuleTrace: List<String> = emptyList(),
+    /** A2: needsReview 的结构化原因（可读字符串，UI 直接展示）。null 表示无需复核。 */
+    val reviewReason: String? = null
 )
 
 data class WorkCalculationInput(
