@@ -1,7 +1,29 @@
 package com.example.worktimetracker.domain.model
 
 enum class LocationType { HOME, COMPANY, OTHER, UNKNOWN }
-enum class ShiftType { DAY_SHIFT, NIGHT_SHIFT }
+enum class ShiftType {
+    DAY_SHIFT, NIGHT_SHIFT;
+
+    companion object {
+        /**
+         * 统一解析落库/显示/导入三种来源的班次字符串。
+         *
+         * 历史上同一条记录出现过 3 种写法：枚举名（DAY_SHIFT/NIGHT_SHIFT）、
+         * 中文显示标签（白班/夜班）、以及 null。UI 曾把显示标签直接写回库
+         * （CalendarScreen 手动工时对话框），导致这些记录的班次在学习与展示链路中丢失。
+         *
+         * [normalize] 用于**写入侧**归一（未知按白班，与历史默认一致）；
+         * [parse] 用于**读取侧**，无法识别返回 null 由调用方决定跳过或兜底。
+         */
+        fun normalize(raw: String?): String = parse(raw)?.name ?: DAY_SHIFT.name
+
+        fun parse(raw: String?): ShiftType? = when (raw?.trim()) {
+            DAY_SHIFT.name, "白班" -> DAY_SHIFT
+            NIGHT_SHIFT.name, "夜班" -> NIGHT_SHIFT
+            else -> null
+        }
+    }
+}
 enum class RecordStatus { WORK, REST, OUTSIDE, LEAVE, EARLY_LEAVE, ARRIVAL_EXCEPTION }
 enum class WorkState { REST, LEAVING_HOME, NEAR_COMPANY, WORKING, TEMP_LEAVE, FINISHED }
 

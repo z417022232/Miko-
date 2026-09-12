@@ -47,4 +47,23 @@ class ManualRecordEditorTest {
         assertEquals(480, edited.finalMinutes)
         assertTrue(edited.isManual)
     }
+
+    /**
+     * 回归：旧版 CalendarScreen 手动工时对话框把 UiDayRecord.shift（显示标签"白班"）
+     * 直接传进来，导致中文写库（真实数据 id=15/158）。编辑器必须归一为枚举名。
+     */
+    @Test
+    fun `chinese display label from legacy ui is normalized to enum name`() {
+        val day = ManualRecordEditor.apply(null, "2026-08-11", "白班", 660, "", 999)
+        assertEquals("DAY_SHIFT", day.shift)
+
+        val night = ManualRecordEditor.apply(null, "2026-08-12", "夜班", 660, "", 999)
+        assertEquals("NIGHT_SHIFT", night.shift)
+    }
+
+    @Test
+    fun `unknown shift value falls back to day shift instead of persisting raw text`() {
+        val edited = ManualRecordEditor.apply(null, "2026-08-13", "白班/夜班", 660, "", 999)
+        assertEquals("DAY_SHIFT", edited.shift)
+    }
 }

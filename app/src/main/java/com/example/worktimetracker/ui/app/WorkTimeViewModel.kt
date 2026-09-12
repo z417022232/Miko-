@@ -562,7 +562,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private fun WorkRecordEntity.toUi(date: LocalDate): UiDayRecord = UiDayRecord(
         date = date,
         status = when (status) { "WORK" -> if (shift == "NIGHT_SHIFT") "夜班" else "白班"; "REST" -> "休息"; "OUTSIDE" -> "外出"; "EARLY_LEAVE" -> "下早班"; "ARRIVAL_EXCEPTION" -> "到岗异常"; "MANUAL" -> "手动"; "LEAVE" -> "请假"; else -> status },
-        shift = when (shift) { "DAY_SHIFT" -> "白班"; "NIGHT_SHIFT" -> "夜班"; else -> null },
+        shift = when (shift) { "DAY_SHIFT", "白班" -> "白班"; "NIGHT_SHIFT", "夜班" -> "夜班"; else -> null },
         startText = startTime?.timeText(),
         endText = endTime?.timeText(startTime),
         actualMinutes = actualMinutes,

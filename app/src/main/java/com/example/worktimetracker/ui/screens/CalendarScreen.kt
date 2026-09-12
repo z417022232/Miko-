@@ -670,7 +670,11 @@ private fun ManualHoursDialog(
     }
     var note by remember(record.date) { mutableStateOf(record.note.orEmpty()) }
     var setDefault by remember { mutableStateOf(false) }
-    var shift by remember(record.date) { mutableStateOf(record.shift ?: "DAY_SHIFT") }
+    // record.shift 是显示标签（"白班"/"夜班"），而 ShiftSelector 用枚举名比较。
+    // 旧实现写成 `record.shift ?: "DAY_SHIFT"`：既有记录打开时两个胶囊都不选中，
+    // 且未改班次直接保存会把中文标签写回 shift 字段（id=15/158 的成因）。
+    // StatisticsScreen 早已按此方式转换，此处对齐。
+    var shift by remember(record.date) { mutableStateOf(if (record.shift == "夜班") "NIGHT_SHIFT" else "DAY_SHIFT") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("修改计入工时") },

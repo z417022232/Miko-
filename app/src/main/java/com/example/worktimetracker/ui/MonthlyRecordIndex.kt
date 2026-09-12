@@ -39,7 +39,8 @@ object MonthlyRecordIndex {
             "LEAVE" -> "请假"
             else -> status
         },
-        shift = when (shift) { "DAY_SHIFT" -> "白班"; "NIGHT_SHIFT" -> "夜班"; else -> null },
+        // 同时接受枚举名与历史遗留的中文标签（id=15/158 由旧版手动工时对话框写入），避免班次标签丢失
+        shift = when (shift) { "DAY_SHIFT", "白班" -> "白班"; "NIGHT_SHIFT", "夜班" -> "夜班"; else -> null },
         startMillis = startTime,
         endMillis = endTime,
         startText = startTime?.timeText(zone),

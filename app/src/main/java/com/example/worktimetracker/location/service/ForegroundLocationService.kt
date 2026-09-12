@@ -886,7 +886,8 @@ class ForegroundLocationService : Service(), LocationListener {
         val samples = app.database.workRecordDao().latestValidForLearning().mapNotNull { row ->
             val start = row.startTime ?: return@mapNotNull null
             val end = row.endTime ?: return@mapNotNull null
-            val shift = runCatching { ShiftType.valueOf(row.shift ?: "") }.getOrNull() ?: return@mapNotNull null
+            // ShiftType.parse 容忍中文标签（"白班"/"夜班"）与旧数据；无法识别才跳过该样本
+            val shift = ShiftType.parse(row.shift) ?: return@mapNotNull null
             val minute = Instant.ofEpochMilli(start).atZone(ZoneId.systemDefault()).toLocalTime().toSecondOfDay() / 60
             ShiftProfileLearner.Sample(shift, minute, ((end - start) / 60_000L).toInt(), true)
         }
