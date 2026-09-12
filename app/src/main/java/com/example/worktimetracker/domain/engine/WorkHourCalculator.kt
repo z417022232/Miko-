@@ -1,9 +1,11 @@
 package com.example.worktimetracker.domain.engine
 
 import com.example.worktimetracker.domain.model.RecordStatus
+import com.example.worktimetracker.domain.model.ShiftType
 import com.example.worktimetracker.domain.model.WorkCalculationInput
 import com.example.worktimetracker.domain.model.WorkSettings
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.util.concurrent.TimeUnit
@@ -47,7 +49,9 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
      * - R2: 21:00 整正常下班 → endTime == 21:00:00 算正常工时
      * - R3: 21:00–21:29 灰区 → finalMinutes = 0 + needsReview（实际已扣后还在灰区）
      * - R4: 21:30+ 不计加班 → finalMinutes = 0 + needsReview
-     * - R5: 跨夜归日 → session.finalize 时按 endTime 本地日期；workDate 由 assignedDate 决定
+     * - R5: 跨夜归日 → workDate 取【上班日期（开班日）】；跨夜班次的班次边界按 shiftType 取
+     *     白班 09:00→21:00（同日）；夜班 21:00→次日 09:00。workDate 由 assignedDate 决定，
+     *     本函数只负责在跨夜时用正确的班次边界算工时（否则 R2/R3/R4/R7 会套错日历）
      * - R6: 晚到/晚离/晚到早离 同白班算法 + 状态映射（已由 detectStatus 产出 status）
      * - R7: 早退 ≥1h 直接按公式（endTime 对齐 effective_end；早退 <1h 仍按公式但 needsReview）
      * - R8: 午休扣 1h → settings.restDeductionMinutes = 60
@@ -57,6 +61,8 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         startMillis: Long?,
         endMillis: Long?,
         settings: WorkSettings,
+        /** A5/R5: 班次类型，决定 expected 边界。白班 09:00→21:00；夜班 21:00→次日 09:00。 */
+        shiftType: ShiftType = ShiftType.DAY_SHIFT,
         lateToleranceMinutes: Int = settings.arrivalToleranceMinutes
     ): V1FinalResult {
         if (status == RecordStatus.REST) {
@@ -77,12 +83,15 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         }
 
         val trace = mutableListOf<String>()
+        // R5: workDate 归属日 = 上班日（开班日）
         val date = Instant.ofEpochMilli(startMillis).atZone(zoneId).toLocalDate()
-        val expectedStart = date.atTime(settings.workStartMinutes / 60, settings.workStartMinutes % 60)
-            .atZone(zoneId).toInstant().toEpochMilli()
         val endDate = Instant.ofEpochMilli(endMillis).atZone(zoneId).toLocalDate()
-        val expectedEnd = endDate.atTime(settings.workEndMinutes / 60, settings.workEndMinutes % 60)
-            .atZone(zoneId).toInstant().toEpochMilli()
+        val crossesMidnight = endDate != date
+        if (crossesMidnight) trace.add("R5_CROSS_NIGHT")
+        // A5: 班次边界按 shiftType 取，夜班 expected 跨到次日 09:00
+        val window = expectedWindow(date, shiftType, settings)
+        val expectedStart = window.first
+        val expectedEnd = window.second
 
         val arrivalLateMillis = startMillis - expectedStart
         val arrivalLateMinutes = TimeUnit.MILLISECONDS.toMinutes(arrivalLateMillis).toInt()
@@ -146,6 +155,29 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
 
     private fun startOfDayMillis(millis: Long): Long =
         Instant.ofEpochMilli(millis).atZone(zoneId).toLocalDate().atStartOfDay(zoneId).toInstant().toEpochMilli()
+
+    /**
+     * A5/R5: 按班次类型给出该归属日的 (expectedStart, expectedEnd)。
+     *
+     * - 白班（DAY_SHIFT）：`date 09:00` → `date 21:00`（同日）
+     * - 夜班（NIGHT_SHIFT）：`date 21:00` → `date+1 09:00`（跨夜）
+     *
+     * 归属日 `date` = 上班日（开班日），与 ShiftDetector.expectedStart/expectedEnd 语义保持一致。
+     */
+    private fun expectedWindow(
+        date: LocalDate,
+        shiftType: ShiftType,
+        settings: WorkSettings
+    ): Pair<Long, Long> {
+        val start = date.atTime(settings.workStartMinutes / 60, settings.workStartMinutes % 60)
+        val end = date.atTime(settings.workEndMinutes / 60, settings.workEndMinutes % 60)
+        return when (shiftType) {
+            ShiftType.DAY_SHIFT -> start.toMillis() to end.toMillis()
+            ShiftType.NIGHT_SHIFT -> end.toMillis() to start.plusDays(1).toMillis()
+        }
+    }
+
+    private fun LocalDateTime.toMillis(): Long = atZone(zoneId).toInstant().toEpochMilli()
 
     private fun alignUpToHour(millis: Long): Long {
         val zdt = Instant.ofEpochMilli(millis).atZone(zoneId)

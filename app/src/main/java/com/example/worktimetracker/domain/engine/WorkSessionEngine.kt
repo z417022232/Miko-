@@ -25,13 +25,17 @@ class WorkSessionEngine(
         val status = detectStatus(effectiveStart, effectiveEnd, expectedStart, expectedEnd, settings)
         val arrivalLate = effectiveStart != null && effectiveStart > expectedStart + settings.arrivalToleranceMinutes * 60_000L
         val finalStatus = if (arrivalLate && status == RecordStatus.WORK) RecordStatus.ARRIVAL_EXCEPTION else status
+        // A5/R5: 跨夜判定 + 归属不变式强校验（workDate 必须 == 上班日的本地日期）
+        val crossesMidnight = effectiveStart != null && shiftDetector.crossesMidnight(effectiveStart, endMillis)
+        val assignmentViolations = validateAssignment(effectiveStart, assigned)
 
         // A1: finalize 自动按 v1 规则算 finalMinutes
         val v1Result = calculator.calculateV1FinalMinutes(
             status = finalStatus,
             startMillis = effectiveStart,
             endMillis = effectiveEnd,
-            settings = settings
+            settings = settings,
+            shiftType = shift
         )
 
         // A2: needsReview 结构化原因（对照 verification/工时计薪规则.md §3 触发矩阵）
@@ -48,6 +52,8 @@ class WorkSessionEngine(
         if (endMillis == null) reviewReasons.add("缺下班时间")
         if (v1Result.ruleTrace.contains("R3_GREY")) reviewReasons.add("R3 21:00-21:29 灰区")
         if (v1Result.ruleTrace.contains("R4_NO_OVERTIME")) reviewReasons.add("R4 21:30+ 不计加班")
+        // A5: 归属日与上班日不一致属于严重数据异常，必须人工复核
+        reviewReasons.addAll(assignmentViolations)
 
         return WorkSession(
             startMillis = effectiveStart,
@@ -61,8 +67,24 @@ class WorkSessionEngine(
             v1EffectiveStartMillis = v1Result.effectiveStartMillis,
             v1EffectiveEndMillis = v1Result.effectiveEndMillis,
             v1RuleTrace = v1Result.ruleTrace,
-            reviewReason = reviewReasons.takeIf { it.isNotEmpty() }?.joinToString("；")
+            reviewReason = reviewReasons.takeIf { it.isNotEmpty() }?.joinToString("；"),
+            crossesMidnight = crossesMidnight
         )
+    }
+
+    /**
+     * A5/R5 强校验：workDate 必须等于【上班日（开班日）】的本地日期。
+     *
+     * 这是不可协商的不变式：跨夜班次（夜班 21:00→次日 09:00）记上班日，
+     * 否则会与次日白班落在同一 workDate 而互相覆盖。
+     * 返回违规说明列表（空 = 通过）。正常构造下永远为空，作为上下游改动的护栏。
+     */
+    internal fun validateAssignment(effectiveStart: Long?, assignedDate: String): List<String> {
+        if (effectiveStart == null) return emptyList()
+        val startDate = Instant.ofEpochMilli(effectiveStart).atZone(zoneId).toLocalDate().toString()
+        return if (startDate != assignedDate) {
+            listOf("R5 归属日异常：workDate=$assignedDate 应为上班日 $startDate")
+        } else emptyList()
     }
 
     private fun detectStatus(startMillis: Long?, endMillis: Long?, expectedStart: Long, expectedEnd: Long, settings: WorkSettings): RecordStatus {

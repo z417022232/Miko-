@@ -39,7 +39,14 @@ data class WorkSession(
     /** 触发的 v1 规则 ID 列表，如 listOf("R1","R2","R8")，供 UI / note 复用。 */
     val v1RuleTrace: List<String> = emptyList(),
     /** A2: needsReview 的结构化原因（可读字符串，UI 直接展示）。null 表示无需复核。 */
-    val reviewReason: String? = null
+    val reviewReason: String? = null,
+    /**
+     * A5/R5: 该班次是否跨夜（start 与 end 不在同一本地日期）。
+     *
+     * 归属约定（2026-09-12 用户确认）：跨夜班次 workDate 一律取【上班日期（开班日）】，
+     * 例如夜班 8/1 21:00 → 8/2 09:00 记 8/1。这样与次日白班 8/2 09:00→21:00 不会同日撞车。
+     */
+    val crossesMidnight: Boolean = false
 )
 
 data class WorkCalculationInput(
