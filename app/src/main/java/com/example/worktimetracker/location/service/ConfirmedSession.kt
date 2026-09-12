@@ -31,8 +31,9 @@ object ConfirmedSession {
         val validHomeArrival = homeArrival?.takeIf { validDeparture != null && it >= validDeparture }
         val invalidOrder = validDeparture != companyDeparture || validHomeDeparture != homeDeparture || validHomeArrival != homeArrival
         val base = existing ?: WorkRecordEntity(workDate = "", status = status, finalMinutes = calculatedMinutes)
-        // 人工记录/带人工保护字段的记录：原审核标记必须保留，避免自动计算把人工确认状态清掉
-        val preserveExistingReview = base.isManual || base.manualFieldsMask != 0
+        // 只有"人工保护位"才保留原审核状态；A1/A3 写的自动痕迹位（AUTO_FINAL_MINUTES/AUTO_NEEDS_REVIEW）
+        // 不能算人工意图，否则自动算法会把自己的结果锁死。
+        val preserveExistingReview = base.isManual || ManualFieldMask.hasHumanProtection(base.manualFieldsMask)
         val review = when (mode) {
             // 正常下班完结：审核结果以最终计算为准，自动草稿阶段的临时标记不再粘住
             MergeMode.FINALIZE_SESSION -> needsReview || invalidOrder || (preserveExistingReview && base.needsReview)
@@ -40,9 +41,15 @@ object ConfirmedSession {
             MergeMode.REPAIR_FILL -> base.needsReview || needsReview || invalidOrder
         }
         val v1Note = buildV1Note(v1RuleTrace, calculatedMinutes, v1EffectiveStartMillis, v1EffectiveEndMillis, base.finalMinutes)
-        val newMask = if (v1RuleTrace.isNotEmpty()) {
-            ManualFieldMask.add(base.manualFieldsMask, ManualField.FINAL_MINUTES)
-        } else base.manualFieldsMask
+
+        // A3: 记自动痕迹位（不参与人工保护）。用户手改的 FINAL_MINUTES / NEEDS_REVIEW_ACK 位原样保留。
+        var newMask = base.manualFieldsMask
+        if (v1RuleTrace.isNotEmpty() && !base.isManual) {
+            newMask = ManualFieldMask.add(newMask, ManualField.AUTO_FINAL_MINUTES)
+            newMask = ManualFieldMask.add(newMask, ManualField.AUTO_NEEDS_REVIEW)
+            // 自动重算后旧的"已确认复核"失效（情况变了要重新确认）
+            newMask = ManualFieldMask.remove(newMask, ManualField.NEEDS_REVIEW_ACK)
+        }
         return base.copy(
             status = if (base.isManual) base.status else status,
             shift = shift,

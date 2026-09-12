@@ -18,11 +18,12 @@ object ProtectedRecordMerge {
         automatic: WorkRecordEntity,
         mode: MergeMode = MergeMode.REPAIR_FILL
     ): WorkRecordEntity {
-        val mask = existing.manualFieldsMask
-        fun protected(field: ManualField) = ManualFieldMask.contains(mask, field)
+        // A3: 只有"人工保护位"才阻止自动覆盖；自动痕迹位（AUTO_*）不参与保护判断。
+        val humanMask = ManualFieldMask.humanOnly(existing.manualFieldsMask)
+        fun protected(field: ManualField) = ManualFieldMask.contains(humanMask, field)
         val filled = (!protected(ManualField.COMPANY_DEPARTURE) && existing.endTime == null && automatic.endTime != null) ||
             (!protected(ManualField.HOME_ARRIVAL) && existing.homeArrivalTime == null && automatic.homeArrivalTime != null)
-        val preserveExistingReview = existing.isManual || existing.manualFieldsMask != 0
+        val preserveExistingReview = existing.isManual || humanMask != 0
         return existing.copy(
             status = if (existing.isManual) existing.status else automatic.status,
             shift = if (protected(ManualField.SHIFT)) existing.shift else automatic.shift ?: existing.shift,

@@ -1,5 +1,7 @@
 package com.example.worktimetracker
 
+import com.example.worktimetracker.data.entity.ManualField
+import com.example.worktimetracker.data.entity.ManualFieldMask
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.model.WorkSettings
@@ -137,9 +139,74 @@ class WorkRecordFinalizeFlowTest {
         val final = finalize(at("09:49:00"), at("21:06:00"), draft(at("09:49:00")))
         assertNotNull(final.note)
         assertTrue("note 应含 v1 规则 trace", final.note!!.startsWith("v1["))
-        // manualFieldsMask 应标 FINAL_MINUTES 位（v1 自动算的）
-        val finalBit = 1 shl 5 // ManualField.FINAL_MINUTES.bit
-        assertTrue("manualFieldsMask 应标 FINAL_MINUTES 位", (final.manualFieldsMask and finalBit) != 0)
+        // A3: 自动痕迹位是 AUTO_FINAL_MINUTES(bit 7)，不是人工保护位 FINAL_MINUTES(bit 5)
+        assertTrue("应标 AUTO_FINAL_MINUTES", ManualFieldMask.hasAutoFinalMinutes(final.manualFieldsMask))
+        assertTrue("应标 AUTO_NEEDS_REVIEW", ManualFieldMask.hasAutoNeedsReview(final.manualFieldsMask))
+        assertFalse(
+            "不应标人工保护位 FINAL_MINUTES",
+            ManualFieldMask.contains(final.manualFieldsMask, ManualField.FINAL_MINUTES)
+        )
+        assertFalse("纯自动痕迹不算人工保护", ManualFieldMask.hasHumanProtection(final.manualFieldsMask))
+    }
+
+    // ---------- A3: 自动算的 finalMinutes 不得被当成人工保护, 后续 finalize 仍可重算 ----------
+
+    @Test
+    fun autoComputedFinalMinutesIsNotLockedByProtectedMerge() {
+        // 第一次 finalize：迟到日算 10h
+        val first = finalize(at("09:49:00"), at("21:00:00"), draft(at("09:49:00")))
+        assertEquals(10 * 60, first.finalMinutes)
+        assertTrue(ManualFieldMask.hasAutoFinalMinutes(first.manualFieldsMask))
+
+        // 第二次 finalize：同一条记录改成准时 9:00 → 应重算为 11h（不能被 first.finalMinutes 锁死）
+        val second = ProtectedRecordMerge.merge(
+            existing = first,
+            automatic = ConfirmedSession.merge(
+                existing = first,
+                shift = "DAY_SHIFT",
+                companyArrival = at("08:55:00"),
+                companyDeparture = at("21:00:00"),
+                homeDeparture = null,
+                homeArrival = null,
+                actualMinutes = 725,
+                calculatedMinutes = 11 * 60,
+                needsReview = false,
+                status = "WORK",
+                mode = MergeMode.FINALIZE_SESSION,
+                v1RuleTrace = listOf("R1", "R2", "R8")
+            ),
+            mode = MergeMode.FINALIZE_SESSION
+        )
+        assertEquals("自动算的 finalMinutes 必须可被重算", 11 * 60, second.finalMinutes)
+    }
+
+    @Test
+    fun manualFinalMinutesIsStillProtected() {
+        // 用户手改 finalMinutes（isManual=1 + FINAL_MINUTES 位）→ 自动合并必须保留
+        val manual = WorkRecordEntity(
+            workDate = "2026-09-06", status = "MANUAL", shift = "DAY_SHIFT",
+            startTime = at("09:49:00"), endTime = at("21:00:00"),
+            finalMinutes = 600, isManual = true,
+            manualFieldsMask = ManualField.FINAL_MINUTES.bit, needsReview = false
+        )
+        val merged = ProtectedRecordMerge.merge(
+            existing = manual,
+            automatic = ConfirmedSession.merge(
+                existing = manual,
+                shift = "DAY_SHIFT",
+                companyArrival = at("09:49:00"),
+                companyDeparture = at("21:00:00"),
+                homeDeparture = null,
+                homeArrival = null,
+                actualMinutes = 671,
+                calculatedMinutes = 660,
+                needsReview = false,
+                status = "WORK",
+                mode = MergeMode.FINALIZE_SESSION
+            ),
+            mode = MergeMode.FINALIZE_SESSION
+        )
+        assertEquals("人工 finalMinutes 必须保留", 600, merged.finalMinutes)
     }
 
     // ---------- A2: reviewReason 结构化原因 ----------
