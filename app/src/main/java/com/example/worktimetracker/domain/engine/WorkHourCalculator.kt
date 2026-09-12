@@ -55,6 +55,15 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
      * - R6: 晚到/晚离/晚到早离 同白班算法 + 状态映射（已由 detectStatus 产出 status）
      * - R7: 早退 ≥1h 直接按公式（endTime 对齐 effective_end；早退 <1h 仍按公式但 needsReview）
      * - R8: 午休扣 1h → settings.restDeductionMinutes = 60
+     *
+     * **A8 默认工时短路（用户 2026-09-12 确认）**：
+     * - 设了上下班时间 + 默认工时，且**正常出勤**（不迟到不早退）→ 直接计 `defaultWorkMinutes`
+     *   （例：08:45 到岗 / 21:00 离岗，默认 12h ⇒ 720min）
+     * - 但**迟到或早退**时短路失效，走 R1/R7 公式（迟到向上取整、早退按实际）
+     * - 没设默认工时 → 一律按排班窗口算（08:45 到岗仍按 09:00 起算）
+     *
+     * **夜班与白班算法完全一致（用户 2026-09-12 确认）**：同一套 R1–R8，R8 同样扣 1h。
+     * 唯一差别是班次窗口由 `shiftType` 决定（白班 09:00→21:00；夜班 21:00→次日 09:00）。
      */
     fun calculateV1FinalMinutes(
         status: RecordStatus,
@@ -72,16 +81,6 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
             return V1FinalResult(0, null, null, listOf("R_NULL_BOUNDS"))
         }
 
-        // 用户在 settings 里显式配了 defaultHours（如固定 12h/天），v1 直接沿用，不做规则计算
-        if (settings.hasDefaultHours && settings.defaultWorkMinutes != null) {
-            return V1FinalResult(
-                finalMinutes = max(0, settings.defaultWorkMinutes),
-                effectiveStartMillis = startMillis,
-                effectiveEndMillis = endMillis,
-                ruleTrace = listOf("R_DEFAULT_HOURS")
-            )
-        }
-
         val trace = mutableListOf<String>()
         // R5: workDate 归属日 = 上班日（开班日）
         val date = Instant.ofEpochMilli(startMillis).atZone(zoneId).toLocalDate()
@@ -95,6 +94,26 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
 
         val arrivalLateMillis = startMillis - expectedStart
         val arrivalLateMinutes = TimeUnit.MILLISECONDS.toMinutes(arrivalLateMillis).toInt()
+
+        // A8（用户 2026-09-12 确认）：默认工时短路**仅在正常出勤时**生效。
+        //   设了默认工时「正常打卡」→ 直接计默认工时（08:45 到岗 / 21:00 离岗 → 默认值）
+        //   但「迟到或早退」时 → 短路失效，走下方 R1–R8 公式（迟到取整、早退按实际）
+        //   晚退不在例外内：R2/R3/R4 本就不计加班，结果仍为默认工时（灰区/超限另加 needsReview）
+        if (settings.hasDefaultHours && settings.defaultWorkMinutes != null) {
+            val arrivalLate = arrivalLateMinutes > lateToleranceMinutes
+            val earlyLeave = endMillis < expectedEnd - settings.earlyLeaveToleranceMinutes * 60_000L
+            if (!arrivalLate && !earlyLeave) {
+                return V1FinalResult(
+                    finalMinutes = max(0, settings.defaultWorkMinutes),
+                    effectiveStartMillis = startMillis,
+                    effectiveEndMillis = endMillis,
+                    // 保留 trace 里已记录的跨夜等标记，便于诊断
+                    ruleTrace = trace + "R_DEFAULT_HOURS"
+                )
+            }
+            // 迟到/早退 → 记下短路被绕过，继续走公式
+            trace.add(if (arrivalLate) "R_DEFAULT_BYPASS_LATE" else "R_DEFAULT_BYPASS_EARLY")
+        }
 
         val effectiveStart: Long = when (status) {
             RecordStatus.ARRIVAL_EXCEPTION, RecordStatus.WORK, RecordStatus.EARLY_LEAVE -> {
