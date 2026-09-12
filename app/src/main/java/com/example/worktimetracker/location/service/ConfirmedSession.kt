@@ -1,5 +1,7 @@
 package com.example.worktimetracker.location.service
 
+import com.example.worktimetracker.data.entity.ManualField
+import com.example.worktimetracker.data.entity.ManualFieldMask
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 
 object ConfirmedSession {
@@ -14,7 +16,13 @@ object ConfirmedSession {
         calculatedMinutes: Int,
         needsReview: Boolean,
         status: String = "WORK",
-        mode: MergeMode = MergeMode.REPAIR_FILL
+        mode: MergeMode = MergeMode.REPAIR_FILL,
+        /** v1 规则触发的规则 ID 列表（如 R1,R2,R8）。finalize 时由 WorkSessionEngine 填充。 */
+        v1RuleTrace: List<String> = emptyList(),
+        /** v1 算法对齐后的有效 start（迟到向上取整后的整点）。finalize 时由 WorkSessionEngine 填充。 */
+        v1EffectiveStartMillis: Long? = null,
+        /** v1 算法对齐后的有效 end。灰区/超限不计加班时为 expectedEnd；正常为 endMillis。 */
+        v1EffectiveEndMillis: Long? = null
     ): WorkRecordEntity {
         val validDeparture = companyDeparture?.takeIf { it >= companyArrival }
         val validHomeDeparture = homeDeparture?.takeIf { it <= companyArrival }
@@ -29,6 +37,10 @@ object ConfirmedSession {
             // 历史修复/恢复补全：补全本身就是异常信号，原有标记一律保留
             MergeMode.REPAIR_FILL -> base.needsReview || needsReview || invalidOrder
         }
+        val v1Note = buildV1Note(v1RuleTrace, calculatedMinutes, v1EffectiveStartMillis, v1EffectiveEndMillis, base.finalMinutes)
+        val newMask = if (v1RuleTrace.isNotEmpty()) {
+            ManualFieldMask.add(base.manualFieldsMask, ManualField.FINAL_MINUTES)
+        } else base.manualFieldsMask
         return base.copy(
             status = if (base.isManual) base.status else status,
             shift = shift,
@@ -39,7 +51,31 @@ object ConfirmedSession {
             actualMinutes = actualMinutes,
             finalMinutes = if (base.isManual) base.finalMinutes else calculatedMinutes,
             needsReview = review,
+            note = if (base.isManual) base.note else v1Note ?: base.note,
+            manualFieldsMask = newMask,
             updatedAt = System.currentTimeMillis()
         )
+    }
+
+    /**
+     * 根据 v1 规则 ID 列表生成可读 note。返回 null 表示不需要写 note（保留原值）。
+     */
+    internal fun buildV1Note(
+        rules: List<String>,
+        finalMinutes: Int,
+        effectiveStartMillis: Long?,
+        effectiveEndMillis: Long?,
+        previousFinalMinutes: Int
+    ): String? {
+        if (rules.isEmpty()) return null
+        val rulesText = rules.joinToString(",")
+        return when {
+            rules.contains("R3_GREY") -> "v1[$rulesText]: 21:00-21:29 灰区（不计加班，需复核）→ final=${finalMinutes}min"
+            rules.contains("R4_NO_OVERTIME") -> "v1[$rulesText]: 21:30+ 不计加班（需复核）→ final=${finalMinutes}min"
+            rules.contains("R1_ALIGN_UP") -> "v1[$rulesText]: 迟到按整点起算，-1h 分散吃饭 → final=${finalMinutes}min"
+            rules.contains("R7") && !rules.contains("R1_ALIGN_UP") -> "v1[$rulesText]: 早退按公式，-1h 分散吃饭 → final=${finalMinutes}min"
+            rules.contains("R2") && rules.contains("R8") && rules.size <= 4 -> "v1[$rulesText]: 21:00 整下班 - 1h 分散吃饭 → final=${finalMinutes}min"
+            else -> "v1[$rulesText]: final=${finalMinutes}min"
+        }
     }
 }

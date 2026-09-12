@@ -31,7 +31,13 @@ data class WorkSession(
     val status: RecordStatus,
     val actualMinutes: Int,
     val finalMinutes: Int,
-    val needsReview: Boolean = false
+    val needsReview: Boolean = false,
+    /** v1 规则按 status 分支对齐后的有效开始时间（迟到向上取整、早退/灰区按 endTime）。null 表示 rest。 */
+    val v1EffectiveStartMillis: Long? = null,
+    /** v1 规则按 status 分支对齐后的有效结束时间（早退时保留原始 endTime，灰区/超限不计加班时 == endMillis 或 null）。 */
+    val v1EffectiveEndMillis: Long? = null,
+    /** 触发的 v1 规则 ID 列表，如 listOf("R1","R2","R8")，供 UI / note 复用。 */
+    val v1RuleTrace: List<String> = emptyList()
 )
 
 data class WorkCalculationInput(

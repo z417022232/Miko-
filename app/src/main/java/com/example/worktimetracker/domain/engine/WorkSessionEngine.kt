@@ -2,7 +2,6 @@ package com.example.worktimetracker.domain.engine
 
 import com.example.worktimetracker.domain.model.RecordStatus
 import com.example.worktimetracker.domain.model.ShiftType
-import com.example.worktimetracker.domain.model.WorkCalculationInput
 import com.example.worktimetracker.domain.model.WorkSession
 import com.example.worktimetracker.domain.model.WorkSettings
 import java.time.Instant
@@ -12,7 +11,7 @@ import java.time.ZoneId
 class WorkSessionEngine(
     private val zoneId: ZoneId = ZoneId.systemDefault(),
     private val shiftDetector: ShiftDetector = ShiftDetector(zoneId),
-    private val calculator: WorkHourCalculator = WorkHourCalculator()
+    private val calculator: WorkHourCalculator = WorkHourCalculator(zoneId)
 ) {
     fun buildSession(startMillis: Long?, endMillis: Long?, settings: WorkSettings): WorkSession {
         val effectiveStart = startMillis ?: fallbackStart(endMillis, settings)
@@ -22,26 +21,37 @@ class WorkSessionEngine(
         val expectedEnd = shiftDetector.expectedEnd(LocalDate.parse(assigned), shift, settings).atZone(zoneId).toInstant().toEpochMilli()
         val effectiveEnd = endMillis ?: expectedEnd
         val actual = calculator.actualMinutes(effectiveStart, effectiveEnd)
-        val finalMinutes = calculator.calculateFinalMinutes(
-            WorkCalculationInput(
-                startMillis = effectiveStart,
-                endMillis = effectiveEnd,
-                settings = settings,
-                fallbackStartMillis = expectedStart,
-                fallbackEndMillis = expectedEnd
-            )
-        )
         val status = detectStatus(effectiveStart, effectiveEnd, expectedStart, expectedEnd, settings)
         val arrivalLate = effectiveStart != null && effectiveStart > expectedStart + settings.arrivalToleranceMinutes * 60_000L
+        val finalStatus = if (arrivalLate && status == RecordStatus.WORK) RecordStatus.ARRIVAL_EXCEPTION else status
+
+        // A1: finalize 自动按 v1 规则算 finalMinutes
+        val v1Result = calculator.calculateV1FinalMinutes(
+            status = finalStatus,
+            startMillis = effectiveStart,
+            endMillis = effectiveEnd,
+            settings = settings
+        )
+
+        val needsReview = finalStatus == RecordStatus.EARLY_LEAVE ||
+            arrivalLate ||
+            startMillis == null ||
+            endMillis == null ||
+            v1Result.ruleTrace.contains("R3_GREY") ||
+            v1Result.ruleTrace.contains("R4_NO_OVERTIME")
+
         return WorkSession(
             startMillis = effectiveStart,
             endMillis = effectiveEnd,
             assignedDate = assigned,
             shiftType = shift,
-            status = if (arrivalLate && status == RecordStatus.WORK) RecordStatus.ARRIVAL_EXCEPTION else status,
+            status = finalStatus,
             actualMinutes = actual,
-            finalMinutes = finalMinutes,
-            needsReview = status == RecordStatus.EARLY_LEAVE || arrivalLate || startMillis == null || endMillis == null
+            finalMinutes = v1Result.finalMinutes,
+            needsReview = needsReview,
+            v1EffectiveStartMillis = v1Result.effectiveStartMillis,
+            v1EffectiveEndMillis = v1Result.effectiveEndMillis,
+            v1RuleTrace = v1Result.ruleTrace
         )
     }
 
