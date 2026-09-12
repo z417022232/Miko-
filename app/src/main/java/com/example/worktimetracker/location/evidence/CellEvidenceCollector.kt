@@ -4,10 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
-import android.telephony.CellIdentityGsm
-import android.telephony.CellIdentityLte
 import android.telephony.CellIdentityNr
-import android.telephony.CellIdentityWcdma
 import android.telephony.CellInfo
 import android.telephony.CellInfoGsm
 import android.telephony.CellInfoLte

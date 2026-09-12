@@ -172,9 +172,6 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         return V1FinalResult(finalMinutes, effectiveStart, effectiveEnd, trace.distinct())
     }
 
-    private fun startOfDayMillis(millis: Long): Long =
-        Instant.ofEpochMilli(millis).atZone(zoneId).toLocalDate().atStartOfDay(zoneId).toInstant().toEpochMilli()
-
     /**
      * A5/R5: 按班次类型给出该归属日的 (expectedStart, expectedEnd)。
      *

@@ -2,13 +2,11 @@ package com.example.worktimetracker.domain.engine
 
 import com.example.worktimetracker.domain.model.ShiftType
 import com.example.worktimetracker.domain.model.WorkSettings
-import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.ZoneId
-import kotlin.math.abs
 
 class ShiftWindowFallback(private val zoneId: ZoneId = ZoneId.systemDefault()) {
     data class Window(

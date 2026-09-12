@@ -102,8 +102,4 @@ object ServiceRecovery {
         return true
     }
 
-    fun isHealthy(context: Context, now: Long = System.currentTimeMillis()): Boolean {
-        val last = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(HEARTBEAT, 0L)
-        return last > 0L && now - last < 25 * 60_000L
-    }
 }

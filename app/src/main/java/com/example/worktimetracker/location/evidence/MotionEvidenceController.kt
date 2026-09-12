@@ -22,7 +22,6 @@ class MotionEvidenceController(
         sensorManager.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
     private var accelerometer: Sensor? = null
     private var accelerometerActive = false
-    private var lastAboveThresholdAt = 0L
     private var consecutiveAboveThreshold = 0
 
     private val accelerometerListener = object : SensorEventListener {

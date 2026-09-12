@@ -96,14 +96,6 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
         }
     }
 
-    private fun actionLabel(action: HealthAction): String = when (action) {
-        HealthAction.REREGISTER_LOCATION -> "定位监听待恢复"
-        HealthAction.REREGISTER_GNSS -> "卫星定位待恢复"
-        HealthAction.REREGISTER_MOTION -> "运动传感器待恢复"
-        HealthAction.PROVIDER_UNAVAILABLE -> "系统定位提供器不可用"
-        else -> "未知"
-    }
-
     private fun sendRecoveryNotification(title: String, text: String) {
         NotificationChannels.ensure(applicationContext)
         val intent = PendingIntent.getActivity(

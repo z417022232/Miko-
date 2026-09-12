@@ -8,7 +8,6 @@ import com.example.worktimetracker.WorkTimeApplication
 import com.example.worktimetracker.data.entity.AppLogEntity
 import com.example.worktimetracker.data.entity.LocationLogEntity
 import com.example.worktimetracker.data.entity.ManualOverrideEntity
-import com.example.worktimetracker.data.entity.MonthlySalaryEntity
 import com.example.worktimetracker.data.entity.UserSettingsEntity
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import com.example.worktimetracker.data.importer.LegacyAttendanceCsvImporter
@@ -28,6 +27,7 @@ import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.export.ExportManager
 import com.example.worktimetracker.ui.UiDayRecord
 import com.example.worktimetracker.ui.MonthlyRecordIndex
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -41,6 +41,7 @@ import java.time.ZoneId
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
+import kotlinx.coroutines.withContext
 
 class WorkTimeViewModel(application: Application) : AndroidViewModel(application) {
     private val db = (application as WorkTimeApplication).database
@@ -150,8 +151,13 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             _monthlySalaryCents.value = salary?.netSalaryCents
             _monthlySalaryPaymentDate.value = salary?.paymentDate
             db.workRecordDao().observeMonthRecords(start, end).collectLatest { rows ->
-                _records.value = MonthlyRecordIndex.build(m, rows, LocalDate.now(), zone)
-                _reviewRecords.value = _records.value.filter { it.needsReview }
+                // 构建 30 天展示模型要遍历整月（含节假日判定），挪到 Default 线程，
+                // 避免 Room 每次发射都在主线程重算一遍。
+                val built = withContext(Dispatchers.Default) {
+                    MonthlyRecordIndex.build(m, rows, LocalDate.now(), zone)
+                }
+                _records.value = built
+                _reviewRecords.value = built.filter { it.needsReview }
             }
         }
     }

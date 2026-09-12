@@ -1,5 +1,12 @@
 package com.example.worktimetracker.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
@@ -42,6 +48,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +58,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -103,47 +111,67 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
         Spacer(Modifier.height(12.dp))
         MonthOverviewCard(month, records, monthlySalaryCents, monthlySalaryPaymentDate) { showSalaryEditor = true }
         Spacer(Modifier.height(12.dp))
-        MonthToolbar(
-            month = month,
-            onPrevious = vm::previousMonth,
-            onNext = vm::nextMonth,
-            onMonthClick = { showMonthPicker = true }
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            if (batchMode) {
-                TextButton(onClick = { batchMode = false; batchDates = emptySet() }) { Text("取消") }
-                Button(onClick = { showBatchEditor = true }, enabled = batchDates.isNotEmpty()) {
-                    Text("修改已选 ${batchDates.size} 天")
+        // 月份切换过渡动画：按新旧月份大小决定滑动方向（去下一个月，新内容从右进；
+        // 回上一个月，新内容从左进），250ms + 透明度，与系统页面切换节奏一致。
+        // 标题用 targetMonth（每次动画的入参固定），避免退场内容跟着状态一起变字。
+        AnimatedContent(
+            targetState = month,
+            transitionSpec = {
+                val forward = targetState > initialState
+                (slideInHorizontally(tween(250)) { if (forward) it / 3 else -it / 3 } +
+                    fadeIn(tween(250))) togetherWith
+                    (slideOutHorizontally(tween(250)) { if (forward) -it / 3 else it / 3 } +
+                        fadeOut(tween(250)))
+            },
+            label = "monthSwitch"
+        ) { targetMonth ->
+            Column {
+                MonthToolbar(
+                    month = targetMonth,
+                    onPrevious = vm::previousMonth,
+                    onNext = vm::nextMonth,
+                    onMonthClick = { showMonthPicker = true }
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    if (batchMode) {
+                        TextButton(onClick = { batchMode = false; batchDates = emptySet() }) { Text("取消") }
+                        Button(onClick = { showBatchEditor = true }, enabled = batchDates.isNotEmpty()) {
+                            Text("修改已选 ${batchDates.size} 天")
+                        }
+                    } else {
+                        OutlinedButton(onClick = { batchMode = true }) { Text("批量修改") }
+                    }
                 }
-            } else {
-                OutlinedButton(onClick = { batchMode = true }) { Text("批量修改") }
+                Spacer(Modifier.height(8.dp))
+                CalendarCard(
+                    records = records,
+                    selectedDate = selectedDate,
+                    batchMode = batchMode,
+                    selectedDates = batchDates,
+                    modifier = Modifier
+                        // 拖动跟手：translationX 在 draw 阶段读状态，不触发重组
+                        .graphicsLayer { translationX = monthDrag }
+                        .pointerInput(month) {
+                            detectHorizontalDragGestures(
+                                onDragEnd = {
+                                    when {
+                                        monthDrag > 120f -> vm.previousMonth()
+                                        monthDrag < -120f -> vm.nextMonth()
+                                    }
+                                    monthDrag = 0f
+                                },
+                                onDragCancel = { monthDrag = 0f },
+                                onHorizontalDrag = { _, amount -> monthDrag += amount }
+                            )
+                        },
+                    onClick = {
+                        if (batchMode) {
+                            batchDates = if (it.date in batchDates) batchDates - it.date else batchDates + it.date
+                        } else vm.select(it.date)
+                    }
+                )
             }
         }
-        Spacer(Modifier.height(8.dp))
-        CalendarCard(
-            records = records,
-            selectedDate = selectedDate,
-            batchMode = batchMode,
-            selectedDates = batchDates,
-            modifier = Modifier.pointerInput(month) {
-                detectHorizontalDragGestures(
-                    onDragEnd = {
-                        when {
-                            monthDrag > 80f -> vm.previousMonth()
-                            monthDrag < -80f -> vm.nextMonth()
-                        }
-                        monthDrag = 0f
-                    },
-                    onDragCancel = { monthDrag = 0f },
-                    onHorizontalDrag = { _, amount -> monthDrag += amount }
-                )
-            },
-            onClick = {
-                if (batchMode) {
-                    batchDates = if (it.date in batchDates) batchDates - it.date else batchDates + it.date
-                } else vm.select(it.date)
-            }
-        )
         Spacer(Modifier.height(12.dp))
         SelectedDayCard(selected, onEdit = { showDetail = true })
         Spacer(Modifier.height(12.dp))
@@ -192,9 +220,15 @@ private fun MonthOverviewCard(
     paymentDate: String?,
     onSalaryClick: () -> Unit
 ) {
-    val total = records.sumOf { it.finalMinutes }
-    val workDays = records.count { it.finalMinutes > 0 }
-    val reviewDays = records.count { it.needsReview }
+    // 汇总只在记录变化时重算；此前每次点选日期都会把整月重新加一遍
+    val (total, workDays, reviewDays) = remember(records) {
+        Triple(
+            records.sumOf { it.finalMinutes },
+            records.count { it.finalMinutes > 0 },
+            records.count { it.needsReview }
+        )
+    }
+    val payrollRules = remember { PayrollPeriodRules() }
     Card(
         colors = CardDefaults.cardColors(containerColor = AppTheme.colors.blue),
         shape = MaterialTheme.shapes.extraLarge,
@@ -228,7 +262,7 @@ private fun MonthOverviewCard(
                 Column(Modifier.weight(1f)) {
                     Text(
                         paymentDate?.let {
-                            runCatching { PayrollPeriodRules().displayLabel(month, LocalDate.parse(it)) }.getOrNull()
+                            runCatching { payrollRules.displayLabel(month, LocalDate.parse(it)) }.getOrNull()
                         } ?: "${month.monthValue}月工资（次月15日发放）",
                         color = Color.White.copy(alpha = 0.72f),
                         style = MaterialTheme.typography.labelMedium
@@ -288,6 +322,8 @@ private fun CalendarCard(
     onClick: (UiDayRecord) -> Unit
 ) {
     val leading = records.firstOrNull()?.date?.dayOfWeek?.value?.rem(7) ?: 0
+    // “今天”在一屏内是常量，remember 一次，避免 42 个格子各调一次 LocalDate.now()
+    val today = remember { LocalDate.now() }
     val rawCells: List<UiDayRecord?> = List(leading) { null } + records
     val trailing = (7 - rawCells.size % 7) % 7
     val cells = rawCells + List(trailing) { null }
@@ -314,7 +350,9 @@ private fun CalendarCard(
                     week.forEach { record ->
                         Box(Modifier.weight(1f)) {
                             if (record == null) Spacer(Modifier.height(62.dp))
-                            else DayCell(record, if (batchMode) record.date in selectedDates else record.date == selectedDate, onClick)
+                            else key(record.date) {
+                                DayCell(record, if (batchMode) record.date in selectedDates else record.date == selectedDate, today, onClick)
+                            }
                         }
                     }
                 }
@@ -324,8 +362,8 @@ private fun CalendarCard(
 }
 
 @Composable
-private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecord) -> Unit) {
-    val today = record.date == LocalDate.now()
+private fun DayCell(record: UiDayRecord, selected: Boolean, today: LocalDate, onClick: (UiDayRecord) -> Unit) {
+    val isToday = record.date == today
     val worked = record.finalMinutes > 0
     val badge = record.dayBadge
     val hours = if (worked) calendarDayLabel(record.shift, record.finalMinutes) else ""
@@ -353,13 +391,13 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
                 .height(62.dp)
                 .clip(MaterialTheme.shapes.medium)
                 .background(dayCellBackground(record.dayKind, selected))
-                .then(if (today && !selected) Modifier.border(1.dp, AppTheme.colors.blue.copy(alpha = 0.45f), MaterialTheme.shapes.medium) else Modifier)
+                .then(if (isToday && !selected) Modifier.border(1.dp, AppTheme.colors.blue.copy(alpha = 0.45f), MaterialTheme.shapes.medium) else Modifier)
                 .clickable { onClick(record) }
                 .padding(top = 4.dp)
         ) {
             Text(
                 record.date.dayOfMonth.toString(),
-                fontWeight = if (selected || today) FontWeight.Bold else FontWeight.Normal,
+                fontWeight = if (selected || isToday) FontWeight.Bold else FontWeight.Normal,
                 color = if (selected) AppTheme.colors.blue else MaterialTheme.colorScheme.onSurface
             )
             lines.forEach { (text, tint) ->
