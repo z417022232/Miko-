@@ -2,6 +2,7 @@ package com.example.worktimetracker.ui
 
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import com.example.worktimetracker.domain.engine.ChinaHolidayProvider
+import com.example.worktimetracker.domain.engine.ReviewReasonResolver
 import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
@@ -46,7 +47,9 @@ object MonthlyRecordIndex {
         actualMinutes = actualMinutes,
         finalMinutes = finalMinutes,
         needsReview = needsReview,
-        reviewReason = reviewReason,
+        // A7: 优先用自动流程写的规则原因；A2 之前的旧记录 reviewReason 为空，
+        // 此时从记录自身数据合法性推导，避免横幅只显示无意义的通用兜底文案
+        reviewReason = if (needsReview) ReviewReasonResolver.resolve(this, zone) else reviewReason,
         reviewAcknowledged = com.example.worktimetracker.data.entity.ManualFieldMask
             .isNeedsReviewAcknowledged(manualFieldsMask),
         note = note,
