@@ -88,24 +88,10 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         val arrivalLateMinutes = TimeUnit.MILLISECONDS.toMinutes(arrivalLateMillis).toInt()
 
         val effectiveStart: Long = when (status) {
-            RecordStatus.ARRIVAL_EXCEPTION -> {
-                // 迟到向上取整到下一个整点
-                val aligned = alignUpToHour(startMillis)
-                val lateMinutes = TimeUnit.MILLISECONDS.toMinutes(aligned - startMillis).toInt()
-                if (lateMinutes <= lateToleranceMinutes) {
-                    trace.add("R1")
-                    expectedStart
-                } else {
-                    trace.add("R1_ALIGN_UP")
-                    aligned
-                }
-            }
-            RecordStatus.WORK, RecordStatus.EARLY_LEAVE -> {
-                // 早到/准时：从 expectedStart (09:00) 起算；迟到但被 detectStatus 标为 WORK 时也向上取整
-                if (arrivalLateMinutes in 1..lateToleranceMinutes) {
-                    trace.add("R1")
-                    expectedStart
-                } else if (arrivalLateMinutes <= 0) {
+            RecordStatus.ARRIVAL_EXCEPTION, RecordStatus.WORK, RecordStatus.EARLY_LEAVE -> {
+                // R1: 迟到 ≤3min（含早到，arrivalLateMinutes ≤ 0）不计 → 仍按 09:00 起算
+                //     迟到 > 3min → 向上取整到下一整点（公司规则：⌈上班时间⌉）
+                if (arrivalLateMinutes <= lateToleranceMinutes) {
                     trace.add("R1")
                     expectedStart
                 } else {
