@@ -331,33 +331,44 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
         record.status.isNotBlank() -> shortStatus(record.status)
         else -> ""
     }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(62.dp)
-            .padding(2.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) AppBlue.copy(alpha = 0.11f) else Color.Transparent)
-            .then(if (today && !selected) Modifier.border(1.dp, AppBlue.copy(alpha = 0.45f), RoundedCornerShape(12.dp)) else Modifier)
-            .clickable { onClick(record) }
-            .padding(top = 4.dp)
-    ) {
-        Text(
-            record.date.dayOfMonth.toString(),
-            fontWeight = if (selected || today) FontWeight.Bold else FontWeight.Normal,
-            color = if (selected) AppBlue else MaterialTheme.colorScheme.onSurface
-        )
-        if (!record.holidayName.isNullOrBlank()) {
+    Box(modifier = Modifier.fillMaxWidth().height(62.dp).padding(2.dp)) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(62.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(if (selected) AppBlue.copy(alpha = 0.11f) else Color.Transparent)
+                .then(if (today && !selected) Modifier.border(1.dp, AppBlue.copy(alpha = 0.45f), RoundedCornerShape(12.dp)) else Modifier)
+                .clickable { onClick(record) }
+                .padding(top = 4.dp)
+        ) {
             Text(
-                record.holidayName.take(3),
-                color = AppOrange,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1
+                record.date.dayOfMonth.toString(),
+                fontWeight = if (selected || today) FontWeight.Bold else FontWeight.Normal,
+                color = if (selected) AppBlue else MaterialTheme.colorScheme.onSurface
             )
+            if (!record.holidayName.isNullOrBlank()) {
+                Text(
+                    record.holidayName.take(3),
+                    color = AppOrange,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1
+                )
+            }
+            if (subLabel.isNotBlank() && (record.finalMinutes > 0 || record.holidayName.isNullOrBlank())) {
+                Text(subLabel, color = color, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
         }
-        if (subLabel.isNotBlank() && (record.finalMinutes > 0 || record.holidayName.isNullOrBlank())) {
-            Text(subLabel, color = color, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+        // A6: 待确认角标——让用户在主日历上就能看到哪天需要处理
+        if (record.needsReview) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 5.dp, end = 6.dp)
+                    .size(7.dp)
+                    .background(AppRed, CircleShape)
+            )
         }
     }
 }
@@ -383,6 +394,9 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                             fontWeight = FontWeight.Bold
                         )
                         StatusPill(status, statusColor(status))
+                        // A6: 待确认 / 已复核 状态
+                        if (record.needsReview) StatusPill("待确认", AppRed)
+                        else if (record.reviewAcknowledged) StatusPill("已复核", AppGreen)
                     }
                 }
                 FilledTonalButton(onClick = onEdit) {
@@ -390,6 +404,10 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                     Spacer(Modifier.size(6.dp))
                     Text("编辑")
                 }
+            }
+            if (record.needsReview && !record.reviewReason.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(record.reviewReason, color = AppRed, style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(10.dp))
             LocationEventLine(
@@ -565,6 +583,30 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
                 }
             }
             Spacer(Modifier.height(16.dp))
+            // A6: 系统判定需确认 → 展示原因 + 一键认可（认可不改值，不会锁死自动算法）
+            if (record.needsReview) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = AppRed.copy(alpha = 0.08f)),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+                        Text("系统判定需确认", color = AppRed, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            record.reviewReason ?: "自动识别结果需要人工确认",
+                            color = AppRed,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        TextButton(onClick = {
+                            vm.acknowledgeReview(record.date, record.note.orEmpty()) { if (it == null) onDismiss() }
+                        }) { Text("认可，不改值") }
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+            } else if (record.reviewAcknowledged) {
+                Text("已复核", color = AppGreen, style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.height(12.dp))
+            }
             Button(onClick = { showManual = true }, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Outlined.Edit, null)
                 Spacer(Modifier.size(8.dp))

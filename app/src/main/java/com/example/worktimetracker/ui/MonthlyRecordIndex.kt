@@ -46,6 +46,9 @@ object MonthlyRecordIndex {
         actualMinutes = actualMinutes,
         finalMinutes = finalMinutes,
         needsReview = needsReview,
+        reviewReason = reviewReason,
+        reviewAcknowledged = com.example.worktimetracker.data.entity.ManualFieldMask
+            .isNeedsReviewAcknowledged(manualFieldsMask),
         note = note,
         holidayName = ChinaHolidayProvider.name(date),
         companyArrivalText = startTime?.timeText(zone),

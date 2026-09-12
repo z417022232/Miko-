@@ -25,7 +25,9 @@ object ReviewRecordEditor {
             isManual = true,
             manualFieldsMask = existing.manualFieldsMask or ManualField.SHIFT.bit or
                 ManualField.COMPANY_ARRIVAL.bit or ManualField.COMPANY_DEPARTURE.bit or
-                ManualField.FINAL_MINUTES.bit or ManualField.NOTE.bit,
+                ManualField.FINAL_MINUTES.bit or ManualField.NOTE.bit or
+                // A6: 走过编辑确认 = 用户已复核过，记 ACK 位
+                ManualField.NEEDS_REVIEW_ACK.bit,
             needsReview = false,
             note = note,
             updatedAt = now

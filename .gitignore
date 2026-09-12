@@ -16,6 +16,7 @@ local.properties
 imports/
 work/
 .worktrees/
+diagnostics/
 *.db
 *.db-wal
 *.db-shm

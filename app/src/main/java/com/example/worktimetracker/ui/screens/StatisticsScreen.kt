@@ -219,6 +219,24 @@ private fun ReviewConfirmDialog(
         title = { Text("${if (mode == EditorMode.CONFIRM_REVIEW) "确认" else "编辑"} ${record.date.monthValue}月${record.date.dayOfMonth}日记录") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                // A6: 系统判定原因横幅——先让用户知道"为什么这条需要确认"
+                if (mode == EditorMode.CONFIRM_REVIEW && !record.reviewReason.isNullOrBlank()) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = AppRed.copy(alpha = 0.08f)),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text("系统判定需确认", color = AppRed, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                            Text(record.reviewReason, color = AppRed, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "值正确 → 点「认可，不改值」；需修正 → 改完点「确认记录」",
+                                color = AppMuted,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                    }
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = shift == "DAY_SHIFT", onClick = { shift = "DAY_SHIFT" }, label = { Text("白班") }, modifier = Modifier.weight(1f))
                     FilterChip(selected = shift == "NIGHT_SHIFT", onClick = { shift = "NIGHT_SHIFT" }, label = { Text("夜班") }, modifier = Modifier.weight(1f))
@@ -231,23 +249,34 @@ private fun ReviewConfirmDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                val startMinute = parseClock(startText)
-                val endMinute = parseClock(endText)
-                if (startMinute == null || endMinute == null) {
-                    error = "请输入 HH:mm 格式的时间"
-                } else {
-                    val state = ReviewEditorState.from(record.date, shift, startMinute, endMinute, zone)
-                    if (state.validationError != null) error = state.validationError
-                    else {
-                        val save = if (mode == EditorMode.CONFIRM_REVIEW) vm::confirmReview else vm::saveRecordEdit
-                        save(record.date, shift, state.startMillis, state.endMillis, hours, note) { message ->
-                        error = message
-                        if (message == null) onDismiss()
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                // A6: 认可但不改值——只清 needsReview + 写 NEEDS_REVIEW_ACK，不锁 finalMinutes
+                if (mode == EditorMode.CONFIRM_REVIEW) {
+                    TextButton(onClick = {
+                        vm.acknowledgeReview(record.date, note) { message ->
+                            error = message
+                            if (message == null) onDismiss()
+                        }
+                    }) { Text("认可，不改值") }
+                }
+                TextButton(onClick = {
+                    val startMinute = parseClock(startText)
+                    val endMinute = parseClock(endText)
+                    if (startMinute == null || endMinute == null) {
+                        error = "请输入 HH:mm 格式的时间"
+                    } else {
+                        val state = ReviewEditorState.from(record.date, shift, startMinute, endMinute, zone)
+                        if (state.validationError != null) error = state.validationError
+                        else {
+                            val save = if (mode == EditorMode.CONFIRM_REVIEW) vm::confirmReview else vm::saveRecordEdit
+                            save(record.date, shift, state.startMillis, state.endMillis, hours, note) { message ->
+                            error = message
+                            if (message == null) onDismiss()
+                            }
                         }
                     }
-                }
-            }) { Text(if (mode == EditorMode.CONFIRM_REVIEW) "确认记录" else "保存修改") }
+                }) { Text(if (mode == EditorMode.CONFIRM_REVIEW) "确认记录" else "保存修改") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
@@ -334,6 +363,7 @@ private fun DailyStatRow(record: UiDayRecord, onClick: (() -> Unit)? = null) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                     Text(record.status.ifBlank { "工作" }, fontWeight = FontWeight.Medium)
                     if (record.needsReview) StatusPill("待确认", AppRed)
+                    else if (record.reviewAcknowledged) StatusPill("已复核", AppGreen)
                 }
                 Text(
                     if (record.startText == null && record.endText == null) "手动记录"
@@ -341,6 +371,15 @@ private fun DailyStatRow(record: UiDayRecord, onClick: (() -> Unit)? = null) {
                     color = AppMuted,
                     style = MaterialTheme.typography.bodySmall
                 )
+                // A6: 展示系统判定原因，让用户知道"为什么要确认"
+                if (record.needsReview && !record.reviewReason.isNullOrBlank()) {
+                    Text(
+                        record.reviewReason,
+                        color = AppRed,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2
+                    )
+                }
             }
             Text(formatMinutes(record.finalMinutes), fontWeight = FontWeight.Bold, color = statusColor(record.status))
         }

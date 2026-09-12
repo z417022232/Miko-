@@ -17,6 +17,7 @@ import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewRecordEditor
+import com.example.worktimetracker.domain.engine.ReviewAcknowledger
 import com.example.worktimetracker.domain.engine.LocationAnchorCalibration
 import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
@@ -164,6 +165,41 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                             oldValue = "${old.shift}:${old.startTime}:${old.endTime}:${old.finalMinutes}",
                             newValue = "$shift:$startMillis:$endMillis:$minutes",
                             reason = note.ifBlank { "统计页人工确认" }
+                        )
+                    )
+                    onResult(null)
+                },
+                onFailure = { onResult(it.message ?: "确认失败") }
+            )
+        }
+    }
+
+    /**
+     * A6: 认可系统判定（灰区/异常记录），**不改任何值**。
+     *
+     * 仅清除 needsReview 并写 NEEDS_REVIEW_ACK 位；不动 finalMinutes/isManual，
+     * 因此不会像"编辑确认"那样把自动结果锁死（详见 [ReviewAcknowledger]）。
+     */
+    fun acknowledgeReview(
+        date: LocalDate,
+        note: String,
+        onResult: (String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            val old = db.workRecordDao().getByDate(date.toString())
+            if (old == null || !old.needsReview) {
+                onResult("该记录已不需要确认")
+                return@launch
+            }
+            ReviewAcknowledger.acknowledge(old, note).fold(
+                onSuccess = { acknowledged ->
+                    db.workRecordDao().upsert(acknowledged)
+                    db.manualOverrideDao().insert(
+                        ManualOverrideEntity(
+                            recordId = acknowledged.id,
+                            oldValue = "needsReview=${old.needsReview};reason=${old.reviewReason ?: "-"}",
+                            newValue = "ACK;final=${acknowledged.finalMinutes}",
+                            reason = note.ifBlank { "统计页认可系统判定" }
                         )
                     )
                     onResult(null)

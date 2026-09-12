@@ -13,6 +13,10 @@ data class UiDayRecord(
     val actualMinutes: Int? = null,
     val finalMinutes: Int = 0,
     val needsReview: Boolean = false,
+    /** A6: 系统判定的复核原因（如 "R3 21:00-21:29 灰区"）。needsReview=true 时展示。 */
+    val reviewReason: String? = null,
+    /** A6: 用户是否已点过"认可"（NEEDS_REVIEW_ACK 位），用于区分"未处理"与"同一原因再次出现"。 */
+    val reviewAcknowledged: Boolean = false,
     val note: String? = null,
     val holidayName: String? = null,
     val companyArrivalText: String? = null,
