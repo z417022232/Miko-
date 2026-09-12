@@ -1,7 +1,7 @@
 package com.example.worktimetracker.ui
 
 import com.example.worktimetracker.data.entity.WorkRecordEntity
-import com.example.worktimetracker.domain.engine.ChinaHolidayProvider
+import com.example.worktimetracker.domain.engine.HolidayCalendar
 import com.example.worktimetracker.domain.engine.ReviewReasonResolver
 import java.time.Instant
 import java.time.LocalDate
@@ -22,15 +22,15 @@ object MonthlyRecordIndex {
                 date = date,
                 status = if (date.isAfter(today)) "" else "休息",
                 finalMinutes = 0,
-                holidayName = ChinaHolidayProvider.name(date),
-                dayKind = ChinaHolidayProvider.info(date).kind,
-                dayBadge = ChinaHolidayProvider.badge(date)
+                holidayName = HolidayCalendar.name(date),
+                dayKind = HolidayCalendar.info(date).kind,
+                dayBadge = HolidayCalendar.badge(date)
             )
         }
     }
 
     private fun WorkRecordEntity.toUi(date: LocalDate, zone: ZoneId): UiDayRecord {
-        val dayInfo = ChinaHolidayProvider.info(date)
+        val dayInfo = HolidayCalendar.info(date)
         return UiDayRecord(
             date = date,
             status = when (status) {

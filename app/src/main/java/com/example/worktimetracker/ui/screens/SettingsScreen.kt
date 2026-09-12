@@ -25,7 +25,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.EventAvailable
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -84,32 +87,53 @@ import com.example.worktimetracker.location.permission.AutostartState
 import com.example.worktimetracker.location.permission.AutostartVerificationStore
 import com.example.worktimetracker.location.service.ForegroundLocationService
 import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.ui.app.HolidayResultTone
+import com.example.worktimetracker.ui.app.HolidayStatusPresenter
+import com.example.worktimetracker.ui.app.HolidayStatusUi
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import com.example.worktimetracker.ui.theme.AppTheme
+import com.example.worktimetracker.ui.theme.ThemeMode
 
-private enum class SettingsPage { ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS }
+private enum class SettingsPage { ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME }
 private enum class LocationTarget { COMPANY, HOME }
 
 @Composable
-fun SettingsScreen(vm: WorkTimeViewModel) {
+fun SettingsScreen(
+    vm: WorkTimeViewModel,
+    themeMode: ThemeMode = ThemeMode.default,
+    onThemeModeChange: (ThemeMode) -> Unit = {}
+) {
     var page by remember { mutableStateOf(SettingsPage.ROOT) }
     BackHandler(page != SettingsPage.ROOT) { page = SettingsPage.ROOT }
     when (page) {
-        SettingsPage.ROOT -> SettingsHome(vm, onOpen = { page = it })
+        SettingsPage.ROOT -> SettingsHome(vm, themeMode = themeMode, onOpen = { page = it })
         SettingsPage.LOCATION -> LocationSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.RULES -> AutoRulesPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.PERMISSIONS -> PermissionSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.DATA -> DataSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.LOGS -> LogsPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.HOLIDAY -> HolidayDataPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.THEME -> ThemeSettingsPage(
+            current = themeMode,
+            onChange = onThemeModeChange,
+            onBack = { page = SettingsPage.ROOT }
+        )
     }
 }
 
 @Composable
-private fun SettingsHome(vm: WorkTimeViewModel, onOpen: (SettingsPage) -> Unit) {
+private fun SettingsHome(
+    vm: WorkTimeViewModel,
+    themeMode: ThemeMode,
+    onOpen: (SettingsPage) -> Unit
+) {
     val context = LocalContext.current
     val settings by vm.settings.collectAsState()
+    val holidayStatus by vm.holidayStatus.collectAsState()
     var showTimes by remember { mutableStateOf(false) }
     var showDefault by remember { mutableStateOf(false) }
     val permissions = PermissionManager.check(context)
@@ -142,14 +166,14 @@ private fun SettingsHome(vm: WorkTimeViewModel, onOpen: (SettingsPage) -> Unit) 
                 Icons.Outlined.LocationOn,
                 "公司与家庭",
                 locationSummary(settings),
-                tint = AppGreen
+                tint = AppTheme.colors.green
             ) { onOpen(SettingsPage.LOCATION) }
             ThinDivider()
             SettingsRow(
                 Icons.Outlined.Tune,
                 "自动识别规则",
                 "休息扣除${settings.restDeductionMinutes}分 · 离岗确认${settings.leaveCompanyConfirmMinutes}分",
-                tint = AppPurple
+                tint = AppTheme.colors.purple
             ) { onOpen(SettingsPage.RULES) }
         }
         Spacer(Modifier.height(14.dp))
@@ -159,19 +183,30 @@ private fun SettingsHome(vm: WorkTimeViewModel, onOpen: (SettingsPage) -> Unit) 
                 Icons.Outlined.Security,
                 "权限与自动记录",
                 if (permissions.ready) "权限完整" else "有权限需要处理",
-                tint = if (permissions.ready) AppGreen else AppOrange
+                tint = if (permissions.ready) AppTheme.colors.green else AppTheme.colors.orange
             ) { onOpen(SettingsPage.PERMISSIONS) }
             ThinDivider()
-            SettingsRow(Icons.Outlined.Backup, "导出与备份", "Excel、PDF、CSV 和 JSON", tint = AppBlue) {
+            SettingsRow(Icons.Outlined.Backup, "导出与备份", "Excel、PDF、CSV 和 JSON", tint = AppTheme.colors.blue) {
                 onOpen(SettingsPage.DATA)
             }
             ThinDivider()
-            SettingsRow(Icons.Outlined.BugReport, "运行日志", "定位异常时用于检查", tint = AppMuted) {
+            SettingsRow(Icons.Outlined.DarkMode, "界面主题", "${themeMode.label} · ${themeMode.summary}", tint = AppTheme.colors.purple) {
+                onOpen(SettingsPage.THEME)
+            }
+            ThinDivider()
+            SettingsRow(
+                Icons.Outlined.EventAvailable,
+                "节假日数据",
+                holidaySummary(holidayStatus),
+                tint = AppTheme.colors.orange
+            ) { onOpen(SettingsPage.HOLIDAY) }
+            ThinDivider()
+            SettingsRow(Icons.Outlined.BugReport, "运行日志", "定位异常时用于检查", tint = AppTheme.colors.muted) {
                 onOpen(SettingsPage.LOGS)
             }
         }
         Spacer(Modifier.height(24.dp))
-        Text("工时记录助手 · 本地单机版", color = AppMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterHorizontally))
+        Text("工时记录助手 · 本地单机版", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterHorizontally))
         Spacer(Modifier.height(12.dp))
     }
 
@@ -195,15 +230,15 @@ private fun TrackingStatusCard(status: PermissionStatus, onClick: () -> Unit) {
     val ready = status.ready
     Card(
         onClick = onClick,
-        colors = CardDefaults.cardColors(containerColor = if (ready) AppGreen.copy(alpha = 0.09f) else AppOrange.copy(alpha = 0.10f)),
-        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = if (ready) AppTheme.colors.green.copy(alpha = 0.09f) else AppTheme.colors.orange.copy(alpha = 0.10f)),
+        shape = MaterialTheme.shapes.extraLarge,
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 if (ready) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
                 null,
-                tint = if (ready) AppGreen else AppOrange,
+                tint = if (ready) AppTheme.colors.green else AppTheme.colors.orange,
                 modifier = Modifier.size(28.dp)
             )
             Spacer(Modifier.size(12.dp))
@@ -211,11 +246,11 @@ private fun TrackingStatusCard(status: PermissionStatus, onClick: () -> Unit) {
                 Text(if (ready) "自动记录准备就绪" else "自动记录需要检查", fontWeight = FontWeight.Bold)
                 Text(
                     if (ready) "定位、后台定位和通知权限均已开启" else "点击查看缺少的权限或启动记录服务",
-                    color = AppMuted,
+                    color = AppTheme.colors.muted,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            Text("查看", color = if (ready) AppGreen else AppOrange, fontWeight = FontWeight.SemiBold)
+            Text("查看", color = if (ready) AppTheme.colors.green else AppTheme.colors.orange, fontWeight = FontWeight.SemiBold)
         }
     }
 }
@@ -239,7 +274,7 @@ private fun DefaultHoursDialog(settings: UserSettingsEntity, vm: WorkTimeViewMod
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("使用固定工时", fontWeight = FontWeight.Medium)
-                        Text("开启后不再按定位时长扣休息", color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                        Text("开启后不再按定位时长扣休息", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                     }
                     Switch(enabled, onCheckedChange = { enabled = it })
                 }
@@ -250,7 +285,7 @@ private fun DefaultHoursDialog(settings: UserSettingsEntity, vm: WorkTimeViewMod
                     ) {
                         Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text("每天计入")
-                            Text("${hours}小时", color = AppBlue, fontWeight = FontWeight.Bold)
+                            Text("${hours}小时", color = AppTheme.colors.blue, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -278,7 +313,7 @@ private fun DefaultHoursDialog(settings: UserSettingsEntity, vm: WorkTimeViewMod
 private fun FusedStatusCard(snapshot: FusedStatusSnapshot?) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(18.dp),
+        shape = MaterialTheme.shapes.large,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.fillMaxWidth().padding(15.dp)) {
@@ -286,10 +321,10 @@ private fun FusedStatusCard(snapshot: FusedStatusSnapshot?) {
                 Icon(
                     Icons.Outlined.LocationOn, null,
                     tint = when (snapshot?.decision) {
-                        FusedDecision.CONFIRMED -> AppBlue
-                        FusedDecision.MAINTAINED -> AppBlue.copy(alpha = 0.6f)
+                        FusedDecision.CONFIRMED -> AppTheme.colors.blue
+                        FusedDecision.MAINTAINED -> AppTheme.colors.blue.copy(alpha = 0.6f)
                         FusedDecision.UNKNOWN -> MaterialTheme.colorScheme.error
-                        null -> AppMuted
+                        null -> AppTheme.colors.muted
                     }
                 )
                 Spacer(Modifier.size(10.dp))
@@ -298,14 +333,14 @@ private fun FusedStatusCard(snapshot: FusedStatusSnapshot?) {
                     if (snapshot == null) {
                         Text(
                             "服务尚未运行或还没有任何位置证据",
-                            color = AppMuted, style = MaterialTheme.typography.bodySmall
+                            color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall
                         )
                     } else {
                         val decision = FusedStatusFormatter.decisionLabel(snapshot.decision)
                         val confidence = FusedStatusFormatter.confidenceLabel(snapshot)
                         Text(
                             if (confidence != null) "$decision · $confidence" else decision,
-                            color = AppMuted, style = MaterialTheme.typography.bodySmall
+                            color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -313,12 +348,12 @@ private fun FusedStatusCard(snapshot: FusedStatusSnapshot?) {
             if (snapshot != null) {
                 Spacer(Modifier.size(8.dp))
                 Text(FusedStatusFormatter.reasonLabel(snapshot.reason),
-                    color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                    color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                 FusedStatusFormatter.sourcesLabel(snapshot)?.let {
-                    Text("证据来源：$it", color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                    Text("证据来源：$it", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                 }
                 snapshot.sourceBreakdown?.takeIf { it.isNotEmpty() }?.let {
-                    Text(it, color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                    Text(it, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
@@ -347,16 +382,16 @@ private fun LocationSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         ScreenHeader("公司与家庭", "推荐到达地点后使用当前位置", onBack)
         Spacer(Modifier.height(14.dp))
         Card(
-            colors = CardDefaults.cardColors(containerColor = AppBlue.copy(alpha = 0.08f)),
-            shape = RoundedCornerShape(18.dp),
+            colors = CardDefaults.cardColors(containerColor = AppTheme.colors.blue.copy(alpha = 0.08f)),
+            shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.MyLocation, null, tint = AppBlue)
+                Icon(Icons.Outlined.MyLocation, null, tint = AppTheme.colors.blue)
                 Spacer(Modifier.size(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text("最近一次定位", fontWeight = FontWeight.SemiBold)
-                    Text(lastLocation, color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                    Text(lastLocation, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                 }
                 IconButton(onClick = { vm.refreshLastKnownLocation() }) { Icon(Icons.Outlined.Refresh, "刷新") }
             }
@@ -438,16 +473,16 @@ private fun LocationCard(
     onCurrent: () -> Unit,
     onSearch: () -> Unit
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(20.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = MaterialTheme.shapes.extraLarge) {
         Column(Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, null, tint = if (isSet) AppGreen else AppMuted)
+                Icon(icon, null, tint = if (isSet) AppTheme.colors.green else AppTheme.colors.muted)
                 Spacer(Modifier.size(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(title, fontWeight = FontWeight.Bold)
-                    Text(if (isSet) "位置已设置" else "尚未设置", color = if (isSet) AppGreen else AppOrange, style = MaterialTheme.typography.bodySmall)
+                    Text(if (isSet) "位置已设置" else "尚未设置", color = if (isSet) AppTheme.colors.green else AppTheme.colors.orange, style = MaterialTheme.typography.bodySmall)
                 }
-                Text("半径 ${radius}米", color = AppMuted)
+                Text("半径 ${radius}米", color = AppTheme.colors.muted)
             }
             Slider(
                 value = radius.toFloat(),
@@ -499,9 +534,9 @@ private fun PlaceSearchDialog(
         title = { Text("搜索并设为$label") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("输入公司、园区、小区或道路名称，应用会直接保存搜索结果。", color = AppMuted, style = MaterialTheme.typography.bodySmall)
+                Text("输入公司、园区、小区或道路名称，应用会直接保存搜索结果。", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                 OutlinedTextField(keyword, { keyword = it }, label = { Text("地点名称") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                if (message.isNotBlank()) Text(message, color = if (message.contains("成功")) AppGreen else AppMuted, style = MaterialTheme.typography.bodySmall)
+                if (message.isNotBlank()) Text(message, color = if (message.contains("成功")) AppTheme.colors.green else AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = { TextButton(onClick = { onSearch(keyword) }) { Text("搜索并保存") } },
@@ -531,7 +566,7 @@ private fun AutoRulesPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             SettingsRow(Icons.Outlined.Timer, "下早班容差", "比参考下班提前超过 ${early} 分钟") { picker = "early" }
         }
         Spacer(Modifier.height(12.dp))
-        Text("修改后立即生效。固定工时和手动工时不会重复扣除休息。", color = AppMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 4.dp))
+        Text("修改后立即生效。固定工时和手动工时不会重复扣除休息。", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 4.dp))
     }
 
     when (picker) {
@@ -655,22 +690,22 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             Spacer(Modifier.size(8.dp))
             Text("启动自动记录服务")
         }
-        if (serviceMessage.isNotBlank()) Text(serviceMessage, color = AppGreen, modifier = Modifier.padding(10.dp))
+        if (serviceMessage.isNotBlank()) Text(serviceMessage, color = AppTheme.colors.green, modifier = Modifier.padding(10.dp))
         if (lastSystemLocationDisabled > 0L || lastSystemLocationRecovered > 0L) {
             Spacer(Modifier.height(12.dp))
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(18.dp)) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = MaterialTheme.shapes.large) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("系统定位状态记录", fontWeight = FontWeight.Bold)
-                    Text("最近暂停：${locationEventTime(lastSystemLocationDisabled)}", color = AppMuted)
-                    Text("最近恢复：${locationEventTime(lastSystemLocationRecovered)}", color = AppMuted)
+                    Text("最近暂停：${locationEventTime(lastSystemLocationDisabled)}", color = AppTheme.colors.muted)
+                    Text("最近恢复：${locationEventTime(lastSystemLocationRecovered)}", color = AppTheme.colors.muted)
                 }
             }
         }
         Spacer(Modifier.height(16.dp))
-        Card(colors = CardDefaults.cardColors(containerColor = AppOrange.copy(alpha = 0.09f)), shape = RoundedCornerShape(18.dp)) {
+        Card(colors = CardDefaults.cardColors(containerColor = AppTheme.colors.orange.copy(alpha = 0.09f)), shape = MaterialTheme.shapes.large) {
             Column(Modifier.padding(16.dp)) {
                 Text("OriginOS 6 还需要", fontWeight = FontWeight.Bold)
-                Text("在系统设置中允许自启动、后台高耗电，并将电池管理设为不限制。", color = AppMuted)
+                Text("在系统设置中允许自启动、后台高耗电，并将电池管理设为不限制。", color = AppTheme.colors.muted)
             }
         }
     }
@@ -710,14 +745,14 @@ private fun PermissionRow(
         Icon(
             if (granted == true) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
             null,
-            tint = if (granted == true) AppGreen else AppOrange
+            tint = if (granted == true) AppTheme.colors.green else AppTheme.colors.orange
         )
         Spacer(Modifier.size(12.dp))
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Medium)
-            Text(summary, color = AppMuted, style = MaterialTheme.typography.bodySmall)
+            Text(summary, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
         }
-        Text(statusText ?: if (granted == true) "已开启" else if (granted == false) "未开启" else "去设置", color = if (granted == true) AppGreen else AppOrange)
+        Text(statusText ?: if (granted == true) "已开启" else if (granted == false) "未开启" else "去设置", color = if (granted == true) AppTheme.colors.green else AppTheme.colors.orange)
     }
 }
 
@@ -729,12 +764,12 @@ private fun DataSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         ScreenHeader("导出与备份", "通过系统分享保存到电脑、网盘或聊天", onBack)
         Spacer(Modifier.height(14.dp))
         SettingsGroup {
-            SettingsRow(Icons.Outlined.FolderOpen, "生成或恢复文件", "Excel、PDF、CSV、JSON", tint = AppBlue) { showExport = true }
+            SettingsRow(Icons.Outlined.FolderOpen, "生成或恢复文件", "Excel、PDF、CSV、JSON", tint = AppTheme.colors.blue) { showExport = true }
             ThinDivider()
-            SettingsRow(Icons.Outlined.DeleteOutline, "清除所有记录", "保留工作时间、位置和规则设置", tint = AppRed) { showClear = true }
+            SettingsRow(Icons.Outlined.DeleteOutline, "清除所有记录", "保留工作时间、位置和规则设置", tint = AppTheme.colors.red) { showClear = true }
         }
         Spacer(Modifier.height(12.dp))
-        Text("导出的文件会打开系统分享面板，不再要求你查找内部文件路径。", color = AppMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 4.dp))
+        Text("导出的文件会打开系统分享面板，不再要求你查找内部文件路径。", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 4.dp))
     }
     if (showExport) ExportBottomSheet(vm, onDismiss = { showExport = false })
     if (showClear) {
@@ -743,7 +778,7 @@ private fun DataSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             title = { Text("清除全部记录？") },
             text = { Text("将删除工时、手动修改、定位和运行日志；工作时间、公司与家庭位置不会删除。") },
             confirmButton = {
-                TextButton(onClick = { vm.clearAllLocalData(); showClear = false }) { Text("确认清除", color = AppRed) }
+                TextButton(onClick = { vm.clearAllLocalData(); showClear = false }) { Text("确认清除", color = AppTheme.colors.red) }
             },
             dismissButton = { TextButton(onClick = { showClear = false }) { Text("取消") } }
         )
@@ -766,8 +801,8 @@ private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         )
         Spacer(Modifier.height(14.dp))
         if (logs.isEmpty()) {
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(20.dp)) {
-                Text("暂无运行日志", color = AppMuted, modifier = Modifier.fillMaxWidth().padding(24.dp))
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = MaterialTheme.shapes.extraLarge) {
+                Text("暂无运行日志", color = AppTheme.colors.muted, modifier = Modifier.fillMaxWidth().padding(24.dp))
             }
         } else {
             SettingsGroup {
@@ -777,5 +812,205 @@ private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 界面主题
+// ---------------------------------------------------------------------------
+
+/** 设置首页那一行的摘要文案。 */
+private fun holidaySummary(status: HolidayStatusUi): String {
+    val year = LocalDate.now().year
+    return when {
+        status.updating -> "正在更新…"
+        status.lastSuccessAt != null ->
+            "${HolidayStatusPresenter.sourceLabel(status, year)} · " +
+                HolidayStatusPresenter.updatedAtText(status).removePrefix("最近更新：")
+        status.hasDataFor(year) -> "${HolidayStatusPresenter.sourceLabel(status, year)} · 未联网更新过"
+        else -> "尚未获取 $year 年安排，点此处理"
+    }
+}
+
+@Composable
+private fun ThemeSettingsPage(
+    current: ThemeMode,
+    onChange: (ThemeMode) -> Unit,
+    onBack: () -> Unit
+) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        ScreenHeader("界面主题", "深色模式减少夜间查看的刺眼感", onBack)
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("显示模式")
+        SettingsGroup {
+            ThemeMode.entries.forEachIndexed { index, mode ->
+                if (index > 0) ThinDivider()
+                ThemeOptionRow(mode, selected = mode == current) { onChange(mode) }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "「自动（按时间）」在 07:00–19:00 使用浅色、其余时段使用深色；" +
+                "切换在整点生效，不需要重启应用。",
+            color = AppTheme.colors.muted,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 4.dp)
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun ThemeOptionRow(mode: ThemeMode, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(mode.label, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+            Text(mode.summary, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+        }
+        if (selected) Icon(Icons.Outlined.Check, contentDescription = "已选中", tint = AppTheme.colors.blue)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 节假日数据
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun HolidayDataPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
+    val status by vm.holidayStatus.collectAsState()
+    val today = LocalDate.now()
+    val warning = HolidayStatusPresenter.warning(status, today.year, today.monthValue)
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        ScreenHeader(
+            "节假日数据",
+            "放假与调休安排以国务院办公厅公告为准",
+            onBack,
+            action = {
+                IconButton(onClick = { vm.refreshHolidays() }, enabled = !status.updating) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = "立即更新")
+                }
+            }
+        )
+        Spacer(Modifier.height(14.dp))
+
+        SectionTitle("当前状态")
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = MaterialTheme.shapes.extraLarge
+        ) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    HolidayStatusPresenter.sourceLabel(status, today.year),
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(HolidayStatusPresenter.updatedAtText(status), color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+                HolidayStatusPresenter.hostText(status)?.let {
+                    Text(it, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+                }
+                if (status.knownYears.isNotEmpty()) {
+                    Text(
+                        "已覆盖年份：${status.knownYears.sorted().joinToString("、")}",
+                        color = AppTheme.colors.muted,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
+        if (warning != null) {
+            Spacer(Modifier.height(12.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = AppTheme.colors.orange.copy(alpha = 0.12f)),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Text(
+                    warning,
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        if (status.message.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            // 失败必须一眼可见：绿色只留给"全部成功"；部分成功用橙色
+            val tone = HolidayStatusPresenter.resultTone(status.resultOk, status.message)
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = when (tone) {
+                        HolidayResultTone.SUCCESS -> AppTheme.colors.green.copy(alpha = 0.12f)
+                        HolidayResultTone.PARTIAL -> AppTheme.colors.orange.copy(alpha = 0.12f)
+                        HolidayResultTone.FAILURE -> AppTheme.colors.red.copy(alpha = 0.10f)
+                    }
+                ),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Text(
+                    status.message,
+                    modifier = Modifier.fillMaxWidth().padding(14.dp),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        val errorText = status.error
+        if (errorText != null && status.message.isBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Card(
+                colors = CardDefaults.cardColors(containerColor = AppTheme.colors.red.copy(alpha = 0.10f)),
+                shape = MaterialTheme.shapes.large
+            ) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("上次更新未成功", style = MaterialTheme.typography.titleSmall, color = AppTheme.colors.red)
+                    Text(errorText, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Button(
+            onClick = { vm.refreshHolidays() },
+            enabled = !status.updating,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (status.updating) "正在更新…" else "立即更新")
+        }
+
+        Spacer(Modifier.height(16.dp))
+        SettingsGroup {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("为什么要联网", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "放假与调休安排由国务院办公厅在每年 11 月前后发布，无法提前写入应用，只能联网获取。数据源由公告机器生成，可追溯到 gov.cn 原文。",
+                    color = AppTheme.colors.muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text("联网失败会怎样", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "自动回退到内置公告表。元旦、春节、清明、劳动节、端午、中秋、国庆这些法定节日当天由农历与节气算法推算，" +
+                        "不依赖联网，任何年份都能正确标出；只有「哪几天放假、哪几天调休上班」需要公告数据。",
+                    color = AppTheme.colors.muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }

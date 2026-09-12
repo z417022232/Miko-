@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -40,6 +41,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -67,12 +69,31 @@ import com.example.worktimetracker.ui.screens.SettingsScreen
 import com.example.worktimetracker.ui.screens.StatisticsScreen
 import com.example.worktimetracker.ui.screens.WorkTimePickerDialog
 import com.example.worktimetracker.ui.screens.formatClock
+import com.example.worktimetracker.ui.theme.AppElevation
+import com.example.worktimetracker.ui.theme.DayNightSchedule
+import com.example.worktimetracker.ui.theme.ThemeMode
+import com.example.worktimetracker.ui.theme.ThemePreferenceStore
 import com.example.worktimetracker.ui.theme.WorkTimeTrackerTheme
+import kotlinx.coroutines.delay
+import java.time.LocalDateTime
+import java.time.LocalTime
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { WorkTimeTrackerTheme { AppRoot() } }
+        val themeStore = ThemePreferenceStore(this)
+        setContent {
+            var themeMode by remember { mutableStateOf(themeStore.mode()) }
+            WorkTimeTrackerTheme(darkTheme = rememberDarkTheme(themeMode)) {
+                AppRoot(
+                    themeMode = themeMode,
+                    onThemeModeChange = {
+                        themeStore.setMode(it)
+                        themeMode = it
+                    }
+                )
+            }
+        }
     }
 
     override fun onStart() {
@@ -92,8 +113,35 @@ private enum class MainTab(val label: String) {
     SETTINGS("设置")
 }
 
+/**
+ * 解析是否使用深色主题。
+ *
+ * [ThemeMode.AUTO_TIME] 用**定时到切换点**的方式驱动（不是每分钟轮询）：
+ * 协程只在 07:00 / 19:00 醒来一次并重算，避免整棵树每分钟重组。
+ */
 @Composable
-fun AppRoot() {
+private fun rememberDarkTheme(mode: ThemeMode): Boolean {
+    val systemDark = isSystemInDarkTheme()
+    var autoDark by remember { mutableStateOf(DayNightSchedule.isDark(LocalTime.now())) }
+    LaunchedEffect(mode) {
+        if (mode != ThemeMode.AUTO_TIME) return@LaunchedEffect
+        while (true) {
+            val now = LocalDateTime.now()
+            autoDark = DayNightSchedule.isDark(now.toLocalTime())
+            delay(DayNightSchedule.millisUntilNextSwitch(now))
+        }
+    }
+    return when (mode) {
+        ThemeMode.AUTO_TIME -> autoDark
+        else -> DayNightSchedule.resolve(mode, LocalDateTime.now(), systemDark)
+    }
+}
+
+@Composable
+fun AppRoot(
+    themeMode: ThemeMode = ThemeMode.default,
+    onThemeModeChange: (ThemeMode) -> Unit = {}
+) {
     val vm: WorkTimeViewModel = viewModel()
     val lifecycleOwner = LocalLifecycleOwner.current
     val foregroundReset = remember { AppForegroundReset() }
@@ -118,7 +166,10 @@ fun AppRoot() {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
-            NavigationBar(containerColor = Color.White, tonalElevation = 2.dp) {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surface,
+                tonalElevation = AppElevation.raised
+            ) {
                 MainTab.entries.forEach { item ->
                     NavigationBarItem(
                         selected = tab == item,
@@ -148,7 +199,11 @@ fun AppRoot() {
             when (tab) {
                 MainTab.RECORDS -> CalendarScreen(vm)
                 MainTab.STATISTICS -> StatisticsScreen(vm)
-                MainTab.SETTINGS -> SettingsScreen(vm)
+                MainTab.SETTINGS -> SettingsScreen(
+                    vm = vm,
+                    themeMode = themeMode,
+                    onThemeModeChange = onThemeModeChange
+                )
             }
         }
     }
@@ -282,8 +337,8 @@ private fun SetupCard(
 ) {
     Card(
         onClick = onClick,
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(

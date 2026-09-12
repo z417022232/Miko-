@@ -186,15 +186,20 @@ class ChinaHolidayProviderTest {
     }
 
     @Test
-    fun `yearsOutsideTableFallBackToFixedSolarFestivalsAndWeekends`() {
-        // 2027 未收录：仅公历固定的节日当天可识别
+    fun `yearsWithoutAnnouncementStillGetAllStatutoryFestivals`() {
+        // 2027 的放假安排尚未内置，但法定节日当天由农历/节气算法**无需公告**即可得出
         assertEquals(DayKind.FESTIVAL, ChinaHolidayProvider.info(date("2027-01-01")).kind)
         assertEquals("元旦", ChinaHolidayProvider.badge(date("2027-01-01")))
-        assertEquals(DayKind.FESTIVAL, ChinaHolidayProvider.info(date("2027-10-01")).kind)
+        assertEquals("春节", ChinaHolidayProvider.name(date("2027-02-06")))      // 正月初一
+        assertEquals("清明节", ChinaHolidayProvider.name(date("2027-04-05")))
+        assertEquals("端午节", ChinaHolidayProvider.name(date("2027-06-09")))    // 五月初五
+        assertEquals("中秋节", ChinaHolidayProvider.name(date("2027-09-15")))    // 八月十五
+        assertEquals("国庆节", ChinaHolidayProvider.name(date("2027-10-01")))
 
-        // 2027-01-02 是周六 → 周末（兜底不认调休假期）
+        // 但"哪几天放假、哪几天调休"必须等公告：2027-02-09 是普通工作日，
+        // 2027-01-02（周六）只是普通周末，都不是假期休息日
+        assertEquals(DayKind.WORKDAY, ChinaHolidayProvider.info(date("2027-02-09")).kind)
         assertEquals(DayKind.WEEKEND, ChinaHolidayProvider.info(date("2027-01-02")).kind)
-        // 2027-06-19 是周六 → 兜底不会把端午的假期算进来（端午随农历，无法兜底）
-        assertNull(ChinaHolidayProvider.name(date("2027-06-19")))
+        assertNull("2026 的调休日不应污染 2027", ChinaHolidayProvider.badge(date("2027-09-20")))
     }
 }

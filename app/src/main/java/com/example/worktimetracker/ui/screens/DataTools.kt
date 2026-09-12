@@ -45,6 +45,7 @@ import androidx.core.content.FileProvider
 import com.example.worktimetracker.export.ExportManager
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import java.io.File
+import com.example.worktimetracker.ui.theme.AppTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -85,14 +86,14 @@ fun ExportBottomSheet(vm: WorkTimeViewModel, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(Modifier.padding(start = 20.dp, end = 20.dp, bottom = 30.dp)) {
             Text("导出与备份", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text("${month.year}年${month.monthValue}月", color = AppMuted)
+            Text("${month.year}年${month.monthValue}月", color = AppTheme.colors.muted)
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 ExportActionCard(
                     "Excel",
                     "每日明细",
                     Icons.Outlined.TableChart,
-                    AppGreen,
+                    AppTheme.colors.green,
                     Modifier.weight(1f)
                 ) {
                     runCatching { ExportManager.exportExcel(context, month, records) }
@@ -103,7 +104,7 @@ fun ExportBottomSheet(vm: WorkTimeViewModel, onDismiss: () -> Unit) {
                     "PDF",
                     "月度报告",
                     Icons.Outlined.PictureAsPdf,
-                    AppRed,
+                    AppTheme.colors.red,
                     Modifier.weight(1f)
                 ) {
                     runCatching { ExportManager.exportPdfReport(context, month, records) }
@@ -117,7 +118,7 @@ fun ExportBottomSheet(vm: WorkTimeViewModel, onDismiss: () -> Unit) {
                     "CSV",
                     "通用表格",
                     Icons.Outlined.Description,
-                    AppBlue,
+                    AppTheme.colors.blue,
                     Modifier.weight(1f)
                 ) {
                     runCatching { ExportManager.exportCsv(context, month, records) }
@@ -128,7 +129,7 @@ fun ExportBottomSheet(vm: WorkTimeViewModel, onDismiss: () -> Unit) {
                     "备份",
                     "全部设置",
                     Icons.Outlined.Backup,
-                    AppPurple,
+                    AppTheme.colors.purple,
                     Modifier.weight(1f)
                 ) {
                     runCatching { ExportManager.exportBackupJson(context, month, records, settings) }
@@ -156,7 +157,7 @@ fun ExportBottomSheet(vm: WorkTimeViewModel, onDismiss: () -> Unit) {
             }
             Text(
                 legacyImportMessage.ifBlank { message },
-                color = AppMuted,
+                color = AppTheme.colors.muted,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(top = 10.dp)
             )
@@ -182,7 +183,7 @@ private fun ExportActionCard(
             Icon(icon, null, tint = color, modifier = Modifier.size(25.dp))
             Spacer(Modifier.height(12.dp))
             Text(title, fontWeight = FontWeight.Bold)
-            Text(subtitle, color = AppMuted, style = MaterialTheme.typography.bodySmall)
+            Text(subtitle, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
         }
     }
 }

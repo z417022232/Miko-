@@ -66,6 +66,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
 import java.util.Locale
+import com.example.worktimetracker.ui.theme.AppTheme
 
 @Composable
 fun CalendarScreen(vm: WorkTimeViewModel) {
@@ -95,7 +96,7 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
             subtitle = "每天的状态与计入工时",
             action = {
                 IconButton(onClick = { vm.today() }) {
-                    Icon(Icons.Outlined.Today, contentDescription = "回到今天", tint = AppBlue)
+                    Icon(Icons.Outlined.Today, contentDescription = "回到今天", tint = AppTheme.colors.blue)
                 }
             }
         )
@@ -195,8 +196,8 @@ private fun MonthOverviewCard(
     val workDays = records.count { it.finalMinutes > 0 }
     val reviewDays = records.count { it.needsReview }
     Card(
-        colors = CardDefaults.cardColors(containerColor = AppBlue),
-        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.blue),
+        shape = MaterialTheme.shapes.extraLarge,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
@@ -218,7 +219,7 @@ private fun MonthOverviewCard(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(MaterialTheme.shapes.medium)
                     .background(Color.White.copy(alpha = 0.14f))
                     .clickable(onClick = onSalaryClick)
                     .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -291,8 +292,8 @@ private fun CalendarCard(
     val trailing = (7 - rawCells.size % 7) % 7
     val cells = rawCells + List(trailing) { null }
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = MaterialTheme.shapes.extraLarge,
         modifier = modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
@@ -301,7 +302,7 @@ private fun CalendarCard(
                     Text(
                         label,
                         modifier = Modifier.weight(1f),
-                        color = if (index == 0 || index == 6) AppRed.copy(alpha = 0.8f) else AppMuted,
+                        color = if (index == 0 || index == 6) AppTheme.colors.red.copy(alpha = 0.8f) else AppTheme.colors.muted,
                         style = MaterialTheme.typography.labelMedium,
                         textAlign = TextAlign.Center
                     )
@@ -350,16 +351,16 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
             modifier = Modifier
                 .fillMaxWidth()
                 .height(62.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(MaterialTheme.shapes.medium)
                 .background(dayCellBackground(record.dayKind, selected))
-                .then(if (today && !selected) Modifier.border(1.dp, AppBlue.copy(alpha = 0.45f), RoundedCornerShape(12.dp)) else Modifier)
+                .then(if (today && !selected) Modifier.border(1.dp, AppTheme.colors.blue.copy(alpha = 0.45f), MaterialTheme.shapes.medium) else Modifier)
                 .clickable { onClick(record) }
                 .padding(top = 4.dp)
         ) {
             Text(
                 record.date.dayOfMonth.toString(),
                 fontWeight = if (selected || today) FontWeight.Bold else FontWeight.Normal,
-                color = if (selected) AppBlue else MaterialTheme.colorScheme.onSurface
+                color = if (selected) AppTheme.colors.blue else MaterialTheme.colorScheme.onSurface
             )
             lines.forEach { (text, tint) ->
                 Text(text, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
@@ -372,7 +373,7 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
                     .align(Alignment.TopEnd)
                     .padding(top = 5.dp, end = 6.dp)
                     .size(7.dp)
-                    .background(AppRed, CircleShape)
+                    .background(AppTheme.colors.red, CircleShape)
             )
         }
     }
@@ -386,18 +387,20 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, onClick: (UiDayRecor
  * - 普通工作日 → 透明
  * 选中态优先，避免底色盖住选中反馈。
  */
+@Composable
 private fun dayCellBackground(kind: DayKind, selected: Boolean): Color = when {
-    selected -> AppBlue.copy(alpha = 0.11f)
-    kind == DayKind.MAKEUP_WORKDAY -> AppOrange.copy(alpha = 0.18f)
-    kind == DayKind.FESTIVAL -> AppRed.copy(alpha = 0.12f)
-    kind == DayKind.WEEKEND || kind == DayKind.HOLIDAY_REST -> AppMuted.copy(alpha = 0.10f)
+    selected -> AppTheme.colors.blue.copy(alpha = 0.11f)
+    kind == DayKind.MAKEUP_WORKDAY -> AppTheme.colors.orange.copy(alpha = 0.18f)
+    kind == DayKind.FESTIVAL -> AppTheme.colors.red.copy(alpha = 0.12f)
+    kind == DayKind.WEEKEND || kind == DayKind.HOLIDAY_REST -> AppTheme.colors.muted.copy(alpha = 0.10f)
     else -> Color.Transparent
 }
 
+@Composable
 private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
-    DayKind.FESTIVAL -> AppRed
-    DayKind.MAKEUP_WORKDAY -> AppOrange
-    else -> AppMuted
+    DayKind.FESTIVAL -> AppTheme.colors.red
+    DayKind.MAKEUP_WORKDAY -> AppTheme.colors.orange
+    else -> AppTheme.colors.muted
 }
 
 /** 详情卡片/弹窗用的完整公休说明（格子空间小，只放短标签）。 */
@@ -414,14 +417,14 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
     val weekday = record.date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
     val status = record.status.ifBlank { "暂无记录" }
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = MaterialTheme.shapes.extraLarge,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("${record.date.monthValue}月${record.date.dayOfMonth}日 · $weekday", color = AppMuted)
+                    Text("${record.date.monthValue}月${record.date.dayOfMonth}日 · $weekday", color = AppTheme.colors.muted)
                     Spacer(Modifier.height(5.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
@@ -431,8 +434,8 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                         )
                         StatusPill(status, statusColor(status))
                         // A6: 待确认 / 已复核 状态
-                        if (record.needsReview) StatusPill("待确认", AppRed)
-                        else if (record.reviewAcknowledged) StatusPill("已复核", AppGreen)
+                        if (record.needsReview) StatusPill("待确认", AppTheme.colors.red)
+                        else if (record.reviewAcknowledged) StatusPill("已复核", AppTheme.colors.green)
                     }
                 }
                 FilledTonalButton(onClick = onEdit) {
@@ -443,7 +446,7 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
             }
             if (record.needsReview && !record.reviewReason.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))
-                Text(record.reviewReason, color = AppRed, style = MaterialTheme.typography.bodySmall)
+                Text(record.reviewReason, color = AppTheme.colors.red, style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(10.dp))
             LocationEventLine(
@@ -462,9 +465,9 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                 record.homeArrivalText == null && record.homeDepartureText == null
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.AccessTime, null, tint = AppMuted, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Outlined.AccessTime, null, tint = AppTheme.colors.muted, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(8.dp))
-                    Text("没有到达和离开记录", color = AppMuted)
+                    Text("没有到达和离开记录", color = AppTheme.colors.muted)
                 }
             }
             dayKindText(record.dayKind, record.holidayName)?.let {
@@ -486,14 +489,14 @@ private fun LocationEventLine(
         Modifier.fillMaxWidth().padding(top = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Outlined.AccessTime, null, tint = AppMuted, modifier = Modifier.size(18.dp))
+        Icon(Icons.Outlined.AccessTime, null, tint = AppTheme.colors.muted, modifier = Modifier.size(18.dp))
         Spacer(Modifier.size(8.dp))
         Text(
             listOfNotNull(
                 arrival?.let { "$it$arrivalLabel" },
                 departure?.let { "$it$departureLabel" }
             ).joinToString("       "),
-            color = AppMuted
+            color = AppTheme.colors.muted
         )
     }
 }
@@ -516,7 +519,7 @@ private fun SalaryDialog(
         title = { Text("${month.monthValue}月工资") },
         text = {
             Column {
-                Text("${month.monthValue}月工资，默认次月15日发放", color = AppMuted)
+                Text("${month.monthValue}月工资，默认次月15日发放", color = AppTheme.colors.muted)
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = value,
@@ -582,7 +585,7 @@ private fun MonthNumberPicker(
     modifier: Modifier
 ) {
     Column(modifier) {
-        Text(label, color = AppMuted, style = MaterialTheme.typography.labelMedium)
+        Text(label, color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
         Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { onValue((value - 1).coerceAtLeast(range.first)) }) { Text("−") }
             Text("$value$unit", modifier = Modifier.weight(1f), textAlign = TextAlign.Center, fontWeight = FontWeight.Bold)
@@ -622,15 +625,15 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
             // A6: 系统判定需确认 → 展示原因 + 一键认可（认可不改值，不会锁死自动算法）
             if (record.needsReview) {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = AppRed.copy(alpha = 0.08f)),
-                    shape = RoundedCornerShape(14.dp)
+                    colors = CardDefaults.cardColors(containerColor = AppTheme.colors.red.copy(alpha = 0.08f)),
+                    shape = MaterialTheme.shapes.medium
                 ) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-                        Text("系统判定需确认", color = AppRed, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
+                        Text("系统判定需确认", color = AppTheme.colors.red, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.titleSmall)
                         Spacer(Modifier.height(2.dp))
                         Text(
                             record.reviewReason ?: "自动识别结果需要人工确认",
-                            color = AppRed,
+                            color = AppTheme.colors.red,
                             style = MaterialTheme.typography.bodySmall
                         )
                         TextButton(onClick = {
@@ -640,7 +643,7 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
                 }
                 Spacer(Modifier.height(16.dp))
             } else if (record.reviewAcknowledged) {
-                Text("已复核", color = AppGreen, style = MaterialTheme.typography.labelMedium)
+                Text("已复核", color = AppTheme.colors.green, style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.height(12.dp))
             }
             Button(onClick = { showManual = true }, modifier = Modifier.fillMaxWidth()) {
@@ -667,7 +670,7 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
             }
             if (!record.note.isNullOrBlank()) {
                 Spacer(Modifier.height(12.dp))
-                Text("备注：${record.note}", color = AppMuted)
+                Text("备注：${record.note}", color = AppTheme.colors.muted)
             }
         }
     }
@@ -689,7 +692,7 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
 private fun DetailMetric(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value, fontWeight = FontWeight.Bold)
-        Text(label, color = AppMuted, style = MaterialTheme.typography.labelMedium)
+        Text(label, color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
     }
 }
 
@@ -877,9 +880,9 @@ private fun SegmentTimeRow(
     onEnd: () -> Unit
 ) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, modifier = Modifier.weight(1f), color = AppMuted)
+        Text(title, modifier = Modifier.weight(1f), color = AppTheme.colors.muted)
         TextButton(onClick = onStart) { Text(formatClock(start)) }
-        Text("—", color = AppMuted)
+        Text("—", color = AppTheme.colors.muted)
         TextButton(onClick = onEnd) { Text(formatClock(end)) }
     }
 }

@@ -12,7 +12,9 @@ import com.example.worktimetracker.data.entity.MonthlySalaryEntity
 import com.example.worktimetracker.data.entity.UserSettingsEntity
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import com.example.worktimetracker.data.importer.LegacyAttendanceCsvImporter
-import com.example.worktimetracker.domain.engine.ChinaHolidayProvider
+import com.example.worktimetracker.data.remote.HolidaySyncStore
+import com.example.worktimetracker.data.repository.HolidayRepository
+import com.example.worktimetracker.domain.engine.HolidayCalendar
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
@@ -77,6 +79,12 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private val _companyCalibrationProposal = MutableStateFlow<CompanyCalibrationProposal?>(null)
     val companyCalibrationProposal: StateFlow<CompanyCalibrationProposal?> = _companyCalibrationProposal
 
+    // ---- 节假日数据（国务院公告）：远端同步 + 本地缓存 + 算法兜底 ----
+    private val holidayStore = HolidaySyncStore(application)
+    private val holidayRepository = HolidayRepository(db.holidayDao(), holidayStore)
+    private val _holidayStatus = MutableStateFlow(HolidayStatusUi())
+    val holidayStatus: StateFlow<HolidayStatusUi> = _holidayStatus
+
     /** 融合定位判断实时通道：前台服务每次融合后覆盖，UI 展示"当前判断" */
     val fusedStatus: StateFlow<com.example.worktimetracker.domain.evidence.FusedStatusSnapshot?> =
         (application as WorkTimeApplication).fusedStatus
@@ -86,11 +94,18 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             val saved = db.userSettingsDao().getSettings() ?: UserSettingsEntity().also { db.userSettingsDao().save(it) }
             _settings.value = saved
             _onboardingDone.value = saved.onboardingDone
+            // 先把节假日缓存灌进运行时合并层，再生成日历，避免首屏丢标签
+            val cachedHolidays = holidayRepository.restoreCache()
+            if (cachedHolidays.isNotEmpty()) HolidayCalendar.apply(cachedHolidays)
+            refreshHolidayStatus()
             loadMonth()
             refreshLastKnownLocation()
             refreshLogsOnce()
             refreshLastManualHours()
         }
+        // 自动同步放在**独立协程**里：它要联网（可能耗时数秒到数十秒），
+        // 既不能拖慢首屏，也不能因为前序初始化步骤异常而被整体跳过。
+        maybeAutoSyncHolidays()
     }
 
     fun finishOnboarding() {
@@ -117,9 +132,14 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         loadMonth()
     }
 
-    fun loadMonth() {
+    fun loadMonth() = loadMonth(force = false)
+
+    /**
+     * @param force 强制重建当前月份（节假日数据更新后需要，否则会被"同月已加载"短路）。
+     */
+    fun loadMonth(force: Boolean) {
         val requestedMonth = _month.value
-        if (monthJob?.isActive == true && observedMonth == requestedMonth) return
+        if (!force && monthJob?.isActive == true && observedMonth == requestedMonth) return
         monthJob?.cancel()
         observedMonth = requestedMonth
         monthJob = viewModelScope.launch {
@@ -134,6 +154,92 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 _reviewRecords.value = _records.value.filter { it.needsReview }
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // 节假日数据（国务院公告）：联网拉取 + 本地缓存 + 算法兜底
+    // ---------------------------------------------------------------------
+
+    private suspend fun refreshHolidayStatus() {
+        _holidayStatus.value = _holidayStatus.value.copy(
+            lastSuccessAt = holidayStore.lastSuccessAt(),
+            lastAttemptAt = holidayStore.lastAttemptAt(),
+            host = holidayStore.lastHost(),
+            coveredYears = holidayStore.coveredYears(),
+            cachedYears = holidayRepository.cachedYears(),
+            error = holidayStore.lastError()
+        )
+    }
+
+    /** 启动时按需自动同步：缓存过期、或当前年份还没拿到公告数据。 */
+    private fun maybeAutoSyncHolidays() {
+        viewModelScope.launch {
+            runCatching {
+                val currentYear = LocalDate.now().year
+                val needed = HolidayRepository.needsSync(
+                    holidayStore.lastSuccessAt(),
+                    holidayRepository.cachedYears(),
+                    currentYear,
+                    System.currentTimeMillis()
+                )
+                if (needed) syncHolidaysNow() else refreshHolidayStatus()
+            }.onFailure { error ->
+                _holidayStatus.value = _holidayStatus.value.copy(updating = false)
+                runCatching {
+                    db.appLogDao().insert(
+                        AppLogEntity(
+                            type = "HOLIDAY_SYNC",
+                            content = "自动同步失败：" + (error.message ?: error.javaClass.simpleName)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** 手动触发（设置页「立即更新」）。联网失败自动回退本地数据，不抛异常。 */
+    fun refreshHolidays() {
+        viewModelScope.launch { syncHolidaysNow() }
+    }
+
+    private suspend fun syncHolidaysNow() {
+        _holidayStatus.value = _holidayStatus.value.copy(updating = true, message = "", resultOk = null)
+        val outcome = runCatching { holidayRepository.sync(HolidayRepository.targetYears()) }
+            .getOrElse { error ->
+                _holidayStatus.value = _holidayStatus.value.copy(
+                    updating = false,
+                    message = "更新失败，已沿用本地数据",
+                    resultOk = false
+                )
+                runCatching {
+                    db.appLogDao().insert(
+                        AppLogEntity(
+                            type = "HOLIDAY_SYNC",
+                            content = "同步异常：" + (error.message ?: error.javaClass.simpleName)
+                        )
+                    )
+                }
+                return
+            }
+        val restored = holidayRepository.restoreCache()
+        if (restored.isNotEmpty()) HolidayCalendar.apply(restored)
+        // 标签变了，必须强制重建当前月份
+        loadMonth(force = true)
+        val refreshed = _holidayStatus.value.copy(
+            updating = false,
+            lastSuccessAt = holidayStore.lastSuccessAt(),
+            lastAttemptAt = holidayStore.lastAttemptAt(),
+            host = holidayStore.lastHost()?.takeIf { it.isNotBlank() } ?: outcome.host,
+            coveredYears = holidayStore.coveredYears(),
+            cachedYears = holidayRepository.cachedYears(),
+            error = holidayStore.lastError()
+        )
+        _holidayStatus.value = refreshed.copy(
+            resultOk = outcome.ok && outcome.failures.isEmpty(),
+            message = HolidayStatusPresenter.resultText(
+                refreshed, outcome.succeededYears, outcome.failures.keys, outcome.host
+            )
+        )
     }
 
     fun confirmReview(
@@ -544,12 +650,14 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             db.manualOverrideDao().deleteAll()
             db.workRecordDao().deleteAll()
             db.locationLogDao().deleteAll()
-            db.holidayDao().deleteAll()
+            holidayRepository.clearAll()
+            HolidayCalendar.reset()
             db.appLogDao().deleteAll()
             db.monthlySalaryDao().deleteAll()
             _lastKnownLocationText.value = "暂无定位"
             _recentLogs.value = emptyList()
-            loadMonth()
+            refreshHolidayStatus()
+            loadMonth(force = true)
         }
     }
 
@@ -560,7 +668,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun WorkRecordEntity.toUi(date: LocalDate): UiDayRecord {
-        val dayInfo = ChinaHolidayProvider.info(date)
+        val dayInfo = HolidayCalendar.info(date)
         return UiDayRecord(
             date = date,
             status = when (status) { "WORK" -> if (shift == "NIGHT_SHIFT") "夜班" else "白班"; "REST" -> "休息"; "OUTSIDE" -> "外出"; "EARLY_LEAVE" -> "下早班"; "ARRIVAL_EXCEPTION" -> "到岗异常"; "MANUAL" -> "手动"; "LEAVE" -> "请假"; else -> status },

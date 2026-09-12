@@ -47,14 +47,8 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlin.math.abs
+import com.example.worktimetracker.ui.theme.AppTheme
 
-val AppBlue = Color(0xFF2F6BFF)
-val AppPurple = Color(0xFF7257E7)
-val AppGreen = Color(0xFF16A06A)
-val AppOrange = Color(0xFFE88922)
-val AppRed = Color(0xFFE34D59)
-val AppMuted = Color(0xFF7D889B)
-val AppDivider = Color(0xFFE9EDF3)
 
 fun formatMinutes(minutes: Int): String {
     if (minutes <= 0) return "0小时"
@@ -78,14 +72,15 @@ fun formatClock(minutes: Int): String {
     return "%02d:%02d".format(normalized / 60, normalized % 60)
 }
 
+@Composable
 fun statusColor(status: String): Color = when (status) {
-    "白班" -> AppBlue
-    "夜班" -> AppPurple
-    "休息" -> AppMuted
-    "外出" -> AppOrange
-    "下早班", "到岗异常" -> AppRed
-    "手动", "请假" -> AppGreen
-    else -> Color(0xFF273142)
+    "白班" -> AppTheme.colors.blue
+    "夜班" -> AppTheme.colors.purple
+    "休息" -> AppTheme.colors.muted
+    "外出" -> AppTheme.colors.orange
+    "下早班", "到岗异常" -> AppTheme.colors.red
+    "手动", "请假" -> AppTheme.colors.green
+    else -> AppTheme.colors.textPrimary
 }
 
 fun shortStatus(status: String): String = when (status) {
@@ -119,7 +114,7 @@ fun ScreenHeader(
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             if (!subtitle.isNullOrBlank()) {
-                Text(subtitle, color = AppMuted, style = MaterialTheme.typography.bodyMedium)
+                Text(subtitle, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodyMedium)
             }
         }
         action?.invoke()
@@ -131,7 +126,7 @@ fun SectionTitle(title: String) {
     Text(
         title,
         style = MaterialTheme.typography.labelLarge,
-        color = AppMuted,
+        color = AppTheme.colors.muted,
         modifier = Modifier.padding(start = 4.dp, top = 8.dp, bottom = 8.dp)
     )
 }
@@ -139,8 +134,8 @@ fun SectionTitle(title: String) {
 @Composable
 fun SettingsGroup(content: @Composable ColumnScope.() -> Unit) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = MaterialTheme.shapes.extraLarge,
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(content = content)
@@ -152,7 +147,7 @@ fun SettingsRow(
     icon: ImageVector,
     title: String,
     summary: String? = null,
-    tint: Color = AppBlue,
+    tint: Color = AppTheme.colors.blue,
     showChevron: Boolean = true,
     trailing: (@Composable () -> Unit)? = null,
     onClick: () -> Unit
@@ -168,7 +163,7 @@ fun SettingsRow(
         Box(
             Modifier
                 .size(38.dp)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(MaterialTheme.shapes.medium)
                 .background(tint.copy(alpha = 0.11f)),
             contentAlignment = Alignment.Center
         ) {
@@ -177,17 +172,17 @@ fun SettingsRow(
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Medium)
             if (!summary.isNullOrBlank()) {
-                Text(summary, color = AppMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                Text(summary, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall, maxLines = 2)
             }
         }
         if (trailing != null) trailing()
-        else if (showChevron) Icon(Icons.Outlined.ChevronRight, null, tint = AppMuted)
+        else if (showChevron) Icon(Icons.Outlined.ChevronRight, null, tint = AppTheme.colors.muted)
     }
 }
 
 @Composable
 fun ThinDivider() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(AppDivider))
+    Box(Modifier.fillMaxWidth().height(1.dp).background(AppTheme.colors.divider))
 }
 
 @Composable
@@ -220,9 +215,9 @@ fun WorkTimePickerDialog(
         title = { Text("设置上下班时间") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("上班", color = AppMuted, style = MaterialTheme.typography.labelLarge)
+                Text("上班", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelLarge)
                 WheelRow(startHour, startMinute, { startHour = it }, { startMinute = it })
-                Text("下班", color = AppMuted, style = MaterialTheme.typography.labelLarge)
+                Text("下班", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelLarge)
                 WheelRow(endHour, endMinute, { endHour = it }, { endMinute = it })
             }
         },
@@ -327,7 +322,7 @@ private fun WheelColumn(
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.large,
         modifier = modifier.height(150.dp)
     ) {
         Box(Modifier.fillMaxSize()) {
@@ -337,8 +332,8 @@ private fun WheelColumn(
                     .fillMaxWidth()
                     .height(36.dp)
                     .padding(horizontal = 5.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color.White)
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(MaterialTheme.colorScheme.surface)
             )
             LazyColumn(
                 state = state,
@@ -350,7 +345,7 @@ private fun WheelColumn(
                     val active = item == selected
                     Text(
                         "%02d %s".format(item, unit),
-                        color = if (active) MaterialTheme.colorScheme.onSurface else AppMuted,
+                        color = if (active) MaterialTheme.colorScheme.onSurface else AppTheme.colors.muted,
                         fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
