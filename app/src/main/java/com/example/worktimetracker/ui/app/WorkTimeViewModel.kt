@@ -131,6 +131,9 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     /** 日工资基准月（最近一个已录入实发的完整月）。 */
     private val _payBaseline = MutableStateFlow<PayBaseline?>(null)
     val payBaseline: StateFlow<PayBaseline?> = _payBaseline
+    /** 整月预估（未记录日子按标准工时补足后 × 基准月单价）。月已走完 / 无基准月时为 null。 */
+    private val _monthProjection = MutableStateFlow<MonthProjection?>(null)
+    val monthProjection: StateFlow<MonthProjection?> = _monthProjection
     private val _companyCalibrationProposal = MutableStateFlow<CompanyCalibrationProposal?>(null)
     val companyCalibrationProposal: StateFlow<CompanyCalibrationProposal?> = _companyCalibrationProposal
 
@@ -1156,11 +1159,44 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 nightShiftsOverride = params?.nightShiftsOverride
             )
         )
+        _monthProjection.value = buildProjection(records, params?.nightShiftsOverride)
+    }
+
+    /**
+     * 整月预估 = **预估工时 × 基准月到手单价**（用户 2026-09-14 选定口径）。
+     *
+     * 没有基准月（全新安装 / 还没有任何实发录入）返回 null —— 界面不显示，而不是猜一个数。
+     * 当月已经走完（没有可补的日子）也返回 null，避免多一行没信息量的数。
+     */
+    private fun buildProjection(records: List<UiDayRecord>, nightOverride: Int?): MonthProjection? {
+        val baseline = _payBaseline.value ?: return null
+        val standardMinutes = _settings.value.defaultWorkMinutes ?: DEFAULT_WORK_MINUTES
+        val stats = PayrollPresenter.projectionStats(
+            records = records,
+            today = LocalDate.now(zone),
+            standardMinutes = standardMinutes,
+            nightShiftsOverride = nightOverride
+        )
+        if (!stats.hasProjection) return null
+        val hourly = PayrollEngine.baselineHourlyCents(baseline.netCents, baseline.minutes) ?: return null
+        val cents = PayrollEngine.dailyEstimateCents(
+            stats.projectedMinutes, baseline.netCents, baseline.minutes
+        ) ?: return null
+        return MonthProjection(
+            stats = stats,
+            netCents = cents,
+            hourlyCents = hourly,
+            standardMinutes = standardMinutes,
+            baseline = baseline
+        )
     }
 
     private companion object {
         /** 生效月格式 `YYYY-MM` */
         val MONTH_PATTERN = Regex("""\d{4}-\d{2}""")
+
+        /** 没设「每日标准工时」时的兜底（与今日页 fixedMinutes 同口径）。 */
+        const val DEFAULT_WORK_MINUTES = 11 * 60
     }
 
     fun saveSamplingInterval(minutes: Int) {

@@ -6,7 +6,6 @@ import com.example.worktimetracker.domain.engine.HolidayCalendar
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.temporal.ChronoUnit
-import java.util.Locale
 
 /** 日历格子的热力档位：没有出工 / 工时不足 / 满勤。 */
 enum class HeatLevel { NONE, PARTIAL, FULL }
@@ -21,7 +20,7 @@ data class DayCellModel(
     val date: LocalDate,
     val dayOfMonth: Int,
     val heat: HeatLevel,
-    /** 格子下半部短文本：`8.2` / `休` / `中秋` / `班` / `—`。 */
+    /** 格子下半部短文本：`白 11h` / `夜 10.5h` / `休` / `中秋` / `班` / `—`。 */
     val text: String,
     val isToday: Boolean,
     val isSelected: Boolean,
@@ -79,10 +78,6 @@ object CalendarHeatPresenter {
 
     /** 搜索「下一个假期」的最大天数：一年足够覆盖。 */
     private const val HOLIDAY_LOOKAHEAD_DAYS = 400
-
-    /** 分钟 → 日历格子里的时长文本，固定一位小数（`8.0` / `8.5` / `11.0`）。 */
-    fun hoursText(minutes: Int): String =
-        "%.1f".format(Locale.US, minutes.coerceAtLeast(0) / 60.0)
 
     /** 节日名压缩成格子能放下的短名：`中秋节` → `中秋`，`中秋节·国庆节` → `中秋`。 */
     fun shortFestivalName(name: String): String {
@@ -142,7 +137,9 @@ object CalendarHeatPresenter {
         val isFestival = info.kind == DayKind.FESTIVAL
         val isMakeup = info.kind == DayKind.MAKEUP_WORKDAY
         val text = when {
-            worked -> hoursText(minutes)
+            // 格子第二行必须带班次前缀（白/夜）——只显示 "11.0" 会丢掉班次信息，
+            // 这是 dffb63c 就定下的口径，v4.1 换热力月历时被 hoursText 顶掉了。
+            worked -> calendarDayLabel(record?.shift, minutes)
             isFestival -> info.festivalName?.let(::shortFestivalName) ?: "节"
             isRest -> "休"
             isMakeup -> "班"

@@ -36,10 +36,12 @@ class CalendarHeatPresenterTest {
         day: Int,
         minutes: Int,
         endMillis: Long? = 1L,
-        needsReview: Boolean = false
+        needsReview: Boolean = false,
+        shift: String? = "白班"
     ) = UiDayRecord(
         date = LocalDate.of(2026, 9, day),
-        status = "白班",
+        status = shift ?: "白班",
+        shift = shift,
         finalMinutes = minutes,
         startMillis = 1L,
         endMillis = endMillis,
@@ -81,15 +83,15 @@ class CalendarHeatPresenterTest {
         )
         assertEquals(HeatLevel.FULL, cells[2]?.heat)   // 9/1
         assertEquals(HeatLevel.FULL, cells[3]?.heat)   // 9/2
-        assertEquals("8.0", cells[2]?.text)
-        assertEquals("8.5", cells[3]?.text)
+        assertEquals("白 8h", cells[2]?.text)
+        assertEquals("白 8.5h", cells[3]?.text)
     }
 
     @Test
     fun `不满8小时是PARTIAL且文本仍显示工时`() {
         val cells = CalendarHeatPresenter.buildCells(month, listOf(record(3, 247)), today, today, workdayInfo())
         assertEquals(HeatLevel.PARTIAL, cells[4]?.heat)
-        assertEquals("4.1", cells[4]?.text)
+        assertEquals("白 4.1h", cells[4]?.text)
     }
 
     @Test
@@ -267,20 +269,6 @@ class CalendarHeatPresenterTest {
     // ------------------------------------------------------------- 文案工具
 
     @Test
-    fun `工时时长文本固定一位小数`() {
-        assertEquals("0.0", CalendarHeatPresenter.hoursText(0))
-        assertEquals("8.0", CalendarHeatPresenter.hoursText(480))
-        assertEquals("8.5", CalendarHeatPresenter.hoursText(510))
-        assertEquals("11.0", CalendarHeatPresenter.hoursText(660))
-        assertEquals("0.5", CalendarHeatPresenter.hoursText(30))
-    }
-
-    @Test
-    fun `负数工时被夹到零`() {
-        assertEquals("0.0", CalendarHeatPresenter.hoursText(-60))
-    }
-
-    @Test
     fun `节日短名去掉尾字节`() {
         assertEquals("中秋", CalendarHeatPresenter.shortFestivalName("中秋节"))
         assertEquals("元旦", CalendarHeatPresenter.shortFestivalName("元旦"))
@@ -299,5 +287,45 @@ class CalendarHeatPresenterTest {
     fun `满勤阈值与法定标准工作日都是8小时`() {
         assertEquals(480, CalendarHeatPresenter.FULL_DAY_MINUTES)
         assertEquals(480, CalendarHeatPresenter.STANDARD_WORKDAY_MINUTES)
+    }
+
+    // ----------------------------------------------------- 班次标签回归护栏
+
+    @Test
+    fun `有出工的格子必须带白或夜前缀`() {
+        // 回归点：v4.1 换热力月历时格子只剩 hoursText 的 "11.0"，白/夜全丢了。
+        // 这里直接钉住「有出工 → 文本必须以 白 / 夜 开头」。
+        for (shift in listOf("白班", "夜班")) {
+            val cells = CalendarHeatPresenter.buildCells(
+                month, listOf(record(1, 660, shift = shift)), today, today, workdayInfo()
+            )
+            val text = cells[2]!!.text
+            assertTrue("shift=$shift 的格子文本丢了班次前缀：$text", text.startsWith(shift.take(1) + " "))
+        }
+    }
+
+    @Test
+    fun `夜班格子显示夜 11h`() {
+        val cells = CalendarHeatPresenter.buildCells(
+            month, listOf(record(1, 660, shift = "夜班")), today, today, workdayInfo()
+        )
+        assertEquals("夜 11h", cells[2]!!.text)
+    }
+
+    @Test
+    fun `班次未知时不硬编前缀`() {
+        // shift 为 null（老数据/未识别）时只显示时长，不能凭空补「白」
+        val cells = CalendarHeatPresenter.buildCells(
+            month, listOf(record(1, 660, shift = null)), today, today, workdayInfo()
+        )
+        assertEquals("11h", cells[2]!!.text)
+    }
+
+    @Test
+    fun `非整数工时的班次标签`() {
+        val cells = CalendarHeatPresenter.buildCells(
+            month, listOf(record(1, 630, shift = "夜班")), today, today, workdayInfo()
+        )
+        assertEquals("夜 10.5h", cells[2]!!.text)
     }
 }

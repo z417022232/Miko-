@@ -3,6 +3,7 @@ package com.example.worktimetracker.ui.app
 import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
 import com.example.worktimetracker.data.entity.PayRateSegmentEntity
 import com.example.worktimetracker.domain.payroll.PayRateKey
+import com.example.worktimetracker.ui.PayrollPresenter
 
 /**
  * 计薪规则 v2 的界面模型（放同包，避免 Compose 侧写成 `WorkTimeViewModel.XxxDraft`）。
@@ -65,3 +66,19 @@ data class MonthlyPayDraft(
         }
     }
 }
+
+/**
+ * 「整月预估」：把还没记录的日子按标准工时补足后的整月到手。
+ *
+ * 金额口径 = **预估工时 × 基准月到手单价**（用户 2026-09-14 选定），与日历上的
+ * 「当日工资 ≈」同源；和「按公式推算」是两套口径，故意并列显示 ——
+ * 公式法用工资条的分项结构（月度浮动项没填时会偏低），单价法用已录入实发校准。
+ * 同样**永不落库**。
+ */
+data class MonthProjection(
+    val stats: PayrollPresenter.ProjectionStats,
+    val netCents: Long,
+    val hourlyCents: Long,
+    val standardMinutes: Int,
+    val baseline: PayBaseline,
+)

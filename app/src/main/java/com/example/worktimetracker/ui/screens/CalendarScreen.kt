@@ -104,6 +104,7 @@ fun CalendarScreen(
     val monthlySalaryPaymentDate by vm.monthlySalaryPaymentDate.collectAsState()
     val monthPayroll by vm.monthPayroll.collectAsState()
     val payBaseline by vm.payBaseline.collectAsState()
+    val monthProjection by vm.monthProjection.collectAsState()
     val today = remember { LocalDate.now() }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val selected = records.firstOrNull { it.date == selectedDate }
@@ -255,6 +256,7 @@ fun CalendarScreen(
             summary = summary,
             salaryCents = monthlySalaryCents,
             payroll = monthPayroll,
+            projection = monthProjection,
             paymentLabel = paymentLabel,
             onOpenPayroll = { showPayroll = true },
             onEditSalary = { showSalaryEditor = true }

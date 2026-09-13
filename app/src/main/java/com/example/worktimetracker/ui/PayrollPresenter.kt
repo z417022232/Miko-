@@ -1,9 +1,11 @@
 package com.example.worktimetracker.ui
 
+import com.example.worktimetracker.domain.engine.DayKind
 import com.example.worktimetracker.domain.payroll.PayRateKey
 import com.example.worktimetracker.domain.payroll.PayRateUnit
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.time.LocalDate
 import java.util.Locale
 
 /**
@@ -35,6 +37,100 @@ object PayrollPresenter {
             attendDays = worked.size,
             nightShiftDays = worked.count { it.shift == "夜班" },
             totalMinutes = worked.sumOf { it.finalMinutes },
+        )
+    }
+
+    // ------------------------------------------------------------ 整月预估
+
+    /**
+     * 「整月预估」的统计：把**还没记录的日子**按标准工时补足，算出一个整月的工时与出勤。
+     *
+     * 口径（用户 2026-09-14 确认）：
+     * - **工作日 / 调休上班日 / 普通周末** → 计出勤，且按 [standardMinutes] 计工时
+     *   （本机平时周末也在上班，所以普通周末不按休息算）
+     * - **法定节日当天 / 假期休息日** → 计出勤但**不计工时**
+     *   （上海口径节假日带薪，只是不上班，所以钱照给、工时不给）
+     * - 只补 `date >= today` 的日子：**过去漏记的不算"预估成上班"**，那是补录的事
+     *
+     * ⚠️ 这里的 [projectedMinutes] 只用于展示与「工时 × 到手单价」折算，
+     * 不参与 `PayrollEngine.estimate` 的应发计算（那套公式不吃工时）。
+     */
+    data class ProjectionStats(
+        val recordedMinutes: Int,
+        val recordedDays: Int,
+        /** 还要上班的日子（工作日 + 调休 + 普通周末），每 1 天补 [standardMinutes]。 */
+        val unrecordedWorkDays: Int,
+        /** 带薪但不上班的日子（节日当天 + 假期休息日），补 0 工时但计出勤。 */
+        val unrecordedPaidRestDays: Int,
+        val projectedMinutes: Int,
+        val projectedAttendDays: Int,
+        val recordedNightShifts: Int,
+        val projectedNightShifts: Int,
+        /** true = 夜班天数是用户在「本月计薪参数」里填的；false = 按最近班次延续推的。 */
+        val nightShiftsFromOverride: Boolean,
+    ) {
+        /** 要补的日子总数。为 0 说明这个月已经走完，界面不该再显示「整月预估」。 */
+        val unrecordedDays: Int get() = unrecordedWorkDays + unrecordedPaidRestDays
+        val hasProjection: Boolean get() = unrecordedDays > 0
+    }
+
+    /**
+     * @param today 只补这一天及之后的无记录日子
+     * @param nightShiftsOverride 用户填的「本月夜班天数」；填了就以它为准
+     */
+    fun projectionStats(
+        records: List<UiDayRecord>,
+        today: LocalDate,
+        standardMinutes: Int,
+        nightShiftsOverride: Int? = null,
+    ): ProjectionStats {
+        val standard = standardMinutes.coerceAtLeast(0)
+        val recorded = records.filter { it.finalMinutes > 0 }
+        val pending = records.filter { it.finalMinutes <= 0 && !it.date.isBefore(today) }
+        // 节日当天与假期休息日：带薪但不上班 → 计出勤、不计工时
+        val workDays = pending.count {
+            when (it.dayKind) {
+                DayKind.FESTIVAL, DayKind.HOLIDAY_REST -> false
+                else -> true
+            }
+        }
+        val paidRestDays = pending.size - workDays
+        val recordedMinutes = recorded.sumOf { it.finalMinutes }
+        val recordedNights = recorded.count { it.shift == "夜班" }
+        // 班次延续：未记录的上班日跟着**最近一天**的班次走
+        val lastShift = recorded.maxByOrNull { it.date }?.shift
+        val projectedNights = nightShiftsOverride
+            ?: (recordedNights + if (lastShift == "夜班") workDays else 0)
+        return ProjectionStats(
+            recordedMinutes = recordedMinutes,
+            recordedDays = recorded.size,
+            unrecordedWorkDays = workDays,
+            unrecordedPaidRestDays = paidRestDays,
+            projectedMinutes = recordedMinutes + workDays * standard,
+            projectedAttendDays = recorded.size + pending.size,
+            recordedNightShifts = recordedNights,
+            projectedNightShifts = projectedNights,
+            nightShiftsFromOverride = nightShiftsOverride != null,
+        )
+    }
+
+    /** 分钟 → `296h` / `10.5h`（整小时不带小数）。 */
+    fun hoursLabel(minutes: Int): String {
+        val safe = minutes.coerceAtLeast(0)
+        return if (safe % 60 == 0) "${safe / 60}h" else "%.1fh".format(Locale.US, safe / 60.0)
+    }
+
+    /** 整月预估的推算依据，如 `已记 142h + 14 个上班日 × 11h = 296h（节假日 3 天带薪不计工时）`。 */
+    fun projectionBasisText(stats: ProjectionStats, standardMinutes: Int): String {
+        val rest = if (stats.unrecordedPaidRestDays > 0)
+            "（节假日 ${stats.unrecordedPaidRestDays} 天带薪不计工时）" else ""
+        return "已记 %s + %d 个上班日 × %s = %s%s".format(
+            Locale.CHINA,
+            hoursLabel(stats.recordedMinutes),
+            stats.unrecordedWorkDays,
+            hoursLabel(standardMinutes),
+            hoursLabel(stats.projectedMinutes),
+            rest,
         )
     }
 

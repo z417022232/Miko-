@@ -45,6 +45,7 @@ import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
 import com.example.worktimetracker.domain.payroll.PayRateKey
 import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import com.example.worktimetracker.ui.PayrollPresenter
+import com.example.worktimetracker.ui.app.MonthProjection
 import com.example.worktimetracker.ui.app.MonthlyPayDraft
 import com.example.worktimetracker.ui.app.PayRateRowUi
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
@@ -77,6 +78,7 @@ internal fun PayRulesPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val recordedSalary by vm.monthlySalaryCents.collectAsState()
     val paramsMap by vm.payParams.collectAsState()
     val baseline by vm.payBaseline.collectAsState()
+    val projection by vm.monthProjection.collectAsState()
 
     var editingKey by remember { mutableStateOf<PayRateKey?>(null) }
     var showParams by remember { mutableStateOf(false) }
@@ -157,6 +159,10 @@ internal fun PayRulesPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         // ------------------------------------------------------ 当月推算
         SectionLabel("${month.year} 年 ${month.monthValue} 月推算")
         PayrollEstimateCard(payroll = payroll, recordedSalaryCents = recordedSalary, month = month)
+        projection?.let { pj ->
+            Spacer(Modifier.height(10.dp))
+            ProjectionCard(pj)
+        }
         Spacer(Modifier.height(16.dp))
 
         baseline?.let { b ->
@@ -209,6 +215,67 @@ internal fun PayRulesPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     }
     if (showDefault) {
         DefaultHoursDialog(settings, vm, onDismiss = { showDefault = false })
+    }
+}
+
+/**
+ * 整月预估卡：把还没记录的日子按标准工时补足，再乘基准月到手单价。
+ *
+ * 与上面「按公式推算」并列而不是替换 —— 两者口径不同，差额本身是信息
+ * （公式法缺月度浮动项，单价法含浮动项）。
+ */
+@Composable
+private fun ProjectionCard(projection: MonthProjection) {
+    val stats = projection.stats
+    SettingsGroup {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Text(
+                "整月预估（含未记录 ${stats.unrecordedDays} 天）",
+                style = MaterialTheme.typography.labelMedium,
+                color = AppTheme.colors.muted
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                formatCents(projection.netCents),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = AppTheme.colors.orange
+            )
+            Text(
+                "上满整月能拿多少（按到手单价折算）",
+                style = MaterialTheme.typography.labelSmall,
+                color = AppTheme.colors.muted
+            )
+            Spacer(Modifier.height(8.dp))
+            ThinDivider()
+            Spacer(Modifier.height(8.dp))
+            PayLine("预估整月工时", PayrollPresenter.hoursLabel(stats.projectedMinutes))
+            PayLine("预估出勤", "${stats.projectedAttendDays} 天（含已记 ${stats.recordedDays} 天）")
+            PayLine("到手单价", formatCents(projection.hourlyCents) + "/小时")
+            if (stats.projectedNightShifts > 0) {
+                PayLine(
+                    "预估夜班",
+                    "${stats.projectedNightShifts} 夜" +
+                        if (stats.nightShiftsFromOverride) "（本月计薪参数）"
+                        else "（按最近班次延续）"
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                PayrollPresenter.projectionBasisText(stats, projection.standardMinutes),
+                style = MaterialTheme.typography.labelSmall,
+                color = AppTheme.colors.muted
+            )
+            Text(
+                "单价校准：" + PayrollPresenter.baselineText(
+                    projection.baseline.payrollMonth,
+                    projection.baseline.netCents,
+                    projection.baseline.minutes
+                ) + "；未记录日期按每日标准工时补足，节假日带薪不计工时。",
+                style = MaterialTheme.typography.labelSmall,
+                color = AppTheme.colors.muted
+            )
+        }
     }
 }
 
