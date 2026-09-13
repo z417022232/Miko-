@@ -23,7 +23,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Schedule
@@ -62,9 +61,9 @@ import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.ServiceRecoveryPolicy
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import com.example.worktimetracker.ui.app.AppForegroundReset
-import com.example.worktimetracker.ui.screens.CalendarScreen
+import com.example.worktimetracker.ui.screens.CalendarHost
 import com.example.worktimetracker.ui.screens.SettingsScreen
-import com.example.worktimetracker.ui.screens.StatisticsScreen
+import com.example.worktimetracker.ui.screens.TodayHost
 import com.example.worktimetracker.ui.screens.WorkTimePickerDialog
 import com.example.worktimetracker.ui.screens.formatClock
 import com.example.worktimetracker.ui.theme.AppElevation
@@ -105,9 +104,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * 一级导航（界面稿 v4）。
+ *
+ * 「记录」改叫「日历」、「统计」换成「今日」：统计仍是完整功能，但从一级入口
+ * 下沉到日历的下钻页（见 CalendarHost）；一级入口留给每天都会看的实时状态。
+ */
 private enum class MainTab(val label: String) {
-    RECORDS("记录"),
-    STATISTICS("统计"),
+    CALENDAR("日历"),
+    TODAY("今日"),
     SETTINGS("设置")
 }
 
@@ -146,7 +151,10 @@ fun AppRoot(
     DisposableEffect(lifecycleOwner, foregroundReset, vm) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> if (foregroundReset.onStart()) vm.today()
+                Lifecycle.Event.ON_START -> if (foregroundReset.onStart()) {
+                    vm.today()
+                    vm.refreshToday()
+                }
                 Lifecycle.Event.ON_STOP -> foregroundReset.onStop()
                 else -> Unit
             }
@@ -160,7 +168,7 @@ fun AppRoot(
         return
     }
 
-    var tab by remember { mutableStateOf(MainTab.RECORDS) }
+    var tab by remember { mutableStateOf(MainTab.CALENDAR) }
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -175,8 +183,8 @@ fun AppRoot(
                         icon = {
                             Icon(
                                 imageVector = when (item) {
-                                    MainTab.RECORDS -> Icons.Outlined.CalendarMonth
-                                    MainTab.STATISTICS -> Icons.Outlined.BarChart
+                                    MainTab.CALENDAR -> Icons.Outlined.CalendarMonth
+                                    MainTab.TODAY -> Icons.Outlined.Schedule
                                     MainTab.SETTINGS -> Icons.Outlined.Settings
                                 },
                                 contentDescription = item.label
@@ -195,8 +203,8 @@ fun AppRoot(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             when (tab) {
-                MainTab.RECORDS -> CalendarScreen(vm)
-                MainTab.STATISTICS -> StatisticsScreen(vm)
+                MainTab.CALENDAR -> CalendarHost(vm)
+                MainTab.TODAY -> TodayHost(vm)
                 MainTab.SETTINGS -> SettingsScreen(
                     vm = vm,
                     themeMode = themeMode,

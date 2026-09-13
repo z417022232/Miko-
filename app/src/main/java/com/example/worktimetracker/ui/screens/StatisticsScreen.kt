@@ -52,7 +52,7 @@ import kotlin.math.max
 import com.example.worktimetracker.ui.theme.AppTheme
 
 @Composable
-fun StatisticsScreen(vm: WorkTimeViewModel) {
+fun StatisticsScreen(vm: WorkTimeViewModel, onBack: (() -> Unit)? = null) {
     val month by vm.month.collectAsState()
     val records by vm.records.collectAsState()
     val reviewRecords by vm.reviewRecords.collectAsState()
@@ -77,6 +77,7 @@ fun StatisticsScreen(vm: WorkTimeViewModel) {
             ScreenHeader(
                 title = "月度统计",
                 subtitle = "${month.year}年${month.monthValue}月",
+                onBack = onBack,
                 action = {
                     FilledTonalButton(onClick = { showExport = true }) {
                         Icon(Icons.Outlined.IosShare, null, modifier = Modifier.size(18.dp))

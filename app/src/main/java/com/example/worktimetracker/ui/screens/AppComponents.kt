@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import java.util.Locale
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlin.math.abs
@@ -65,6 +66,18 @@ fun compactHours(minutes: Int): String {
     val value = minutes / 60.0
     return if (minutes % 60 == 0) "${minutes / 60}h" else "${"%.1f".format(value)}h"
 }
+
+/**
+ * 金额（分）→ `¥1,234.56`。
+ *
+ * 单独抽出来是因为月工资卡、今日工资、工资明细页三处都要用，
+ * 各写一份 `"¥%,.2f".format(...)` 迟早出现小数位不一致。
+ */
+fun formatCents(cents: Long): String = "¥%,.2f".format(Locale.CHINA, cents / 100.0)
+
+/** 时薪（分/小时）→ `¥24.00 / 小时`；未设置（<= 0）返回 null，由调用方给引导语。 */
+fun formatHourlyRate(cents: Long): String? =
+    if (cents <= 0L) null else "${formatCents(cents)}/小时"
 
 fun formatClock(minutes: Int): String {
     val normalized = minutes.coerceIn(0, 1439)

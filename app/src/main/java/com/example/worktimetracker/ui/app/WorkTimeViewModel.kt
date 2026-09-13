@@ -10,11 +10,17 @@ import com.example.worktimetracker.data.entity.LocationLogEntity
 import com.example.worktimetracker.data.entity.ManualOverrideEntity
 import com.example.worktimetracker.data.entity.UserSettingsEntity
 import com.example.worktimetracker.data.entity.WorkRecordEntity
+import com.example.worktimetracker.data.entity.SiteEntity
+import com.example.worktimetracker.data.entity.SiteEvidenceSourceEntity
+import com.example.worktimetracker.data.entity.WorkSegmentEntity
+import com.example.worktimetracker.data.entity.ManualField
 import com.example.worktimetracker.data.importer.LegacyAttendanceCsvImporter
 import com.example.worktimetracker.data.remote.HolidaySyncStore
 import com.example.worktimetracker.data.repository.HolidayRepository
 import com.example.worktimetracker.domain.engine.HolidayCalendar
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
+import com.example.worktimetracker.domain.engine.ShiftDetector
+import com.example.worktimetracker.domain.engine.WorkHourCalculator
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewRecordEditor
@@ -24,6 +30,9 @@ import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
 import com.example.worktimetracker.ui.CompanyCalibrationProposal
 import com.example.worktimetracker.domain.model.WorkSettings
+import com.example.worktimetracker.domain.model.WorkCalculationInput
+import com.example.worktimetracker.domain.model.WorkSegment
+import com.example.worktimetracker.domain.model.ShiftType
 import com.example.worktimetracker.export.ExportManager
 import com.example.worktimetracker.ui.UiDayRecord
 import com.example.worktimetracker.ui.MonthlyRecordIndex
@@ -42,6 +51,25 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
 import kotlinx.coroutines.withContext
+
+/**
+ * 「补录时段」的一行草稿（界面稿 06）。
+ *
+ * 用「当天第几分钟」（0..1439）而不是时间戳：界面用时间轮选，草稿本身与日期无关，
+ * 转成时间戳由 [WorkTimeViewModel.saveDaySegments] 统一做，跨夜判断也集中在那一处。
+ */
+data class DaySegmentDraft(
+    val startMinutes: Int,
+    val endMinutes: Int,
+    /** [WorkSegmentEntity.TYPE_WORK] = 在岗（计入）/ [WorkSegmentEntity.TYPE_OFF_SITE] = 离厂（不计入）。 */
+    val segmentType: String = WorkSegmentEntity.TYPE_WORK,
+    val deductRest: Boolean = false,
+    val siteId: Long? = null,
+    val siteLabel: String? = null,
+    val note: String? = null
+)
+
+private const val DAY_MILLIS = 24L * 60L * 60L * 1000L
 
 class WorkTimeViewModel(application: Application) : AndroidViewModel(application) {
     private val db = (application as WorkTimeApplication).database
@@ -103,6 +131,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             refreshLastKnownLocation()
             refreshLogsOnce()
             refreshLastManualHours()
+            refreshToday()
+            reloadSites()
         }
         // 自动同步放在**独立协程**里：它要联网（可能耗时数秒到数十秒），
         // 既不能拖慢首屏，也不能因为前序初始化步骤异常而被整体跳过。
@@ -732,4 +762,273 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun cancelCompanyCalibration() { _companyCalibrationProposal.value = null }
+
+    // ---------------------------------------------------------------------
+    // 今日（实时页）
+    // ---------------------------------------------------------------------
+
+    private val _todayRecord = MutableStateFlow<UiDayRecord?>(null)
+    val todayRecord: StateFlow<UiDayRecord?> = _todayRecord
+    private val _todaySegments = MutableStateFlow<List<WorkSegmentEntity>>(emptyList())
+    val todaySegments: StateFlow<List<WorkSegmentEntity>> = _todaySegments
+
+    /** 只读刷新「今天」。今日页在进入、回到前台、以及每 30 秒心跳时调用。 */
+    fun refreshToday() {
+        viewModelScope.launch { refreshToday(LocalDate.now()) }
+    }
+
+    /** 指定日期的单日刷新（补录保存后要立刻反映到当日卡片）。 */
+    fun refreshToday(date: LocalDate) {
+        viewModelScope.launch { refreshDay(date) }
+    }
+
+    private suspend fun refreshDay(date: LocalDate) {
+        val row = db.workRecordDao().getByDate(date.toString())
+        _todayRecord.value = row?.let { MonthlyRecordIndex.toUi(date, it, zone) }
+        _todaySegments.value = row?.let { db.workSegmentDao().forRecord(it.id) }.orEmpty()
+    }
+
+    /**
+     * 手动打卡（界面稿「手动打卡」）。
+     *
+     * 只写当天的到岗 / 离岗时刻，然后**复用自动路径同一套 v1 规则**重算工时
+     * （[WorkSessionEngine.buildSession]），所以手动打卡与自动判定的计薪口径完全一致。
+     * 记录会被标记为人工修正（isManual + ManualFieldMask 位），自动合并不会再覆盖。
+     *
+     * 只打上班卡（还没有下班时间）时**不重算工时**——否则 buildSession 会拿排班窗口的
+     * expectedEnd 当结束时间，凭空产生一整天的工时。
+     */
+    fun manualPunch(
+        date: LocalDate,
+        clockIn: Boolean,
+        minutesOfDay: Int,
+        note: String,
+        onResult: (String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val settings = _settings.value.toDomain()
+            val dayStart = date.atStartOfDay(zone)
+            val millis = dayStart.plusMinutes(minutesOfDay.toLong().coerceIn(0L, 24L * 60L - 1))
+                .toInstant().toEpochMilli()
+            val old = db.workRecordDao().getByDate(date.toString())
+            val start = if (clockIn) millis else old?.startTime
+            var end = if (clockIn) old?.endTime else millis
+            // 跨夜保护：下班时刻不晚于上班时刻 → 视为次日（夜班 21:00 → 次日 09:00）
+            if (start != null && end != null && end <= start) end = end + DAY_MILLIS
+            if (start != null && end != null && end <= start) {
+                onResult("下班时间必须晚于上班时间")
+                return@launch
+            }
+            if (start == null && end == null) {
+                onResult("请先打卡上班时间")
+                return@launch
+            }
+            val shiftType = ShiftDetector(zone).detectShift(start ?: end!!, settings)
+            val addedBit = if (clockIn) ManualField.COMPANY_ARRIVAL.bit else ManualField.COMPANY_DEPARTURE.bit
+            var mask = (old?.manualFieldsMask ?: 0) or addedBit
+            var updated = (old ?: WorkRecordEntity(workDate = date.toString(), status = "WORK", createdAt = now))
+                .copy(
+                    startTime = start,
+                    endTime = end,
+                    shift = ShiftType.normalize(shiftType.name),
+                    isManual = true,
+                    manualFieldsMask = mask,
+                    note = note.ifBlank { old?.note },
+                    updatedAt = now
+                )
+            if (start != null && end != null) {
+                val session = engine.buildSession(start, end, settings)
+                mask = mask or ManualField.FINAL_MINUTES.bit or ManualField.AUTO_NEEDS_REVIEW.bit
+                updated = updated.copy(
+                    status = session.status.name,
+                    finalMinutes = session.finalMinutes,
+                    actualMinutes = session.actualMinutes,
+                    needsReview = session.needsReview,
+                    reviewReason = session.reviewReason,
+                    manualFieldsMask = mask
+                )
+            } else if (updated.status.isBlank() || updated.status == "REST" || updated.status == "MANUAL") {
+                updated = updated.copy(status = "WORK")
+            }
+            val id = db.workRecordDao().upsert(updated)
+            db.manualOverrideDao().insert(
+                ManualOverrideEntity(
+                    recordId = if (updated.id == 0L) id else updated.id,
+                    oldValue = "${old?.startTime}:${old?.endTime}:${old?.finalMinutes}",
+                    newValue = "$start:$end:${updated.finalMinutes}",
+                    reason = note.ifBlank { if (clockIn) "手动打卡 · 上班" else "手动打卡 · 下班" }
+                )
+            )
+            db.appLogDao().insert(
+                AppLogEntity(
+                    type = "MANUAL",
+                    content = "手动打卡" + (if (clockIn) "·上班 " else "·下班 ") +
+                        "%02d:%02d".format(minutesOfDay / 60, minutesOfDay % 60) +
+                        " 计入 ${updated.finalMinutes} 分钟"
+                )
+            )
+            refreshDay(date)
+            onResult(null)
+        }
+    }
+
+    /**
+     * 补录时段（界面稿「补录时段」）：整天替换式写入 work_segments，再按 v1 的
+     * `manualSegments` 口径重算当天计入工时。
+     *
+     * 只有 [WorkSegmentEntity.TYPE_WORK] 的时段计入工时；[WorkSegmentEntity.TYPE_OFF_SITE]
+     * （离厂）只落库留痕，不参与计算——这正是界面稿里「不计入」的含义。
+     */
+    fun saveDaySegments(
+        date: LocalDate,
+        entries: List<DaySegmentDraft>,
+        note: String,
+        onResult: (String?) -> Unit
+    ) {
+        if (entries.isEmpty()) {
+            onResult("请至少填写一个时段")
+            return
+        }
+        entries.forEach {
+            if (it.endMinutes == it.startMinutes) {
+                onResult("时段的开始与结束时间不能相同")
+                return
+            }
+        }
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            val settings = _settings.value.toDomain()
+            val dayStart = date.atStartOfDay(zone)
+            fun at(minutes: Int): Long =
+                dayStart.plusMinutes(minutes.toLong()).toInstant().toEpochMilli()
+
+            val mapped = entries.map { entry ->
+                // end <= start 视为跨夜（例如 21:00 → 次日 06:00）
+                val endMinutes = if (entry.endMinutes > entry.startMinutes) entry.endMinutes
+                else entry.endMinutes + 24 * 60
+                WorkSegmentEntity(
+                    recordId = 0,
+                    startTime = at(entry.startMinutes),
+                    endTime = at(endMinutes),
+                    minutes = endMinutes - entry.startMinutes,
+                    deductRest = entry.deductRest,
+                    segmentType = entry.segmentType,
+                    siteId = entry.siteId,
+                    siteLabel = entry.siteLabel,
+                    note = entry.note
+                )
+            }
+            val counted = mapped
+                .filter { it.segmentType == WorkSegmentEntity.TYPE_WORK }
+                .map { WorkSegment(it.startTime, it.endTime, it.deductRest) }
+
+            val old = db.workRecordDao().getByDate(date.toString())
+            val minutes = WorkHourCalculator(zone).calculateFinalMinutes(
+                WorkCalculationInput(
+                    startMillis = old?.startTime,
+                    endMillis = old?.endTime,
+                    manualSegments = counted,
+                    settings = settings
+                )
+            )
+            val base = old ?: WorkRecordEntity(workDate = date.toString(), status = "MANUAL", createdAt = now)
+            val updated = base.copy(
+                status = if (base.status.isBlank() || base.status == "REST") "MANUAL" else base.status,
+                finalMinutes = minutes,
+                isManual = true,
+                manualFieldsMask = base.manualFieldsMask or ManualField.FINAL_MINUTES.bit or ManualField.NOTE.bit,
+                needsReview = false,
+                reviewReason = null,
+                note = note.ifBlank { base.note },
+                updatedAt = now
+            )
+            val id = db.workRecordDao().upsert(updated)
+            val recordId = if (updated.id == 0L) id else updated.id
+            db.workSegmentDao().deleteForRecord(recordId)
+            db.workSegmentDao().insertAll(mapped.map { it.copy(recordId = recordId) })
+            db.manualOverrideDao().insert(
+                ManualOverrideEntity(
+                    recordId = recordId,
+                    oldValue = base.finalMinutes.toString(),
+                    newValue = minutes.toString(),
+                    reason = note.ifBlank { "补录时段（${mapped.size} 段）" }
+                )
+            )
+            db.appLogDao().insert(
+                AppLogEntity(type = "MANUAL", content = "补录 ${mapped.size} 个时段，当天计入 $minutes 分钟")
+            )
+            refreshDay(date)
+            onResult(null)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 计薪 / 采集档位（界面稿「计薪规则」「常规采集间隔」「Burst 上限」）
+    // ---------------------------------------------------------------------
+
+    /** 保存基本时薪（元/小时，字符串来自输入框）。非法输入直接忽略。 */
+    fun saveHourlyRate(text: String) {
+        val cents = runCatching {
+            BigDecimal(text.trim().replace(",", ""))
+                .setScale(2, RoundingMode.HALF_UP)
+                .movePointRight(2)
+                .longValueExact()
+        }.getOrNull() ?: return
+        if (cents < 0) return
+        viewModelScope.launch { saveSettings(_settings.value.copy(hourlyRateCents = cents)) }
+    }
+
+    fun saveSamplingInterval(minutes: Int) {
+        viewModelScope.launch {
+            saveSettings(_settings.value.copy(samplingIntervalMinutes = minutes.coerceIn(1, 60)))
+        }
+    }
+
+    fun saveBurstCap(minutes: Int) {
+        viewModelScope.launch {
+            saveSettings(_settings.value.copy(burstCapMinutes = minutes.coerceIn(1, 60)))
+        }
+    }
+
+    fun saveAccuracyMode(mode: String) {
+        viewModelScope.launch {
+            saveSettings(_settings.value.copy(locationAccuracyMode = mode))
+        }
+    }
+
+    fun saveRestWeekPattern(pattern: String) {
+        viewModelScope.launch {
+            saveSettings(_settings.value.copy(restWeekPattern = pattern))
+            loadMonth(force = true)
+        }
+    }
+
+    fun saveHolidaySourceMode(mode: String) {
+        viewModelScope.launch {
+            saveSettings(_settings.value.copy(holidaySourceMode = mode))
+            loadMonth(force = true)
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // 地点（DB v11 的 sites 表）
+    // ---------------------------------------------------------------------
+
+    private val _sites = MutableStateFlow<List<SiteEntity>>(emptyList())
+    val sites: StateFlow<List<SiteEntity>> = _sites
+    private val _siteEvidenceSources = MutableStateFlow<List<SiteEvidenceSourceEntity>>(emptyList())
+    val siteEvidenceSources: StateFlow<List<SiteEvidenceSourceEntity>> = _siteEvidenceSources
+
+    /** 重新读一遍地点与证据源。地点页增删改后、以及首次进入时调用。 */
+    fun reloadSites() {
+        viewModelScope.launch {
+            _sites.value = runCatching { db.siteDao().all() }.getOrDefault(emptyList())
+            _siteEvidenceSources.value = runCatching { db.siteDao().allSources() }.getOrDefault(emptyList())
+        }
+    }
+
+    /** 每个地点已选证据源数量（地点列表右侧的「N 个证据源」）。 */
+    fun evidenceCountBySite(): Map<Long, Int> =
+        _siteEvidenceSources.value.groupingBy { it.siteId }.eachCount()
 }

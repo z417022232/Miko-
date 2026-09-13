@@ -12,6 +12,9 @@ interface WorkSegmentDao {
     @Query("SELECT * FROM work_segments WHERE recordId = :recordId ORDER BY startTime ASC")
     fun observeForRecord(recordId: Long): Flow<List<WorkSegmentEntity>>
 
+    @Query("SELECT * FROM work_segments WHERE recordId = :recordId ORDER BY startTime ASC")
+    suspend fun forRecord(recordId: Long): List<WorkSegmentEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(segments: List<WorkSegmentEntity>)
 

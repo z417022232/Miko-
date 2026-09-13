@@ -33,7 +33,10 @@ class WorkTimeApplication : Application() {
 
     val database: AppDatabase by lazy {
         Room.databaseBuilder(this, AppDatabase::class.java, "work_time_tracker.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+            .addMigrations(
+                MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
+                MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11
+            )
             .build()
     }
 
@@ -112,6 +115,71 @@ class WorkTimeApplication : Application() {
                         " + CASE WHEN homeArrivalTime IS NOT NULL THEN 16 ELSE 0 END" +
                         " + CASE WHEN note IS NOT NULL THEN 64 ELSE 0 END" +
                         " WHERE isManual = 1"
+                )
+            }
+        }
+        /**
+         * v11：多地点模型。
+         *
+         * 结构变更：
+         *  - 新表 `sites`（用户声明的地点）与 `site_evidence_sources`（地点已选证据源，只存加盐哈希）
+         *  - `user_settings` 加 6 列（时薪 / 采集间隔 / Burst 上限 / 精度档 / 固定休息日 / 节假日来源）
+         *  - `work_segments` 加 3 列（时段类型 / 地点 id / 地点名快照）
+         *
+         * 数据迁移：把旧的单公司 / 单家庭展开成两条 site 记录（公司为主工作地点），
+         * 老读数路径继续可用，新界面走 sites 表。INSERT ... SELECT 在无定位的行上不产生记录，
+         * 因此全新安装（user_settings 尚无坐标）不会插入空地点。
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sites` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, " +
+                        "`siteType` TEXT NOT NULL, `latitude` REAL, `longitude` REAL, " +
+                        "`radiusMeters` INTEGER NOT NULL, `isPrimary` INTEGER NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, `migrated` INTEGER NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sites_isPrimary` ON `sites` (`isPrimary`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_sites_siteType` ON `sites` (`siteType`)")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `site_evidence_sources` (" +
+                        "`siteId` INTEGER NOT NULL, `sourceType` TEXT NOT NULL, " +
+                        "`identifierHash` TEXT NOT NULL, `label` TEXT, `lastSignal` INTEGER, " +
+                        "`selectedAt` INTEGER NOT NULL, PRIMARY KEY(`siteId`, `sourceType`, `identifierHash`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_site_evidence_sources_siteId` " +
+                        "ON `site_evidence_sources` (`siteId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_site_evidence_sources_sourceType_identifierHash` " +
+                        "ON `site_evidence_sources` (`sourceType`, `identifierHash`)"
+                )
+
+                db.execSQL("ALTER TABLE user_settings ADD COLUMN hourlyRateCents INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE user_settings ADD COLUMN samplingIntervalMinutes INTEGER NOT NULL DEFAULT 5")
+                db.execSQL("ALTER TABLE user_settings ADD COLUMN burstCapMinutes INTEGER NOT NULL DEFAULT 10")
+                db.execSQL("ALTER TABLE user_settings ADD COLUMN locationAccuracyMode TEXT NOT NULL DEFAULT 'BALANCED'")
+                db.execSQL("ALTER TABLE user_settings ADD COLUMN restWeekPattern TEXT NOT NULL DEFAULT 'SAT_SUN'")
+                db.execSQL("ALTER TABLE user_settings ADD COLUMN holidaySourceMode TEXT NOT NULL DEFAULT 'BUILT_IN'")
+                db.execSQL("ALTER TABLE work_segments ADD COLUMN segmentType TEXT NOT NULL DEFAULT 'WORK'")
+                db.execSQL("ALTER TABLE work_segments ADD COLUMN siteId INTEGER")
+                db.execSQL("ALTER TABLE work_segments ADD COLUMN siteLabel TEXT")
+
+                // 旧「公司」→ 主工作地点
+                db.execSQL(
+                    "INSERT INTO sites (name, siteType, latitude, longitude, radiusMeters, " +
+                        "isPrimary, enabled, migrated, createdAt, updatedAt) " +
+                        "SELECT '公司', 'WORK', companyLat, companyLng, companyRadiusMeters, 1, 1, 1, 0, 0 " +
+                        "FROM user_settings WHERE id = 1 AND companyLat IS NOT NULL AND companyLng IS NOT NULL"
+                )
+                // 旧「家」→ 非工作地点
+                db.execSQL(
+                    "INSERT INTO sites (name, siteType, latitude, longitude, radiusMeters, " +
+                        "isPrimary, enabled, migrated, createdAt, updatedAt) " +
+                        "SELECT '家', 'NON_WORK', homeLat, homeLng, homeRadiusMeters, 0, 1, 1, 0, 0 " +
+                        "FROM user_settings WHERE id = 1 AND homeLat IS NOT NULL AND homeLng IS NOT NULL"
                 )
             }
         }

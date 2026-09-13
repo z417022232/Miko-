@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
+import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.Today
@@ -78,7 +79,7 @@ import java.util.Locale
 import com.example.worktimetracker.ui.theme.AppTheme
 
 @Composable
-fun CalendarScreen(vm: WorkTimeViewModel) {
+fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
     val month by vm.month.collectAsState()
     val records by vm.records.collectAsState()
     val selectedDate by vm.selectedDate.collectAsState()
@@ -104,8 +105,14 @@ fun CalendarScreen(vm: WorkTimeViewModel) {
             title = "工时记录",
             subtitle = "每天的状态与计入工时",
             action = {
-                IconButton(onClick = { vm.today() }) {
-                    Icon(Icons.Outlined.Today, contentDescription = "回到今天", tint = AppTheme.colors.blue)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 月度统计仍完整保留，只是从一级入口下钻到标题栏
+                    IconButton(onClick = onOpenMonthly) {
+                        Icon(Icons.Outlined.BarChart, contentDescription = "月度统计", tint = AppTheme.colors.blue)
+                    }
+                    IconButton(onClick = { vm.today() }) {
+                        Icon(Icons.Outlined.Today, contentDescription = "回到今天", tint = AppTheme.colors.blue)
+                    }
                 }
             }
         )
