@@ -17,6 +17,10 @@ interface MonthlySalaryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun save(value: MonthlySalaryEntity)
 
+    /** 全部录入记录（只读，用于挑「日工资基准月」）。 */
+    @Query("SELECT * FROM monthly_salaries ORDER BY payrollMonth ASC")
+    suspend fun all(): List<MonthlySalaryEntity>
+
     @Query("DELETE FROM monthly_salaries")
     suspend fun deleteAll()
 }

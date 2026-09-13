@@ -39,6 +39,7 @@ import com.example.worktimetracker.ui.DayCellModel
 import com.example.worktimetracker.ui.HeatLevel
 import com.example.worktimetracker.ui.MonthSummary
 import com.example.worktimetracker.ui.TodayStatusPresenter
+import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import com.example.worktimetracker.ui.theme.AppTheme
 
 /*
@@ -356,20 +357,22 @@ internal fun HolidayTipLine(text: String?) {
 /**
  * 「本月工时 / 本月工资」卡（稿子屏 01 底部、屏 08 的上钻入口）。
  *
- * 工资口径**只做「工时 × 基本时薪」**，不含 1.5×/2.0×/3.0× 倍率（用户 2026-09-13 确认）。
- * 未设时薪时明确显示"未设置时薪"，而不是显示 ¥0.00 让人以为白干了。
+ * 计薪规则 v2（2026-09-13）起口径变了：
+ * - **已手动录入实发**的月份 → 大数字是录入值（权威），推算只作对照
+ * - **未录入**的月份 → 大数字是「预计到手（推算实发）」，并给出应发与扣款构成
+ *
+ * 推算结果纯展示、不落库（见 verification/计薪规则v2-工资条口径.md）。
  */
 @Composable
 internal fun MonthSummaryCard(
     summary: MonthSummary,
     salaryCents: Long?,
-    hourlyRateCents: Long,
+    payroll: PayrollBreakdown?,
     paymentLabel: String,
     onOpenPayroll: () -> Unit,
     onEditSalary: () -> Unit
 ) {
-    val rateText = formatHourlyRate(hourlyRateCents)
-    val estimatedCents = rateText?.let { TodayStatusPresenter.earningsCents(summary.totalMinutes, hourlyRateCents) }
+    val headline = salaryCents ?: payroll?.netCents
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = MaterialTheme.shapes.extraLarge,
@@ -387,19 +390,30 @@ internal fun MonthSummaryCard(
                 }
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        if (rateText == null) "本月工资" else "按 $rateText 估算",
+                        when {
+                            salaryCents != null -> "实发（已录入）"
+                            payroll != null -> "预计到手（估算）"
+                            else -> "本月工资"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = AppTheme.colors.muted
                     )
                     Text(
-                        estimatedCents?.let(::formatCents)
-                            ?: salaryCents?.let(::formatCents)
-                            ?: "未设置时薪",
+                        headline?.let(::formatCents) ?: "—",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = AppTheme.colors.orange
                     )
                 }
+            }
+            payroll?.let { p ->
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "推算应发 " + formatCents(p.grossCents) + " · 扣款 " +
+                        formatCents(p.socialCents + p.fundCents + p.incomeTaxCents),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.muted
+                )
             }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth()) {
@@ -410,9 +424,9 @@ internal fun MonthSummaryCard(
             Spacer(Modifier.height(10.dp))
             Text(paymentLabel, style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.muted)
             // 估算值不能盖掉用户自己录的实际工资：两个数不一致时，差异本身就是要看的信息
-            if (salaryCents != null && estimatedCents != null && salaryCents != estimatedCents) {
+            if (salaryCents != null && payroll != null && salaryCents != payroll.netCents) {
                 Text(
-                    "已录入实发 ${formatCents(salaryCents)}",
+                    "推算 " + formatCents(payroll.netCents) + "（差额即当月浮动项）",
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.muted
                 )

@@ -8,6 +8,7 @@ import com.example.worktimetracker.data.dao.HolidayDao
 import com.example.worktimetracker.data.dao.LocationLogDao
 import com.example.worktimetracker.data.dao.ManualOverrideDao
 import com.example.worktimetracker.data.dao.MonthlySalaryDao
+import com.example.worktimetracker.data.dao.PayrollDao
 import com.example.worktimetracker.data.dao.SiteDao
 import com.example.worktimetracker.data.dao.UserSettingsDao
 import com.example.worktimetracker.data.dao.WorkRecordDao
@@ -21,6 +22,8 @@ import com.example.worktimetracker.data.entity.LocationHealthEntity
 import com.example.worktimetracker.data.entity.LocationLogEntity
 import com.example.worktimetracker.data.entity.ManualOverrideEntity
 import com.example.worktimetracker.data.entity.MonthlySalaryEntity
+import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
+import com.example.worktimetracker.data.entity.PayRateSegmentEntity
 import com.example.worktimetracker.data.entity.SiteEntity
 import com.example.worktimetracker.data.entity.SiteEvidenceSourceEntity
 import com.example.worktimetracker.data.entity.UserSettingsEntity
@@ -43,9 +46,11 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         EvidenceObservationEntity::class,
         LocationHealthEntity::class,
         SiteEntity::class,
-        SiteEvidenceSourceEntity::class
+        SiteEvidenceSourceEntity::class,
+        PayRateSegmentEntity::class,
+        MonthlyPayParamsEntity::class
     ],
-    version = 11,
+    version = 12,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -60,4 +65,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun monthlySalaryDao(): MonthlySalaryDao
     abstract fun environmentEvidenceDao(): EnvironmentEvidenceDao
     abstract fun siteDao(): SiteDao
+    abstract fun payrollDao(): PayrollDao
 }

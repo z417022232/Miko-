@@ -110,28 +110,6 @@ class TodayStatusPresenterTest {
         assertFalse(result.running)
     }
 
-    // --------------------------------------------------------------- 金额
-
-    @Test
-    fun `时薪未设置时不给金额`() {
-        assertNull(TodayStatusPresenter.earningsCents(600, 0L))
-        assertNull(TodayStatusPresenter.earningsCents(600, -1L))
-    }
-
-    @Test
-    fun `金额按工时乘基本时薪四舍五入到分`() {
-        // 8h12m = 492 分钟，时薪 ¥24.00 → 196.80
-        assertEquals(19_680L, TodayStatusPresenter.earningsCents(492, 2_400L))
-    }
-
-    @Test
-    fun `金额四舍五入的边界`() {
-        assertEquals(2L, TodayStatusPresenter.earningsCents(1, 100L))   // 1.67 → 2
-        assertEquals(3L, TodayStatusPresenter.earningsCents(2, 100L))   // 3.33 → 3
-        assertEquals(5L, TodayStatusPresenter.earningsCents(3, 100L))   // 5.00 → 5
-        assertEquals(0L, TodayStatusPresenter.earningsCents(0, 100L))
-    }
-
     // --------------------------------------------------------------- 状态
 
     @Test

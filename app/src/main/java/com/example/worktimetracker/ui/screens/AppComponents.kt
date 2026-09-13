@@ -43,6 +43,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import java.util.Locale
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -75,9 +76,59 @@ fun compactHours(minutes: Int): String {
  */
 fun formatCents(cents: Long): String = "¥%,.2f".format(Locale.CHINA, cents / 100.0)
 
-/** 时薪（分/小时）→ `¥24.00 / 小时`；未设置（<= 0）返回 null，由调用方给引导语。 */
-fun formatHourlyRate(cents: Long): String? =
-    if (cents <= 0L) null else "${formatCents(cents)}/小时"
+/**
+ * 工资构成明细行（计薪规则页 + 工资明细弹窗共用，避免两处各抄一份后漂移）。
+ *
+ * 顺序与工资条一致：出勤 → 各项收入 → 应发 → 三项扣款 → 预计到手。
+ * 为 0 的浮动项不渲染，免得每月白占一行。
+ */
+@Composable
+fun PayrollCompositionLines(payroll: PayrollBreakdown) {
+    PayLine("出勤 / 夜班", "${payroll.attendDays} 天 / ${payroll.nightShiftDays} 夜")
+    PayLine("出勤折算系数", "%.2f".format(Locale.CHINA, payroll.attendanceFactor))
+    ThinDivider()
+    PayLine("基本工资", formatCents(payroll.basicSalaryCents))
+    PayLine("岗位津贴", formatCents(payroll.postAllowanceCents))
+    PayLine("绩效工资", formatCents(payroll.performancePayCents))
+    PayLine("工龄工资", formatCents(payroll.seniorAllowanceCents))
+    PayLine("全勤奖", formatCents(payroll.fullAttendanceCents))
+    PayLine("加班工资（包干）", formatCents(payroll.overtimePayCents))
+    PayLine("夜班津贴", formatCents(payroll.nightAllowanceCents))
+    if (payroll.benefitBonusCents != 0L) PayLine("效益奖金", formatCents(payroll.benefitBonusCents))
+    if (payroll.heatAllowanceCents != 0L) PayLine("高温补贴", formatCents(payroll.heatAllowanceCents))
+    if (payroll.sickPayCents != 0L) PayLine("病假工资", formatCents(payroll.sickPayCents))
+    if (payroll.backPayCents != 0L) PayLine("补发", formatCents(payroll.backPayCents))
+    if (payroll.otherAddCents != 0L) PayLine("其他加项", formatCents(payroll.otherAddCents))
+    ThinDivider()
+    PayLine("应发工资", formatCents(payroll.grossCents), emphasize = true)
+    PayLine("− 社保个人", formatCents(payroll.socialCents))
+    PayLine("− 住房公积金", formatCents(payroll.fundCents))
+    PayLine("− 个人所得税", formatCents(payroll.incomeTaxCents))
+    ThinDivider()
+    PayLine("实发（预计到手）", formatCents(payroll.netCents), emphasize = true)
+}
+
+/**
+ * 「标签 —— 金额」一行。工资明细、计薪规则页、今日页三处共用。
+ *
+ * [emphasize] 给「应发 / 预计到手」这类关键行加粗并走强调色。
+ * 计薪规则 v2 起取代了各页面自己拼 `Row + SpaceBetween` 的写法。
+ */
+@Composable
+fun PayLine(label: String, value: String, emphasize: Boolean = false) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.muted)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (emphasize) FontWeight.Bold else FontWeight.Normal,
+            color = if (emphasize) AppTheme.colors.orange else AppTheme.colors.textPrimary
+        )
+    }
+}
 
 fun formatClock(minutes: Int): String {
     val normalized = minutes.coerceIn(0, 1439)

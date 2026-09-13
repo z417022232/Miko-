@@ -22,6 +22,14 @@ import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.ShiftDetector
 import com.example.worktimetracker.domain.engine.WorkHourCalculator
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
+import com.example.worktimetracker.domain.payroll.PayRateKey
+import com.example.worktimetracker.domain.payroll.PayRateResolver
+import com.example.worktimetracker.domain.payroll.PayrollBreakdown
+import com.example.worktimetracker.domain.payroll.PayrollEngine
+import com.example.worktimetracker.domain.payroll.PayrollInputs
+import com.example.worktimetracker.data.entity.PayRateSegmentEntity
+import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
+import com.example.worktimetracker.ui.PayrollPresenter
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewAcknowledger
@@ -111,6 +119,18 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val monthlySalaryCents: StateFlow<Long?> = _monthlySalaryCents
     private val _monthlySalaryPaymentDate = MutableStateFlow<String?>(null)
     val monthlySalaryPaymentDate: StateFlow<String?> = _monthlySalaryPaymentDate
+    /** 计薪参数分段常量（DB v12）。 */
+    private val _payRateSegments = MutableStateFlow<List<PayRateSegmentEntity>>(emptyList())
+    val payRateSegments: StateFlow<List<PayRateSegmentEntity>> = _payRateSegments
+    /** 月度浮动参数，key = 计薪月 `YYYY-MM`。 */
+    private val _payParams = MutableStateFlow<Map<String, MonthlyPayParamsEntity>>(emptyMap())
+    val payParams: StateFlow<Map<String, MonthlyPayParamsEntity>> = _payParams
+    /** 当月推算明细（**纯展示，永不落库**）。 */
+    private val _monthPayroll = MutableStateFlow<PayrollBreakdown?>(null)
+    val monthPayroll: StateFlow<PayrollBreakdown?> = _monthPayroll
+    /** 日工资基准月（最近一个已录入实发的完整月）。 */
+    private val _payBaseline = MutableStateFlow<PayBaseline?>(null)
+    val payBaseline: StateFlow<PayBaseline?> = _payBaseline
     private val _companyCalibrationProposal = MutableStateFlow<CompanyCalibrationProposal?>(null)
     val companyCalibrationProposal: StateFlow<CompanyCalibrationProposal?> = _companyCalibrationProposal
 
@@ -139,6 +159,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             refreshLastManualHours()
             refreshToday()
             reloadSites()
+            reloadPayrollConfig()
         }
         // 自动同步放在**独立协程**里：它要联网（可能耗时数秒到数十秒），
         // 既不能拖慢首屏，也不能因为前序初始化步骤异常而被整体跳过。
@@ -194,6 +215,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 }
                 _records.value = built
                 _reviewRecords.value = built.filter { it.needsReview }
+                recomputeMonthPayroll(m, built)
             }
         }
     }
@@ -973,16 +995,172 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     // 计薪 / 采集档位（界面稿「计薪规则」「常规采集间隔」「Burst 上限」）
     // ---------------------------------------------------------------------
 
-    /** 保存基本时薪（元/小时，字符串来自输入框）。非法输入直接忽略。 */
-    fun saveHourlyRate(text: String) {
-        val cents = runCatching {
-            BigDecimal(text.trim().replace(",", ""))
-                .setScale(2, RoundingMode.HALF_UP)
-                .movePointRight(2)
-                .longValueExact()
-        }.getOrNull() ?: return
-        if (cents < 0) return
-        viewModelScope.launch { saveSettings(_settings.value.copy(hourlyRateCents = cents)) }
+    // ------------------------------------------------------------------
+    // 计薪规则 v2（工资条口径）
+    //
+    // ⚠️ 这一段**只写两张新表**（pay_rate_segments / monthly_pay_params），
+    //    绝不触碰 monthly_salaries 与 work_records —— 用户已录入的实发工资与工时
+    //    是唯一权威来源，推算结果永不落库（用户 2026-09-13 明确要求）。
+    // ------------------------------------------------------------------
+
+    /**
+     * 新增/覆盖一条计薪参数**分段常量**。
+     *
+     * [text] 是输入框原文，单位由 [PayRateKey.unit] 决定（元 / 小时 / %）。
+     * [effectiveFrom] 形如 `2026-07`；同一（参数, 生效月）会被覆盖。
+     */
+    fun savePayRateSegment(
+        key: PayRateKey,
+        text: String,
+        effectiveFrom: String,
+        note: String? = null
+    ) {
+        val value = PayrollPresenter.parseValue(key, text) ?: return
+        if (!MONTH_PATTERN.matches(effectiveFrom)) return
+        viewModelScope.launch {
+            db.payrollDao().upsertRateSegment(
+                PayRateSegmentEntity(
+                    paramKey = key.storageKey,
+                    effectiveFrom = effectiveFrom,
+                    value = value,
+                    note = note
+                )
+            )
+            reloadPayrollConfig()
+        }
+    }
+
+    fun deletePayRateSegment(id: Long) {
+        viewModelScope.launch {
+            db.payrollDao().deleteRateSegment(id)
+            reloadPayrollConfig()
+        }
+    }
+
+    /** 某参数在指定计薪月适用的分段（值 + 生效月 + 全部历史）。 */
+    fun payRateRow(key: PayRateKey, payrollMonth: String = _month.value.toString()): PayRateRowUi {
+        val rows = _payRateSegments.value.filter { it.paramKey == key.storageKey }
+        val picked = PayRateResolver.pick(
+            payrollMonth,
+            rows.map { PayRateResolver.Segment(it.effectiveFrom, it.value) }
+        )
+        return PayRateRowUi(
+            key = key,
+            value = picked?.value ?: key.defaultValue,
+            effectiveFrom = picked?.effectiveFrom,
+            segments = rows.sortedBy { it.effectiveFrom }
+        )
+    }
+
+    /** 某计薪月的浮动参数（没有则 null）。 */
+    fun monthlyPayParams(payrollMonth: String = _month.value.toString()): MonthlyPayParamsEntity? =
+        _payParams.value[payrollMonth]
+
+    /**
+     * 保存某计薪月的浮动参数。
+     *
+     * 绩效系数非法（非数字 / 负数 / > 10）直接整单拒绝，避免静默存进半截数据。
+     * 全空的草稿会**删掉**该行，不留垃圾记录。
+     */
+    fun saveMonthlyPayParams(payrollMonth: String, draft: MonthlyPayDraft) {
+        val coefficient = draft.perfCoefficient.trim().ifBlank { null }
+        if (coefficient != null && PayrollPresenter.parseCoefficient(coefficient) == null) return
+        val nights = draft.nightShiftsOverride.trim()
+        val nightsValue = if (nights.isBlank()) null else (nights.toIntOrNull() ?: return)
+        if (nightsValue != null && nightsValue !in 0..31) return
+
+        viewModelScope.launch {
+            val entity = MonthlyPayParamsEntity(
+                payrollMonth = payrollMonth,
+                perfCoefficient = coefficient,
+                perfBaseDeltaCents = PayrollPresenter.parseMoneyOrNull(draft.perfBaseDelta) ?: 0L,
+                perfAmountCents = PayrollPresenter.parseMoneyOrNull(draft.perfAmount),
+                benefitBonusCents = PayrollPresenter.parseMoneyOrNull(draft.benefitBonus) ?: 0L,
+                heatAllowanceCents = PayrollPresenter.parseMoneyOrNull(draft.heatAllowance) ?: 0L,
+                sickPayCents = PayrollPresenter.parseMoneyOrNull(draft.sickPay) ?: 0L,
+                backPayCents = PayrollPresenter.parseMoneyOrNull(draft.backPay) ?: 0L,
+                otherAddCents = PayrollPresenter.parseMoneyOrNull(draft.otherAdd) ?: 0L,
+                socialOverrideCents = PayrollPresenter.parseMoneyOrNull(draft.socialOverride),
+                housingFundOverrideCents = PayrollPresenter.parseMoneyOrNull(draft.housingFundOverride),
+                nightShiftsOverride = nightsValue
+            )
+            if (entity.isEmpty) {
+                db.payrollDao().deletePayParams(payrollMonth)
+            } else {
+                db.payrollDao().savePayParams(entity)
+            }
+            reloadPayrollConfig()
+        }
+    }
+
+    /**
+     * 当日工资估算（基准月校准法）。[minutes] 为当日计薪分钟。
+     *
+     * 没有基准月（全新安装 / 尚无任何实发录入）返回 null，界面显示「暂无基准」，
+     * 而不是拿一个拍脑袋的单价去猜。
+     */
+    fun dailyPayCents(minutes: Int): Long? {
+        val baseline = _payBaseline.value ?: return null
+        return PayrollEngine.dailyEstimateCents(minutes, baseline.netCents, baseline.minutes)
+    }
+
+    /** 重新读入分段常量与月度参数，再重算当月推算 + 日工资基准。 */
+    fun reloadPayrollConfig() {
+        viewModelScope.launch {
+            _payRateSegments.value = db.payrollDao().rateSegments()
+            _payParams.value = db.payrollDao().allPayParams().associateBy { it.payrollMonth }
+            _payBaseline.value = computePayBaseline()
+            recomputeMonthPayroll(_month.value, _records.value)
+        }
+    }
+
+    /** 基准月 = 最近一个「已录入实发 且 出勤分钟 > 0」的计薪月。 */
+    private suspend fun computePayBaseline(): PayBaseline? {
+        val rows = db.monthlySalaryDao().all()
+            .filter { it.payrollMonth.isNotBlank() && it.netSalaryCents > 0L }
+            .sortedByDescending { it.payrollMonth }
+        for (row in rows) {
+            val minutes = db.payrollDao().minutesInMonth(row.payrollMonth)
+            if (minutes > 0) return PayBaseline(row.payrollMonth, row.netSalaryCents, minutes)
+        }
+        return null
+    }
+
+    /** 纯计算，不落库。 */
+    private fun recomputeMonthPayroll(month: YearMonth, records: List<UiDayRecord>) {
+        val monthKey = month.toString()
+        val segments = _payRateSegments.value
+            .groupBy { PayRateKey.byStorageKey(it.paramKey) }
+            .mapNotNull { (key, rows) ->
+                key?.let { it to rows.map { row -> PayRateResolver.Segment(row.effectiveFrom, row.value) } }
+            }
+            .toMap()
+        val rates = PayRateResolver.resolve(monthKey, segments)
+        val params = _payParams.value[monthKey]
+        val stats = PayrollPresenter.attendanceStats(records)
+        _monthPayroll.value = PayrollEngine.estimate(
+            rates,
+            PayrollInputs(
+                attendDays = stats.attendDays,
+                nightShiftDays = stats.nightShiftDays,
+                perfCoefficient = params?.perfCoefficient?.toBigDecimalOrNull(),
+                perfBaseDeltaCents = params?.perfBaseDeltaCents ?: 0L,
+                perfAmountCents = params?.perfAmountCents,
+                benefitBonusCents = params?.benefitBonusCents ?: 0L,
+                heatAllowanceCents = params?.heatAllowanceCents ?: 0L,
+                sickPayCents = params?.sickPayCents ?: 0L,
+                backPayCents = params?.backPayCents ?: 0L,
+                otherAddCents = params?.otherAddCents ?: 0L,
+                socialOverrideCents = params?.socialOverrideCents,
+                housingFundOverrideCents = params?.housingFundOverrideCents,
+                nightShiftsOverride = params?.nightShiftsOverride
+            )
+        )
+    }
+
+    private companion object {
+        /** 生效月格式 `YYYY-MM` */
+        val MONTH_PATTERN = Regex("""\d{4}-\d{2}""")
     }
 
     fun saveSamplingInterval(minutes: Int) {

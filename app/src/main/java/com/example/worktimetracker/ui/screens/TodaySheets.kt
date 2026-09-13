@@ -135,7 +135,7 @@ fun ManualPunchSheet(
                     }
                     Column(Modifier.weight(1f)) {
                         Text("今日工资", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelSmall)
-                        Text(earningsCents?.let(::formatCents) ?: "未设时薪", fontWeight = FontWeight.Bold)
+                        Text(earningsCents?.let(::formatCents) ?: "暂无基准", fontWeight = FontWeight.Bold)
                     }
                 }
             }

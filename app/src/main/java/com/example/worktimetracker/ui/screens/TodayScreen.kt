@@ -82,6 +82,7 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
     val settings by vm.settings.collectAsState()
     val fused by vm.fusedStatus.collectAsState()
     val segments by vm.todaySegments.collectAsState()
+    val payBaseline by vm.payBaseline.collectAsState()
     val today = remember { LocalDate.now() }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showPunch by remember { mutableStateOf(false) }
@@ -106,7 +107,8 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
         fixedMinutes = if (settings.hasDefaultHours) settings.defaultWorkMinutes else null
     )
     val headline = TodayStatusPresenter.headline(record)
-    val earnings = TodayStatusPresenter.earningsCents(live.minutes, settings.hourlyRateCents)
+    // 计薪规则 v2：当日工资 = 当日计薪分钟 × 基准到手单价（取最近一个已录入实发的月份）
+    val earnings = vm.dailyPayCents(live.minutes)
     val placeLabel = fused?.place?.let { FusedStatusFormatter.placeLabel(it) } ?: "暂不确定"
 
     Column(
@@ -125,7 +127,7 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
             }
         )
         Spacer(Modifier.height(14.dp))
-        HeroStatusCard(headline, live, earnings, settings.hourlyRateCents > 0L)
+        HeroStatusCard(headline, live, earnings, payBaseline != null)
         Spacer(Modifier.height(12.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             MetricCell("上班", record?.startText ?: "--", Modifier.weight(1f))
@@ -180,7 +182,7 @@ private fun HeroStatusCard(
     headline: TodayStatusPresenter.Headline,
     live: TodayStatusPresenter.TodayMinutes,
     earningsCents: Long?,
-    rateConfigured: Boolean
+    baselineReady: Boolean
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -204,16 +206,16 @@ private fun HeroStatusCard(
                     )
                 }
                 Column(Modifier.weight(1f)) {
-                    Text("今日工资", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
+                    Text("今日工资 ≈", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
                     Text(
-                        earningsCents?.let(::formatCents) ?: "未设时薪",
+                        earningsCents?.let(::formatCents) ?: "暂无基准",
                         style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = if (earningsCents != null) MaterialTheme.colorScheme.onSurface else AppTheme.colors.muted
                     )
-                    if (!rateConfigured) {
+                    if (!baselineReady) {
                         Text(
-                            "到「计薪规则」填时薪",
+                            "录入一个月实发工资后自动校准",
                             color = AppTheme.colors.muted,
                             style = MaterialTheme.typography.labelSmall
                         )

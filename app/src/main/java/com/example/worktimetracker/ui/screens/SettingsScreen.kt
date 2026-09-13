@@ -190,7 +190,7 @@ private fun SettingsHome(
             SettingsRow(
                 Icons.Outlined.Paid,
                 "计薪规则",
-                formatHourlyRate(settings.hourlyRateCents) ?: "未设置时薪",
+                "工资条口径 · 应发 → 社保/公积金/个税 → 预计到手",
                 tint = AppTheme.colors.orange
             ) { onOpen(SettingsPage.PAY_RULES) }
             ThinDivider()

@@ -81,6 +81,7 @@ import com.example.worktimetracker.ui.dayKindText
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import com.example.worktimetracker.domain.engine.DayKind
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
+import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import java.time.LocalDate
 import java.time.YearMonth
 import java.time.format.TextStyle
@@ -101,6 +102,8 @@ fun CalendarScreen(
     val fused by vm.fusedStatus.collectAsState()
     val monthlySalaryCents by vm.monthlySalaryCents.collectAsState()
     val monthlySalaryPaymentDate by vm.monthlySalaryPaymentDate.collectAsState()
+    val monthPayroll by vm.monthPayroll.collectAsState()
+    val payBaseline by vm.payBaseline.collectAsState()
     val today = remember { LocalDate.now() }
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val selected = records.firstOrNull { it.date == selectedDate }
@@ -251,7 +254,7 @@ fun CalendarScreen(
         MonthSummaryCard(
             summary = summary,
             salaryCents = monthlySalaryCents,
-            hourlyRateCents = settings.hourlyRateCents,
+            payroll = monthPayroll,
             paymentLabel = paymentLabel,
             onOpenPayroll = { showPayroll = true },
             onEditSalary = { showSalaryEditor = true }
@@ -259,7 +262,8 @@ fun CalendarScreen(
         Spacer(Modifier.height(12.dp))
         SelectedDayCard(
             record = selected,
-            hourlyRateCents = settings.hourlyRateCents,
+            dayPayCents = vm.dailyPayCents(selected.finalMinutes),
+            hasBaseline = payBaseline != null,
             onEdit = { showDetail = true }
         )
         Spacer(Modifier.height(12.dp))
@@ -290,7 +294,7 @@ fun CalendarScreen(
         PayrollDetailDialog(
             month = month,
             summary = summary,
-            hourlyRateCents = settings.hourlyRateCents,
+            payroll = monthPayroll,
             recordedSalaryCents = monthlySalaryCents,
             onDismiss = { showPayroll = false }
         )
@@ -358,19 +362,17 @@ private fun MonthToolbar(
 /**
  * 「本月工资明细」（稿子屏 08 的收敛版）。
  *
- * 用户 2026-09-13 明确：**本期只显示基础工资 + 工时，不做 1.5× / 2.0× / 3.0× 倍率**。
- * 所以这里把稿子里的四类倍率明细换成"总工时 / 加班 / 时薪 / 应发基础工资"，
- * 并在页内写明"不含倍率"，避免用户以为少算了钱。
+ * 计薪规则 v2：给出推算的「应发构成 → 扣款 → 预计到手」。已录入实发时并列显示 ——
+ * 两者的差额本身就是信息（哪个月浮动项被扣了）。**推算值不落库。**
  */
 @Composable
 private fun PayrollDetailDialog(
     month: YearMonth,
     summary: MonthSummary,
-    hourlyRateCents: Long,
+    payroll: PayrollBreakdown?,
     recordedSalaryCents: Long?,
     onDismiss: () -> Unit
 ) {
-    val estimated = TodayStatusPresenter.earningsCents(summary.totalMinutes, hourlyRateCents)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("${month.monthValue} 月工资明细") },
@@ -380,54 +382,31 @@ private fun PayrollDetailDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    "按当前计薪规则估算",
+                    "按当前计薪规则推算",
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.muted
                 )
-                if (estimated == null) {
-                    Text(
-                        "还没有设置基本时薪，无法估算。到「设置 → 计薪规则」填写后即可看到金额。",
-                        color = AppTheme.colors.muted
-                    )
+                if (payroll == null) {
+                    Text("还没有可推算的工时数据。", color = AppTheme.colors.muted)
                 } else {
-                    PayrollRow("总工时", durationText(summary.totalMinutes))
-                    PayrollRow("出勤", "${summary.workDays} 天")
-                    PayrollRow("日均", durationText(summary.averageMinutes))
-                    PayrollRow("其中加班", durationText(summary.overtimeMinutes))
+                    PayLine("总工时", durationText(summary.totalMinutes))
+                    PayLine("其中加班", durationText(summary.overtimeMinutes))
                     ThinDivider()
-                    PayrollRow("基本时薪", "${formatCents(hourlyRateCents)} / 小时")
-                    PayrollRow("应发基础工资", formatCents(estimated), emphasize = true)
+                    PayrollCompositionLines(payroll)
                     Text(
-                        "本期只按「工时 × 基本时薪」估算，不含平时加班 / 休息日 / 法定节假日的倍率；实际以厂里工资单为准。",
+                        "加班工资按公司包干小时数计算，不是按真实加班时长；实际以厂里工资单为准。",
                         style = MaterialTheme.typography.labelSmall,
                         color = AppTheme.colors.muted
                     )
                 }
                 if (recordedSalaryCents != null) {
                     ThinDivider()
-                    PayrollRow("已录入实发工资", formatCents(recordedSalaryCents))
+                    PayLine("已录入实发工资", formatCents(recordedSalaryCents), emphasize = true)
                 }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
     )
-}
-
-@Composable
-private fun PayrollRow(label: String, value: String, emphasize: Boolean = false) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            color = AppTheme.colors.muted
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = if (emphasize) FontWeight.Bold else FontWeight.Normal,
-            color = if (emphasize) AppTheme.colors.orange else AppTheme.colors.textPrimary
-        )
-    }
 }
 
 @Composable
@@ -438,11 +417,14 @@ private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
 }
 
 @Composable
-private fun SelectedDayCard(record: UiDayRecord, hourlyRateCents: Long, onEdit: () -> Unit) {
+private fun SelectedDayCard(
+    record: UiDayRecord,
+    dayPayCents: Long?,
+    hasBaseline: Boolean,
+    onEdit: () -> Unit
+) {
     val weekday = record.date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
     val status = record.status.ifBlank { "暂无记录" }
-    // 设了时薪才显示当日工资：没设却显示 ¥0.00 会让人以为这一天白干了
-    val dayEarnings = TodayStatusPresenter.earningsCents(record.finalMinutes, hourlyRateCents)
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = MaterialTheme.shapes.extraLarge,
@@ -471,11 +453,15 @@ private fun SelectedDayCard(record: UiDayRecord, hourlyRateCents: Long, onEdit: 
                     Text("编辑")
                 }
             }
-            dayEarnings?.let {
+            if (record.finalMinutes > 0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "当日工资 ${formatCents(it)}",
-                    color = AppTheme.colors.orange,
+                    when {
+                        dayPayCents != null -> "当日工资 ≈ ${formatCents(dayPayCents)}"
+                        !hasBaseline -> "当日工资：暂无基准（录入一个月实发工资后自动校准）"
+                        else -> "当日工资：这天没有计薪工时"
+                    },
+                    color = if (dayPayCents != null) AppTheme.colors.orange else AppTheme.colors.muted,
                     style = MaterialTheme.typography.labelMedium
                 )
             }

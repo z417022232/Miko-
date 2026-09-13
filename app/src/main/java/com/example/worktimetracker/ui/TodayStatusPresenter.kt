@@ -47,18 +47,6 @@ object TodayStatusPresenter {
         }
     }
 
-    /**
-     * 金额（分）。[hourlyRateCents] <= 0 表示没设时薪 → 返回 null，界面显示引导而不是 ¥0.00。
-     *
-     * 只做「工时 × 基本时薪」，**不含任何加班倍率**（用户 2026-09-13 确认：加班费本期不做）。
-     */
-    fun earningsCents(minutes: Int, hourlyRateCents: Long): Long? {
-        if (hourlyRateCents <= 0L) return null
-        val safeMinutes = minutes.coerceAtLeast(0).toLong()
-        // 四舍五入到分：(m × r + 30) / 60
-        return (safeMinutes * hourlyRateCents + 30L) / 60L
-    }
-
     // ----------------------------------------------------------------- 状态
 
     enum class TodayTone { WORKING, DONE, OFF, WARN, IDLE }

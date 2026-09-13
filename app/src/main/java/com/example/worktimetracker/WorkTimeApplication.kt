@@ -9,6 +9,7 @@ import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.GeofenceRecovery
 import com.example.worktimetracker.data.HistoricalRecordRepair
+import com.example.worktimetracker.domain.payroll.PayRateSeed
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,7 +36,8 @@ class WorkTimeApplication : Application() {
         Room.databaseBuilder(this, AppDatabase::class.java, "work_time_tracker.db")
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
-                MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11
+                MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
+                MIGRATION_11_12
             )
             .build()
     }
@@ -130,6 +132,61 @@ class WorkTimeApplication : Application() {
          * 老读数路径继续可用，新界面走 sites 表。INSERT ... SELECT 在无定位的行上不产生记录，
          * 因此全新安装（user_settings 尚无坐标）不会插入空地点。
          */
+        /**
+         * v12：计薪规则 v2（工资条口径）。
+         *
+         * 结构变更：
+         *  - 新表 `pay_rate_segments` —— 计薪参数的**分段常量**（带生效月），调薪只加一段，
+         *    回看历史月份仍是旧数值
+         *  - 新表 `monthly_pay_params` —— 每月的浮动参数（绩效系数 / 效益奖金 / 高温 / 补发 / 病假…）
+         *
+         * ⚠️ **不动** `monthly_salaries` 与 `work_records`：用户已录入的实发工资与工时记录
+         *    是唯一权威来源，推算结果永不落库（用户 2026-09-13 明确要求）。
+         *
+         * 数据迁移：写入出厂分段常量（全部来自工资条 2025-12～2026-07 实测值），
+         * 用预编译语句插入，不手工拼 SQL。
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `pay_rate_segments` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`paramKey` TEXT NOT NULL, `effectiveFrom` TEXT NOT NULL, " +
+                        "`value` INTEGER NOT NULL, `note` TEXT, `updatedAt` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_pay_rate_segments_paramKey_effectiveFrom` " +
+                        "ON `pay_rate_segments` (`paramKey`, `effectiveFrom`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `monthly_pay_params` (" +
+                        "`payrollMonth` TEXT NOT NULL, `perfCoefficient` TEXT, " +
+                        "`perfBaseDeltaCents` INTEGER NOT NULL, `perfAmountCents` INTEGER, " +
+                        "`benefitBonusCents` INTEGER NOT NULL, " +
+                        "`heatAllowanceCents` INTEGER NOT NULL, " +
+                        "`sickPayCents` INTEGER NOT NULL, `backPayCents` INTEGER NOT NULL, " +
+                        "`otherAddCents` INTEGER NOT NULL, `socialOverrideCents` INTEGER, " +
+                        "`housingFundOverrideCents` INTEGER, `nightShiftsOverride` INTEGER, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`payrollMonth`))"
+                )
+
+                val stmt = db.compileStatement(
+                    "INSERT OR REPLACE INTO pay_rate_segments " +
+                        "(paramKey, effectiveFrom, value, note, updatedAt) VALUES (?, ?, ?, ?, ?)"
+                )
+                val now = System.currentTimeMillis()
+                for (seed in PayRateSeed.segments()) {
+                    stmt.clearBindings()
+                    stmt.bindString(1, seed.paramKey)
+                    stmt.bindString(2, seed.effectiveFrom)
+                    stmt.bindLong(3, seed.value)
+                    if (seed.note != null) stmt.bindString(4, seed.note) else stmt.bindNull(4)
+                    stmt.bindLong(5, now)
+                    stmt.executeInsert()
+                }
+            }
+        }
         val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
