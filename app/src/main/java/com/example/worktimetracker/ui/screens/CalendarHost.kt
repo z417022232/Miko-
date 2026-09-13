@@ -18,11 +18,15 @@ private enum class CalendarPage { HOME, MONTHLY }
  * 「今天算不算在上班」争夺一级入口。
  */
 @Composable
-fun CalendarHost(vm: WorkTimeViewModel) {
+fun CalendarHost(vm: WorkTimeViewModel, onOpenToday: () -> Unit = {}) {
     var page by remember { mutableStateOf(CalendarPage.HOME) }
     BackHandler(page != CalendarPage.HOME) { page = CalendarPage.HOME }
     when (page) {
-        CalendarPage.HOME -> CalendarScreen(vm, onOpenMonthly = { page = CalendarPage.MONTHLY })
+        CalendarPage.HOME -> CalendarScreen(
+            vm,
+            onOpenMonthly = { page = CalendarPage.MONTHLY },
+            onOpenToday = onOpenToday
+        )
         CalendarPage.MONTHLY -> StatisticsScreen(vm, onBack = { page = CalendarPage.HOME })
     }
 }

@@ -67,6 +67,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.UiDayRecord
+import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableLongStateOf
+import com.example.worktimetracker.domain.evidence.FusedStatusFormatter
+import com.example.worktimetracker.ui.CalendarHeatPresenter
+import com.example.worktimetracker.ui.MonthSummary
+import com.example.worktimetracker.ui.TodayStatusPresenter
+import kotlinx.coroutines.delay
 import com.example.worktimetracker.ui.calendarDayLabel
 import com.example.worktimetracker.ui.dayKindText
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
@@ -79,21 +88,66 @@ import java.util.Locale
 import com.example.worktimetracker.ui.theme.AppTheme
 
 @Composable
-fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
+fun CalendarScreen(
+    vm: WorkTimeViewModel,
+    onOpenMonthly: () -> Unit = {},
+    onOpenToday: () -> Unit = {}
+) {
     val month by vm.month.collectAsState()
     val records by vm.records.collectAsState()
     val selectedDate by vm.selectedDate.collectAsState()
+    val settings by vm.settings.collectAsState()
+    val todayRecord by vm.todayRecord.collectAsState()
+    val fused by vm.fusedStatus.collectAsState()
     val monthlySalaryCents by vm.monthlySalaryCents.collectAsState()
     val monthlySalaryPaymentDate by vm.monthlySalaryPaymentDate.collectAsState()
+    val today = remember { LocalDate.now() }
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val selected = records.firstOrNull { it.date == selectedDate }
         ?: UiDayRecord(selectedDate, "", finalMinutes = 0)
     var monthDrag by remember { mutableFloatStateOf(0f) }
     var showMonthPicker by remember { mutableStateOf(false) }
     var showDetail by remember { mutableStateOf(false) }
     var showSalaryEditor by remember { mutableStateOf(false) }
+    var showPayroll by remember { mutableStateOf(false) }
     var batchMode by remember { mutableStateOf(false) }
     var batchDates by remember(month) { mutableStateOf(emptySet<LocalDate>()) }
     var showBatchEditor by remember { mutableStateOf(false) }
+
+    // 实时条心跳：30 秒一次，只为让"已持续"的数字往前走、并把后台写入拉回来。
+    // 与「今日」页同一口径——这里绝不写库。
+    LaunchedEffect(Unit) {
+        while (true) {
+            nowMillis = System.currentTimeMillis()
+            vm.refreshToday()
+            delay(30_000L)
+        }
+    }
+
+    val live = TodayStatusPresenter.displayMinutes(
+        finalMinutes = todayRecord?.finalMinutes ?: 0,
+        startMillis = todayRecord?.startMillis,
+        endMillis = todayRecord?.endMillis,
+        nowMillis = nowMillis,
+        restDeductionMinutes = settings.restDeductionMinutes,
+        fixedMinutes = if (settings.hasDefaultHours) settings.defaultWorkMinutes else null
+    )
+    val cells = remember(month, records, selectedDate, today) {
+        CalendarHeatPresenter.buildCells(month, records, today, selectedDate)
+    }
+    val summary = remember(records) { CalendarHeatPresenter.summarize(records) }
+    val isCurrentMonth = month == YearMonth.from(today)
+    val payrollRules = remember { PayrollPeriodRules() }
+    // 只往下提示：翻回 3 月还显示"下一个假期还有 12 天"没有意义
+    val holidayTip = remember(month, today) {
+        if (month < YearMonth.from(today)) null
+        else CalendarHeatPresenter.nextHoliday(today)?.let(CalendarHeatPresenter::holidayTipText)
+    }
+    val paymentLabel = remember(month, monthlySalaryPaymentDate) {
+        val date = monthlySalaryPaymentDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val label = date?.let { runCatching { payrollRules.displayLabel(month, it) }.getOrNull() }
+        label ?: "实发工资以厂里工资单为准，可手动录入存档"
+    }
 
     Column(
         Modifier
@@ -102,11 +156,15 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
             .padding(horizontal = 16.dp, vertical = 14.dp)
     ) {
         ScreenHeader(
-            title = "工时记录",
-            subtitle = "每天的状态与计入工时",
+            title = "日历",
+            subtitle = if (isCurrentMonth) {
+                "${TodayStatusPresenter.weekLabel(today)} · 已记录 ${summary.workDays} 天"
+            } else {
+                "已记录 ${summary.workDays} 天 · 点格子看当天"
+            },
             action = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 月度统计仍完整保留，只是从一级入口下钻到标题栏
+                    // 月度统计仍完整保留，只是从一级入口降级为标题栏下钻
                     IconButton(onClick = onOpenMonthly) {
                         Icon(Icons.Outlined.BarChart, contentDescription = "月度统计", tint = AppTheme.colors.blue)
                     }
@@ -117,7 +175,13 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
             }
         )
         Spacer(Modifier.height(12.dp))
-        MonthOverviewCard(month, records, monthlySalaryCents, monthlySalaryPaymentDate) { showSalaryEditor = true }
+        TodayLiveStrip(
+            minutes = live,
+            headline = TodayStatusPresenter.headline(todayRecord),
+            placeLabel = fused?.place?.let { FusedStatusFormatter.placeLabel(it) } ?: "位置暂不确定",
+            confidence = fused?.let { FusedStatusFormatter.confidenceLabel(it) },
+            onOpenToday = onOpenToday
+        )
         Spacer(Modifier.height(12.dp))
         // 月份切换过渡动画：按新旧月份大小决定滑动方向（去下一个月，新内容从右进；
         // 回上一个月，新内容从左进），250ms + 透明度，与系统页面切换节奏一致。
@@ -136,8 +200,11 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
             Column {
                 MonthToolbar(
                     month = targetMonth,
+                    recordedDays = summary.workDays,
+                    isCurrentMonth = isCurrentMonth,
                     onPrevious = vm::previousMonth,
                     onNext = vm::nextMonth,
+                    onToday = vm::today,
                     onMonthClick = { showMonthPicker = true }
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -150,12 +217,15 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
                         OutlinedButton(onClick = { batchMode = true }) { Text("批量修改") }
                     }
                 }
-                Spacer(Modifier.height(8.dp))
-                CalendarCard(
-                    records = records,
-                    selectedDate = selectedDate,
-                    batchMode = batchMode,
-                    selectedDates = batchDates,
+                HeatMonthCard(
+                    cells = cells,
+                    onDayClick = {
+                        if (batchMode) {
+                            batchDates = if (it.date in batchDates) batchDates - it.date else batchDates + it.date
+                        } else {
+                            vm.select(it.date)
+                        }
+                    },
                     modifier = Modifier
                         // 拖动跟手：translationX 在 draw 阶段读状态，不触发重组
                         .graphicsLayer { translationX = monthDrag }
@@ -171,17 +241,27 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
                                 onDragCancel = { monthDrag = 0f },
                                 onHorizontalDrag = { _, amount -> monthDrag += amount }
                             )
-                        },
-                    onClick = {
-                        if (batchMode) {
-                            batchDates = if (it.date in batchDates) batchDates - it.date else batchDates + it.date
-                        } else vm.select(it.date)
-                    }
+                        }
                 )
+                HeatLegend()
+                HolidayTipLine(holidayTip)
             }
         }
         Spacer(Modifier.height(12.dp))
-        SelectedDayCard(selected, onEdit = { showDetail = true })
+        MonthSummaryCard(
+            summary = summary,
+            salaryCents = monthlySalaryCents,
+            hourlyRateCents = settings.hourlyRateCents,
+            paymentLabel = paymentLabel,
+            onOpenPayroll = { showPayroll = true },
+            onEditSalary = { showSalaryEditor = true }
+        )
+        Spacer(Modifier.height(12.dp))
+        SelectedDayCard(
+            record = selected,
+            hourlyRateCents = settings.hourlyRateCents,
+            onEdit = { showDetail = true }
+        )
         Spacer(Modifier.height(12.dp))
     }
 
@@ -206,6 +286,15 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
             }
         )
     }
+    if (showPayroll) {
+        PayrollDetailDialog(
+            month = month,
+            summary = summary,
+            hourlyRateCents = settings.hourlyRateCents,
+            recordedSalaryCents = monthlySalaryCents,
+            onDismiss = { showPayroll = false }
+        )
+    }
     if (showBatchEditor) {
         BatchManualDialog(
             count = batchDates.size,
@@ -220,234 +309,125 @@ fun CalendarScreen(vm: WorkTimeViewModel, onOpenMonthly: () -> Unit = {}) {
     }
 }
 
-@Composable
-private fun MonthOverviewCard(
-    month: YearMonth,
-    records: List<UiDayRecord>,
-    salaryCents: Long?,
-    paymentDate: String?,
-    onSalaryClick: () -> Unit
-) {
-    // 汇总只在记录变化时重算；此前每次点选日期都会把整月重新加一遍
-    val (total, workDays, reviewDays) = remember(records) {
-        Triple(
-            records.sumOf { it.finalMinutes },
-            records.count { it.finalMinutes > 0 },
-            records.count { it.needsReview }
-        )
-    }
-    val payrollRules = remember { PayrollPeriodRules() }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.blue),
-        shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("${month.monthValue}月累计", color = Color.White.copy(alpha = 0.78f))
-                    Text(
-                        formatMinutes(total),
-                        color = Color.White,
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                OverviewMetric("工作", "${workDays}天")
-                Box(Modifier.size(1.dp, 36.dp).background(Color.White.copy(alpha = 0.25f)))
-                OverviewMetric("待确认", "${reviewDays}天")
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.medium)
-                    .background(Color.White.copy(alpha = 0.14f))
-                    .clickable(onClick = onSalaryClick)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        paymentDate?.let {
-                            runCatching { payrollRules.displayLabel(month, LocalDate.parse(it)) }.getOrNull()
-                        } ?: "${month.monthValue}月工资（次月15日发放）",
-                        color = Color.White.copy(alpha = 0.72f),
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                    Text(
-                        salaryCents?.let(::formatSalary) ?: "点击录入",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Icon(Icons.Outlined.Edit, contentDescription = "录入实发工资", tint = Color.White, modifier = Modifier.size(18.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun OverviewMetric(label: String, value: String) {
-    Column(
-        Modifier.padding(horizontal = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(value, color = Color.White, fontWeight = FontWeight.Bold)
-        Text(label, color = Color.White.copy(alpha = 0.72f), style = MaterialTheme.typography.labelMedium)
-    }
-}
-
+/**
+ * 月份工具栏：`‹ 2026 年 9 月 / 本月 · 已记录 12 天 今天 ›`。
+ *
+ * 中间整块可点，弹出月份选择器（保留原有的跳月能力）；「今天」只在离开当月时可点，
+ * 避免回到当前月时按钮看起来能按却没反应。
+ */
 @Composable
 private fun MonthToolbar(
     month: YearMonth,
+    recordedDays: Int,
+    isCurrentMonth: Boolean,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onToday: () -> Unit,
     onMonthClick: () -> Unit
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        TextButton(onClick = onPrevious) { Text("‹", style = MaterialTheme.typography.headlineSmall) }
-        TextButton(onClick = onMonthClick) {
-            Icon(Icons.Outlined.Event, null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.size(6.dp))
-            Text("${month.year}年${month.monthValue}月", fontWeight = FontWeight.Bold)
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onPrevious) {
+            Icon(Icons.Outlined.ChevronLeft, contentDescription = "上个月", tint = AppTheme.colors.muted)
         }
-        TextButton(onClick = onNext) { Text("›", style = MaterialTheme.typography.headlineSmall) }
-    }
-}
-
-@Composable
-private fun CalendarCard(
-    records: List<UiDayRecord>,
-    selectedDate: LocalDate,
-    batchMode: Boolean,
-    selectedDates: Set<LocalDate>,
-    modifier: Modifier = Modifier,
-    onClick: (UiDayRecord) -> Unit
-) {
-    val leading = records.firstOrNull()?.date?.dayOfWeek?.value?.rem(7) ?: 0
-    // “今天”在一屏内是常量，remember 一次，避免 42 个格子各调一次 LocalDate.now()
-    val today = remember { LocalDate.now() }
-    val rawCells: List<UiDayRecord?> = List(leading) { null } + records
-    val trailing = (7 - rawCells.size % 7) % 7
-    val cells = rawCells + List(trailing) { null }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = MaterialTheme.shapes.extraLarge,
-        modifier = modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
-            Row(Modifier.fillMaxWidth()) {
-                listOf("日", "一", "二", "三", "四", "五", "六").forEachIndexed { index, label ->
-                    Text(
-                        label,
-                        modifier = Modifier.weight(1f),
-                        color = if (index == 0 || index == 6) AppTheme.colors.red.copy(alpha = 0.8f) else AppTheme.colors.muted,
-                        style = MaterialTheme.typography.labelMedium,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            cells.chunked(7).forEach { week ->
-                Row(Modifier.fillMaxWidth()) {
-                    week.forEach { record ->
-                        Box(Modifier.weight(1f)) {
-                            if (record == null) Spacer(Modifier.height(62.dp))
-                            else key(record.date) {
-                                DayCell(record, if (batchMode) record.date in selectedDates else record.date == selectedDate, today, onClick)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DayCell(record: UiDayRecord, selected: Boolean, today: LocalDate, onClick: (UiDayRecord) -> Unit) {
-    val isToday = record.date == today
-    val worked = record.finalMinutes > 0
-    val badge = record.dayBadge
-    val hours = if (worked) calendarDayLabel(record.shift, record.finalMinutes) else ""
-    val statusLabel = if (record.status.isNotBlank()) shortStatus(record.status) else ""
-    // 只有"发生了具体事件"的状态（请假/外出/早退/异常/手动）才压过公休标签；"休息"不算
-    val meaningfulStatus = record.status.isNotBlank() && record.status != "休息"
-    // 最多两行：第一行公休性质（中秋节 / 休 / 班），第二行工时或状态。
-    // 于是"节假日本身上班" = 白 11h + 中秋节，"休息日上班" = 白 11h + 休。
-    val lines: List<Pair<String, Color>> = buildList {
-        if (worked) {
-            badge?.let { add(it to dayBadgeColor(record.dayKind)) }
-            add(hours to statusColor(record.status))
-        } else {
-            if (badge != null) add(badge to dayBadgeColor(record.dayKind))
-            if (meaningfulStatus || badge == null) {
-                if (statusLabel.isNotBlank()) add(statusLabel to statusColor(record.status))
-            }
-        }
-    }.take(2)
-    Box(modifier = Modifier.fillMaxWidth().height(62.dp).padding(2.dp)) {
         Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(62.dp)
+            Modifier
+                .weight(1f)
                 .clip(MaterialTheme.shapes.medium)
-                .background(dayCellBackground(record.dayKind, selected, isToday))
-                // 今天的描边要压得住浅橙 / 浅红 / 浅灰底：1dp + 45% 太弱，改 1.5dp + 80%
-                .then(
-                    if (isToday && !selected) {
-                        Modifier.border(1.5.dp, AppTheme.colors.blue.copy(alpha = 0.8f), MaterialTheme.shapes.medium)
-                    } else Modifier
-                )
-                .clickable { onClick(record) }
-                .padding(top = 4.dp)
+                .clickable(onClick = onMonthClick)
+                .padding(vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                record.date.dayOfMonth.toString(),
-                fontWeight = if (selected || isToday) FontWeight.Bold else FontWeight.Normal,
-                // 今天除了描边，日期数字也走强调色——底色偏灰时单靠描边不够醒目
-                color = if (selected || isToday) AppTheme.colors.blue else MaterialTheme.colorScheme.onSurface
+                "${month.year} 年 ${month.monthValue} 月",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
             )
-            lines.forEach { (text, tint) ->
-                Text(text, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-            }
+            Text(
+                if (isCurrentMonth) "本月 · 已记录 $recordedDays 天" else "已记录 $recordedDays 天",
+                style = MaterialTheme.typography.labelSmall,
+                color = AppTheme.colors.muted
+            )
         }
-        // A6: 待确认角标——让用户在主日历上就能看到哪天需要处理
-        if (record.needsReview) {
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 5.dp, end = 6.dp)
-                    .size(7.dp)
-                    .background(AppTheme.colors.red, CircleShape)
-            )
+        TextButton(onClick = onToday, enabled = !isCurrentMonth) { Text("今天") }
+        IconButton(onClick = onNext) {
+            Icon(Icons.Outlined.ChevronRight, contentDescription = "下个月", tint = AppTheme.colors.muted)
         }
     }
 }
 
 /**
- * 日历格子的底色。只看"这天本来的日历身份"，与用户是否上班无关：
- * - 调休上班日 → 浅橙（提醒这是被调来的班，别当成普通工作日）
- * - 法定节日当天 → 浅红
- * - 假期休息日（含补休） → 浅灰；**周末不再上色**（列位置已足够明显，整月涂灰只是噪音）
- * - 今天 → 极浅蓝底（配合加粗描边，保证在浅橙 / 浅红 / 浅灰底上也能立住）
- * - 周末 / 普通工作日 → 透明
- * 选中态优先，避免底色盖住选中反馈。
+ * 「本月工资明细」（稿子屏 08 的收敛版）。
+ *
+ * 用户 2026-09-13 明确：**本期只显示基础工资 + 工时，不做 1.5× / 2.0× / 3.0× 倍率**。
+ * 所以这里把稿子里的四类倍率明细换成"总工时 / 加班 / 时薪 / 应发基础工资"，
+ * 并在页内写明"不含倍率"，避免用户以为少算了钱。
  */
 @Composable
-private fun dayCellBackground(kind: DayKind, selected: Boolean, isToday: Boolean): Color = when {
-    selected -> AppTheme.colors.blue.copy(alpha = 0.11f)
-    kind == DayKind.MAKEUP_WORKDAY -> AppTheme.colors.orange.copy(alpha = 0.18f)
-    kind == DayKind.FESTIVAL -> AppTheme.colors.red.copy(alpha = 0.12f)
-    kind == DayKind.HOLIDAY_REST -> AppTheme.colors.muted.copy(alpha = 0.10f)
-    isToday -> AppTheme.colors.blue.copy(alpha = 0.07f)
-    else -> Color.Transparent
+private fun PayrollDetailDialog(
+    month: YearMonth,
+    summary: MonthSummary,
+    hourlyRateCents: Long,
+    recordedSalaryCents: Long?,
+    onDismiss: () -> Unit
+) {
+    val estimated = TodayStatusPresenter.earningsCents(summary.totalMinutes, hourlyRateCents)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("${month.monthValue} 月工资明细") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "按当前计薪规则估算",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.muted
+                )
+                if (estimated == null) {
+                    Text(
+                        "还没有设置基本时薪，无法估算。到「设置 → 计薪规则」填写后即可看到金额。",
+                        color = AppTheme.colors.muted
+                    )
+                } else {
+                    PayrollRow("总工时", durationText(summary.totalMinutes))
+                    PayrollRow("出勤", "${summary.workDays} 天")
+                    PayrollRow("日均", durationText(summary.averageMinutes))
+                    PayrollRow("其中加班", durationText(summary.overtimeMinutes))
+                    ThinDivider()
+                    PayrollRow("基本时薪", "${formatCents(hourlyRateCents)} / 小时")
+                    PayrollRow("应发基础工资", formatCents(estimated), emphasize = true)
+                    Text(
+                        "本期只按「工时 × 基本时薪」估算，不含平时加班 / 休息日 / 法定节假日的倍率；实际以厂里工资单为准。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AppTheme.colors.muted
+                    )
+                }
+                if (recordedSalaryCents != null) {
+                    ThinDivider()
+                    PayrollRow("已录入实发工资", formatCents(recordedSalaryCents))
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
+}
+
+@Composable
+private fun PayrollRow(label: String, value: String, emphasize: Boolean = false) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = AppTheme.colors.muted
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = if (emphasize) FontWeight.Bold else FontWeight.Normal,
+            color = if (emphasize) AppTheme.colors.orange else AppTheme.colors.textPrimary
+        )
+    }
 }
 
 @Composable
@@ -458,9 +438,11 @@ private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
 }
 
 @Composable
-private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
+private fun SelectedDayCard(record: UiDayRecord, hourlyRateCents: Long, onEdit: () -> Unit) {
     val weekday = record.date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
     val status = record.status.ifBlank { "暂无记录" }
+    // 设了时薪才显示当日工资：没设却显示 ¥0.00 会让人以为这一天白干了
+    val dayEarnings = TodayStatusPresenter.earningsCents(record.finalMinutes, hourlyRateCents)
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         shape = MaterialTheme.shapes.extraLarge,
@@ -488,6 +470,14 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                     Spacer(Modifier.size(6.dp))
                     Text("编辑")
                 }
+            }
+            dayEarnings?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "当日工资 ${formatCents(it)}",
+                    color = AppTheme.colors.orange,
+                    style = MaterialTheme.typography.labelMedium
+                )
             }
             if (record.needsReview && !record.reviewReason.isNullOrBlank()) {
                 Spacer(Modifier.height(8.dp))

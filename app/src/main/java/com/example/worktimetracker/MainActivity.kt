@@ -203,7 +203,7 @@ fun AppRoot(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             when (tab) {
-                MainTab.CALENDAR -> CalendarHost(vm)
+                MainTab.CALENDAR -> CalendarHost(vm, onOpenToday = { tab = MainTab.TODAY })
                 MainTab.TODAY -> TodayHost(vm)
                 MainTab.SETTINGS -> SettingsScreen(
                     vm = vm,
