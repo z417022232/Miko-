@@ -52,7 +52,15 @@ class EvidenceCoordinator(
     private val fusionEngine: EvidenceFusionEngine,
     private val clock: Clock,
     /** 诊断日志回调（方案十）：每次融合结果/原因变化时输出证据明细 */
-    private val diagnosticLogger: ((type: String, content: String) -> Unit)? = null
+    private val diagnosticLogger: ((type: String, content: String) -> Unit)? = null,
+    /**
+     * 用户在地点管理里手动选定的证据源（v4.3）：哈希 → COMPANY/HOME。
+     *
+     * 默认 null = 完全不参与融合，所以未配置地点的装机行为与 v4.2 逐位一致。
+     * 命中时按 [DECLARED_SOURCE_QUALITY]（低于确认门槛）计入，
+     * 于是「单条声明证据只能维持地点、不能改变工时状态」这条约束自动成立。
+     */
+    private val declaredSourcePlaces: (suspend () -> Map<String, ResolvedPlace>)? = null
 ) {
     private var lastResolvedPlace: ResolvedPlace = ResolvedPlace.UNKNOWN
     private var lastCleanupDay: String? = null
@@ -168,6 +176,11 @@ class EvidenceCoordinator(
         now: Long
     ): List<EvidenceObservation> {
         val observations = mutableListOf<EvidenceObservation>()
+        // 只有「已学习的稳定指纹都没匹配上」时才看用户声明：自动学习出来的
+        // 指纹带观测次数/跨地点判别，比一次性勾选更可信，顺序不能反过来
+        val declared = declaredSourcePlaces?.let { lookup ->
+            runCatching { lookup() }.getOrDefault(emptyMap())
+        }.orEmpty()
         for (source in listOf(EvidenceSource.WIFI, EvidenceSource.BLUETOOTH, EvidenceSource.CELL)) {
             val sourceFeatures = features.filter { it.source == source }
             if (sourceFeatures.isEmpty()) continue
@@ -190,6 +203,21 @@ class EvidenceCoordinator(
                 if (quality > bestQuality) {
                     bestQuality = quality
                     bestPlace = place
+                }
+            }
+            if (bestPlace == null && declared.isNotEmpty()) {
+                val matched = sourceFeatures.filter { feature ->
+                    declared.containsKey(feature.identifierHash)
+                }
+                if (matched.isNotEmpty()) {
+                    val place = matched
+                        .mapNotNull { feature -> declared[feature.identifierHash] }
+                        .groupingBy { it }.eachCount()
+                        .maxByOrNull { it.value }?.key
+                    if (place != null) {
+                        bestPlace = place
+                        bestQuality = DECLARED_SOURCE_QUALITY
+                    }
                 }
             }
             if (bestPlace != null && bestQuality > 0.0) {
@@ -373,6 +401,15 @@ class EvidenceCoordinator(
 
     companion object {
         const val AMBIENT_WINDOW_MILLIS = 10 * 60_000L
+
+        /**
+         * 用户声明证据源（地点管理里手选的 Wi-Fi）的质量分。
+         *
+         * 取 0.75：单来源 0.75 < 融合引擎的确认门槛 1.40 → 只能维持地点（弱证据），
+         * 必须同一地点的两类来源都命中（0.75+0.75=1.50）才够确认。自动学习出来的
+         * STABLE 指纹按命中率与信号强度算分通常更高，所以「先学习、后声明」的次序成立。
+         */
+        const val DECLARED_SOURCE_QUALITY = 0.75
 
         /** 连续性窗口：与 EvidenceContinuityPolicy 默认 20 分钟一致 */
         const val CONTINUITY_WINDOW_MILLIS = 20 * 60_000L

@@ -101,7 +101,9 @@ import com.example.worktimetracker.ui.theme.ThemeMode
 private enum class SettingsPage {
     ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME,
     /** v4 界面稿新增：计薪规则 / 常规采集间隔 / Burst 上限 */
-    PAY_RULES, INTERVAL, BURST
+    PAY_RULES, INTERVAL, BURST,
+    /** v4.3 界面稿 09/10/11：多地点管理（LOCATION 保留为校准兜底入口） */
+    SITES
 }
 private enum class LocationTarget { COMPANY, HOME }
 
@@ -115,6 +117,11 @@ fun SettingsScreen(
     BackHandler(page != SettingsPage.ROOT) { page = SettingsPage.ROOT }
     when (page) {
         SettingsPage.ROOT -> SettingsHome(vm, themeMode = themeMode, onOpen = { page = it })
+        SettingsPage.SITES -> SiteManageHost(
+            vm = vm,
+            onBack = { page = SettingsPage.ROOT },
+            onOpenLegacyLocations = { page = SettingsPage.LOCATION }
+        )
         SettingsPage.LOCATION -> LocationSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.RULES -> AutoRulesPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.PERMISSIONS -> PermissionSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
@@ -140,6 +147,7 @@ private fun SettingsHome(
 ) {
     val context = LocalContext.current
     val settings by vm.settings.collectAsState()
+    val sites by vm.sites.collectAsState()
     val holidayStatus by vm.holidayStatus.collectAsState()
     var showTimes by remember { mutableStateOf(false) }
     var showDefault by remember { mutableStateOf(false) }
@@ -168,9 +176,9 @@ private fun SettingsHome(
             SettingsRow(
                 Icons.Outlined.LocationOn,
                 "地点管理",
-                locationSummary(settings),
+                siteSummary(sites),
                 tint = AppTheme.colors.green
-            ) { onOpen(SettingsPage.LOCATION) }
+            ) { onOpen(SettingsPage.SITES) }
             ThinDivider()
             SettingsRow(
                 Icons.Outlined.EventAvailable,
@@ -340,6 +348,14 @@ private fun TrackingStatusCard(status: PermissionStatus, onClick: () -> Unit) {
         }
     }
 }
+
+/** 设置页「地点管理」入口摘要：数量就是用户能一眼看懂的进度（v4.3 多地点）。 */
+fun siteSummary(sites: List<com.example.worktimetracker.data.entity.SiteEntity>): String =
+    when {
+        sites.isEmpty() -> "未设置 · 至少添加一个常待的地方"
+        sites.none { it.enabled } -> "${sites.size} 个地点 · 全部已停用"
+        else -> "${sites.count { it.enabled }} 个地点"
+    }
 
 private fun locationSummary(settings: UserSettingsEntity): String {
     val company = if (settings.companyLat != null && settings.companyLng != null) "公司已设置" else "公司未设置"

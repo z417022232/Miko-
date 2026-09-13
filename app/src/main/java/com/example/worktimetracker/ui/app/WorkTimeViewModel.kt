@@ -28,6 +28,12 @@ import com.example.worktimetracker.domain.engine.ReviewAcknowledger
 import com.example.worktimetracker.domain.engine.LocationAnchorCalibration
 import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
+import com.example.worktimetracker.location.evidence.EnvironmentSaltStore
+import com.example.worktimetracker.location.evidence.ScannedWifi
+import com.example.worktimetracker.location.evidence.SiteWifiScanner
+import com.example.worktimetracker.location.evidence.WifiScanOutcome
+import com.example.worktimetracker.location.service.toSitePoint
+import com.example.worktimetracker.domain.engine.SiteResolver
 import com.example.worktimetracker.ui.CompanyCalibrationProposal
 import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.domain.model.WorkCalculationInput
@@ -1020,6 +1026,10 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private val _siteEvidenceSources = MutableStateFlow<List<SiteEvidenceSourceEntity>>(emptyList())
     val siteEvidenceSources: StateFlow<List<SiteEvidenceSourceEntity>> = _siteEvidenceSources
 
+    /** Wi-Fi 选择页的扫描状态（界面稿 11）；候选只在内存，勾选后才由 [replaceWifiSources] 落哈希。 */
+    private val _wifiScan = MutableStateFlow<WifiScanUi>(WifiScanUi.Idle)
+    val wifiScan: StateFlow<WifiScanUi> = _wifiScan
+
     /** 重新读一遍地点与证据源。地点页增删改后、以及首次进入时调用。 */
     fun reloadSites() {
         viewModelScope.launch {
@@ -1031,4 +1041,173 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     /** 每个地点已选证据源数量（地点列表右侧的「N 个证据源」）。 */
     fun evidenceCountBySite(): Map<Long, Int> =
         _siteEvidenceSources.value.groupingBy { it.siteId }.eachCount()
+
+    /** 某地点已声明的证据源（编辑页 / Wi-Fi 选择页按站点过滤）。 */
+    fun sourcesForSite(siteId: Long): List<SiteEvidenceSourceEntity> =
+        _siteEvidenceSources.value.filter { it.siteId == siteId }
+
+    /** 列表页行模型：地点 + 证据源计数 + 到最近一次定位的距离。 */
+    fun siteRows(lastLatitude: Double?, lastLongitude: Double?): List<SiteRowUi> {
+        val counts = evidenceCountBySite()
+        return _sites.value.map { site ->
+            SiteRowUi(
+                site = site,
+                sourceCount = counts[site.id] ?: 0,
+                distanceMeters = SiteResolver.distanceTo(lastLatitude, lastLongitude, site.toSitePoint())
+            )
+        }
+    }
+
+    /**
+     * 取最近一次定位坐标（编辑页「使用当前位置」）。
+     * 无定位时回调 null 而不是抛错——界面提示「暂无定位，请先到室外等一次定位」。
+     */
+    fun loadCurrentLocation(onPoint: (Double?, Double?) -> Unit) {
+        viewModelScope.launch {
+            val last = runCatching { db.locationLogDao().latest() }.getOrNull()
+            onPoint(last?.latitude, last?.longitude)
+        }
+    }
+
+    /**
+     * 保存地点（新增或修改）。
+     *
+     * 三件事必须原子地一起完成，否则会出现「两个主地点」或「没有主地点」：
+     * 1. 声明为主地点 → 先清掉其他主地点；
+     * 2. 写入/更新本行；
+     * 3. [ensurePrimarySite] 兜底：一个启用的主地点都没有时，顶一个上来。
+     */
+    fun saveSite(draft: SiteDraft, onSaved: (Long) -> Unit = {}) {
+        viewModelScope.launch {
+            val dao = db.siteDao()
+            val now = System.currentTimeMillis()
+            val existing = draft.id?.let { runCatching { dao.byId(it) }.getOrNull() }
+            if (draft.isPrimary) runCatching { dao.clearPrimary() }
+            val entity = SiteEntity(
+                id = existing?.id ?: 0L,
+                name = draft.name.trim(),
+                siteType = draft.siteType,
+                latitude = draft.latitude,
+                longitude = draft.longitude,
+                radiusMeters = draft.radiusMeters
+                    .coerceIn(SiteEntity.MIN_RADIUS_METERS, SiteEntity.MAX_RADIUS_METERS),
+                isPrimary = draft.isPrimary,
+                enabled = draft.enabled,
+                migrated = existing?.migrated ?: false,
+                createdAt = existing?.createdAt ?: now,
+                updatedAt = now
+            )
+            val rowId = runCatching { dao.upsert(entity) }.getOrDefault(0L)
+            ensurePrimarySite()
+            reloadSites()
+            onSaved(if (rowId > 0L) rowId else entity.id)
+        }
+    }
+
+    /** 删除地点：连同它的证据源一起删（证据源脱离地点没有意义）。 */
+    fun deleteSite(id: Long) {
+        viewModelScope.launch {
+            runCatching { db.siteDao().deleteSourcesFor(id) }
+            runCatching { db.siteDao().delete(id) }
+            ensurePrimarySite()
+            reloadSites()
+        }
+    }
+
+    /** 设为主地点：主地点必须启用，否则「优先匹配」名存实亡。 */
+    fun setPrimarySite(id: Long) {
+        viewModelScope.launch {
+            val dao = db.siteDao()
+            val site = runCatching { dao.byId(id) }.getOrNull() ?: return@launch
+            runCatching { dao.clearPrimary() }
+            runCatching {
+                dao.upsert(site.copy(isPrimary = true, enabled = true, updatedAt = System.currentTimeMillis()))
+            }
+            reloadSites()
+        }
+    }
+
+    /** 启用 / 停用地点。停用主地点后会自动把另一个启用地点顶成主地点。 */
+    fun setSiteEnabled(id: Long, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { db.siteDao().setEnabled(id, enabled, System.currentTimeMillis()) }
+            ensurePrimarySite()
+            reloadSites()
+        }
+    }
+
+    /**
+     * 保存 Wi-Fi 证据源：**整组替换**（先清空该站点的 WIFI 源，再写入勾选结果）。
+     *
+     * 隐私不变量：只落 64 位加盐哈希与信号强度，`label` 一律留空——
+     * SSID 是用户的位置隐私，不进数据库（界面用「已选 N 个」表达选择结果）。
+     */
+    fun replaceWifiSources(siteId: Long, picked: List<ScannedWifi>) {
+        viewModelScope.launch {
+            runCatching {
+                val dao = db.siteDao()
+                dao.deleteSources(siteId, SiteEvidenceSourceEntity.TYPE_WIFI)
+                if (picked.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    dao.upsertSources(
+                        picked.map { wifi ->
+                            SiteEvidenceSourceEntity(
+                                siteId = siteId,
+                                sourceType = SiteEvidenceSourceEntity.TYPE_WIFI,
+                                identifierHash = wifi.identifierHash,
+                                label = null,
+                                lastSignal = wifi.signal,
+                                selectedAt = now
+                            )
+                        }
+                    )
+                }
+            }
+            reloadSites()
+        }
+    }
+
+    /** 清空某地点某类证据源（编辑页「清空」按钮）。 */
+    fun clearSiteSources(siteId: Long, sourceType: String) {
+        viewModelScope.launch {
+            runCatching { db.siteDao().deleteSources(siteId, sourceType) }
+            reloadSites()
+        }
+    }
+
+    /**
+     * 扫描工作地点的 Wi-Fi（界面稿 11）。
+     * 扫描在 IO 线程执行；结果只留在内存，用户勾选后由 [replaceWifiSources] 落哈希。
+     */
+    fun scanWifi() {
+        if (_wifiScan.value is WifiScanUi.Scanning) return
+        _wifiScan.value = WifiScanUi.Scanning
+        viewModelScope.launch {
+            val saltStore = EnvironmentSaltStore(getApplication())
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { SiteWifiScanner(getApplication(), { saltStore.getOrCreate() }).scan() }
+                    .getOrElse { failure ->
+                        WifiScanOutcome.Error(
+                            WifiScanOutcome.Reason.FAILED, failure.message ?: "扫描失败"
+                        )
+                    }
+            }
+            _wifiScan.value = when (outcome) {
+                is WifiScanOutcome.Ok -> WifiScanUi.Ready(outcome.items, System.currentTimeMillis())
+                is WifiScanOutcome.Error -> WifiScanUi.Failed(outcome.message)
+            }
+        }
+    }
+
+    /** 保证「有且仅有一个启用的主地点」这条不变量。 */
+    private suspend fun ensurePrimarySite() {
+        runCatching {
+            val dao = db.siteDao()
+            val all = dao.all()
+            if (all.isEmpty()) return@runCatching
+            if (all.any { it.isPrimary && it.enabled }) return@runCatching
+            val pick = all.firstOrNull { it.enabled } ?: return@runCatching
+            dao.upsert(pick.copy(isPrimary = true, updatedAt = System.currentTimeMillis()))
+        }
+    }
 }

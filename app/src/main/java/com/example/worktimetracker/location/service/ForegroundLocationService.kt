@@ -28,6 +28,8 @@ import com.example.worktimetracker.domain.engine.ShiftProfileLearner
 import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.domain.model.ShiftType
 import com.example.worktimetracker.data.entity.WorkRecordEntity
+import com.example.worktimetracker.domain.engine.SitePoint
+import com.example.worktimetracker.domain.engine.SiteResolver
 import com.example.worktimetracker.domain.model.WorkSession
 import java.time.ZoneId
 import java.time.Instant
@@ -104,6 +106,15 @@ class ForegroundLocationService : Service(), LocationListener {
     @Volatile private var classifiedPlaceSince = 0L
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
     @Volatile private var cachedSettings: com.example.worktimetracker.data.entity.UserSettingsEntity? = null
+
+    /**
+     * 生效地点集合缓存（v4.3 多地点）。
+     *
+     * 站点是低频变更数据，但每次定位回调都要用；60 秒 TTL 既避免每帧查库，
+     * 又能在用户刚改完地点后很快跟上（改地点不需要重启服务）。
+     */
+    @Volatile private var cachedSitePoints: List<com.example.worktimetracker.domain.engine.SitePoint> = emptyList()
+    @Volatile private var cachedSitePointsAt: Long = 0L
 
     /** 本轮 Movement Burst 的上限（毫秒）。在 Burst 起始时定死，期间改设置不影响本轮。 */
     private var burstCapMillisAtStart: Long = MOTION_BURST_MILLIS
@@ -304,13 +315,14 @@ class ForegroundLocationService : Service(), LocationListener {
                 )
             )
         }
-        val classified = processor.classify(location.latitude, location.longitude, location.accuracy, settings)
-        val companyDistance = if (settings.companyLat != null && settings.companyLng != null) {
-            locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng)
-        } else null
-        val homeDistance = if (settings.homeLat != null && settings.homeLng != null) {
-            locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng)
-        } else null
+        // 多地点（v4.3）：分类与距离都从生效地点集合算，状态机拿到的仍是
+        // companyDistance / homeDistance 两个标量，[TrajectoryAnchorEngine] 完全不需要改
+        val sites = effectiveSites(app, settings)
+        val classified = processor.classify(location.latitude, location.longitude, location.accuracy, settings, sites)
+        val workMatch = SiteResolver.nearest(location.latitude, location.longitude, sites, SiteResolver.TYPE_WORK)
+        val nonWorkMatch = SiteResolver.nearest(location.latitude, location.longitude, sites, SiteResolver.TYPE_NON_WORK)
+        val companyDistance = workMatch?.distanceMeters
+        val homeDistance = nonWorkMatch?.distanceMeters
         // REST + HOME 永远不设置 movingAway：到家类型本身不是离开公司的通用移动证据
         val movingAway = classified != LocationType.HOME &&
             ((location.hasSpeed() && location.speed >= MOVING_SPEED_METERS_PER_SECOND) ||
@@ -377,8 +389,12 @@ class ForegroundLocationService : Service(), LocationListener {
             companyAnchorDistanceMeters = companyDistance, homeDistanceMeters = homeDistance,
             homeAnchorDistanceMeters = homeDistance, speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
             movingAway = movingAway
-        ), TrajectoryAnchorEngine.Config(settings.companyRadiusMeters, settings.homeRadiusMeters,
-            calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes)).nextState
+        ), TrajectoryAnchorEngine.Config(
+            // 半径取「命中的那个地点」自己的半径：多车间半径不同时，离岗半径必须跟着实际地点走
+            workMatch?.site?.radiusMeters ?: settings.companyRadiusMeters,
+            nonWorkMatch?.site?.radiusMeters ?: settings.homeRadiusMeters,
+            calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes
+        )).nextState
         val next = stateDecision.copy(
             lastLatitude = location.latitude,
             lastLongitude = location.longitude,
@@ -426,6 +442,31 @@ class ForegroundLocationService : Service(), LocationListener {
                 motionBurstUntil, burstMediumPhase, now)))
         }
     }
+
+    /**
+     * 生效地点集合（数据库站点 + 旧设置兜底），带 60 秒缓存。
+     *
+     * 兜底来自 [com.example.worktimetracker.location.service.effectiveSites]：
+     * 站点表里某一类型没有带坐标的地点时，用 user_settings 的 companyLat/homeLat 合成一条。
+     */
+    private suspend fun effectiveSites(
+        app: WorkTimeApplication,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity
+    ): List<SitePoint> {
+        val now = System.currentTimeMillis()
+        if (cachedSitePointsAt > 0L && now - cachedSitePointsAt < SITES_CACHE_MILLIS) return cachedSitePoints
+        cachedSitePoints = runCatching { settings.effectiveSites(app.database.siteDao().all()) }
+            .getOrDefault(emptyList())
+        cachedSitePointsAt = now
+        return cachedSitePoints
+    }
+
+    /** 采样策略用的围栏：所有启用地点各一条「(距离, 半径)」。 */
+    private fun siteFences(location: Location): List<Pair<Double, Int>> =
+        cachedSitePoints.filter { it.enabled }.mapNotNull { site ->
+            SiteResolver.distanceTo(location.latitude, location.longitude, site)
+                ?.let { distance -> distance to site.radiusMeters }
+        }
 
     private fun buildGnssInput(
         calibration: LocationCalibrationStore,
@@ -654,7 +695,9 @@ class ForegroundLocationService : Service(), LocationListener {
             learningPolicy = FingerprintLearningPolicy(),
             fusionEngine = EvidenceFusionEngine(),
             clock = Clock.systemDefaultZone(),
-            diagnosticLogger = { type, content -> logEvent(type, content) }
+            diagnosticLogger = { type, content -> logEvent(type, content) },
+            // 用户在地点管理里选的 Wi-Fi 哈希（v4.3）：只作为最弱一档的补充证据
+            declaredSourcePlaces = { app.database.siteDao().declaredHashPlaces() }
         )
         wifiCollector = wifi
         bluetoothCollector = bluetooth
@@ -761,16 +804,8 @@ class ForegroundLocationService : Service(), LocationListener {
         val state = app.database.workStateDao().getState() ?: return
         val location = lastLocation
         val locationType = locationTypeOf(lastResolvedPlace).name
-        val fences = listOfNotNull(
-            if (settings.companyLat != null && settings.companyLng != null && location != null) {
-                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng) to
-                    settings.companyRadiusMeters
-            } else null,
-            if (settings.homeLat != null && settings.homeLng != null && location != null) {
-                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng) to
-                    settings.homeRadiusMeters
-            } else null
-        )
+        effectiveSites(app, settings)
+        val fences = if (location == null) emptyList() else siteFences(location)
         val nearestFence = fences.minByOrNull { kotlin.math.abs(it.first - it.second) }
         val speed = if (location != null && location.hasSpeed()) location.speed else 0f
         val interval = samplingPolicy.intervalMillis(
@@ -1011,16 +1046,8 @@ class ForegroundLocationService : Service(), LocationListener {
     ) {
         // Movement Burst 期间采样间隔由 Burst 管理，常规策略不得降档
         if (motionBurstUntil > System.currentTimeMillis()) return
-        val fences = listOfNotNull(
-            if (settings.companyLat != null && settings.companyLng != null) {
-                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.companyLat, settings.companyLng) to
-                    settings.companyRadiusMeters
-            } else null,
-            if (settings.homeLat != null && settings.homeLng != null) {
-                locationAnalyzer.distanceMeters(location.latitude, location.longitude, settings.homeLat, settings.homeLng) to
-                    settings.homeRadiusMeters
-            } else null
-        )
+        // 围栏 = 所有启用地点（v4.3）：多车间/多地点时，采样节奏跟着最近的那个地点走
+        val fences = siteFences(location)
         val nearestFence = fences.minByOrNull { kotlin.math.abs(it.first - it.second) }
         val interval = samplingPolicy.intervalMillis(
             currentState = currentState,
@@ -1124,6 +1151,9 @@ class ForegroundLocationService : Service(), LocationListener {
 
         const val MOVING_SPEED_METERS_PER_SECOND = 1.5f
         private const val HOME_STABLE_RADIUS_METERS = 100
+
+        /** 生效地点集合的缓存时长：短到用户改完地点能马上生效，长到不会每次定位都查库 */
+        private const val SITES_CACHE_MILLIS = 60_000L
         private const val SHIFT_WINDOW_MARGIN_MINUTES = 180
         private const val AMBIENT_NOMINAL_ACCURACY_METERS = 50f
         private const val AMBIENT_CORE_DISTANCE_METERS = 30.0
