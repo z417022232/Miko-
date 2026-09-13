@@ -37,3 +37,18 @@ fun calendarDayLabel(shift: String?, minutes: Int): String {
     val prefix = when (shift) { "白班" -> "白 "; "夜班" -> "夜 "; else -> "" }
     return "${prefix}${hours}h"
 }
+
+/**
+ * 日期卡片 / 详情弹窗用的完整公休说明（日历格子只有一格位置，放的是短标签 "休" / "班" / 节日名）。
+ *
+ * 「休」必须结合**当天到底有没有出工**来判断：同样是周六，没上班是"周末休息"，
+ * 上了班就是"周末出勤"——否则会出现「白 11h」配一句「周末休息」的自相矛盾。
+ * 节日当天例外：无论出勤与否都显示节日名（用户更关心"今天是中秋"）。
+ */
+fun dayKindText(kind: DayKind, festivalName: String?, worked: Boolean): String? = when (kind) {
+    DayKind.FESTIVAL -> festivalName
+    DayKind.HOLIDAY_REST -> if (worked) "假期出勤" else "假期休息"
+    DayKind.MAKEUP_WORKDAY -> "调休上班"
+    DayKind.WEEKEND -> if (worked) "周末出勤" else "周末休息"
+    DayKind.WORKDAY -> null
+}

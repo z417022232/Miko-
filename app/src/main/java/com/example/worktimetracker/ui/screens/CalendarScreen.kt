@@ -67,6 +67,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.UiDayRecord
 import com.example.worktimetracker.ui.calendarDayLabel
+import com.example.worktimetracker.ui.dayKindText
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import com.example.worktimetracker.domain.engine.DayKind
 import com.example.worktimetracker.domain.engine.PayrollPeriodRules
@@ -390,15 +391,21 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, today: LocalDate, on
                 .fillMaxWidth()
                 .height(62.dp)
                 .clip(MaterialTheme.shapes.medium)
-                .background(dayCellBackground(record.dayKind, selected))
-                .then(if (isToday && !selected) Modifier.border(1.dp, AppTheme.colors.blue.copy(alpha = 0.45f), MaterialTheme.shapes.medium) else Modifier)
+                .background(dayCellBackground(record.dayKind, selected, isToday))
+                // 今天的描边要压得住浅橙 / 浅红 / 浅灰底：1dp + 45% 太弱，改 1.5dp + 80%
+                .then(
+                    if (isToday && !selected) {
+                        Modifier.border(1.5.dp, AppTheme.colors.blue.copy(alpha = 0.8f), MaterialTheme.shapes.medium)
+                    } else Modifier
+                )
                 .clickable { onClick(record) }
                 .padding(top = 4.dp)
         ) {
             Text(
                 record.date.dayOfMonth.toString(),
                 fontWeight = if (selected || isToday) FontWeight.Bold else FontWeight.Normal,
-                color = if (selected) AppTheme.colors.blue else MaterialTheme.colorScheme.onSurface
+                // 今天除了描边，日期数字也走强调色——底色偏灰时单靠描边不够醒目
+                color = if (selected || isToday) AppTheme.colors.blue else MaterialTheme.colorScheme.onSurface
             )
             lines.forEach { (text, tint) ->
                 Text(text, color = tint, style = MaterialTheme.typography.labelSmall, maxLines = 1)
@@ -418,19 +425,21 @@ private fun DayCell(record: UiDayRecord, selected: Boolean, today: LocalDate, on
 }
 
 /**
- * 日历格子的公休底色。只看"这天本来的日历身份"，与用户是否上班无关：
+ * 日历格子的底色。只看"这天本来的日历身份"，与用户是否上班无关：
  * - 调休上班日 → 浅橙（提醒这是被调来的班，别当成普通工作日）
  * - 法定节日当天 → 浅红
- * - 周末 / 假期休息日 → 浅灰
- * - 普通工作日 → 透明
+ * - 假期休息日（含补休） → 浅灰；**周末不再上色**（列位置已足够明显，整月涂灰只是噪音）
+ * - 今天 → 极浅蓝底（配合加粗描边，保证在浅橙 / 浅红 / 浅灰底上也能立住）
+ * - 周末 / 普通工作日 → 透明
  * 选中态优先，避免底色盖住选中反馈。
  */
 @Composable
-private fun dayCellBackground(kind: DayKind, selected: Boolean): Color = when {
+private fun dayCellBackground(kind: DayKind, selected: Boolean, isToday: Boolean): Color = when {
     selected -> AppTheme.colors.blue.copy(alpha = 0.11f)
     kind == DayKind.MAKEUP_WORKDAY -> AppTheme.colors.orange.copy(alpha = 0.18f)
     kind == DayKind.FESTIVAL -> AppTheme.colors.red.copy(alpha = 0.12f)
-    kind == DayKind.WEEKEND || kind == DayKind.HOLIDAY_REST -> AppTheme.colors.muted.copy(alpha = 0.10f)
+    kind == DayKind.HOLIDAY_REST -> AppTheme.colors.muted.copy(alpha = 0.10f)
+    isToday -> AppTheme.colors.blue.copy(alpha = 0.07f)
     else -> Color.Transparent
 }
 
@@ -439,15 +448,6 @@ private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
     DayKind.FESTIVAL -> AppTheme.colors.red
     DayKind.MAKEUP_WORKDAY -> AppTheme.colors.orange
     else -> AppTheme.colors.muted
-}
-
-/** 详情卡片/弹窗用的完整公休说明（格子空间小，只放短标签）。 */
-private fun dayKindText(kind: DayKind, festivalName: String?): String? = when (kind) {
-    DayKind.FESTIVAL -> festivalName
-    DayKind.HOLIDAY_REST -> "假期休息"
-    DayKind.MAKEUP_WORKDAY -> "调休上班"
-    DayKind.WEEKEND -> "周末休息"
-    DayKind.WORKDAY -> null
 }
 
 @Composable
@@ -508,7 +508,7 @@ private fun SelectedDayCard(record: UiDayRecord, onEdit: () -> Unit) {
                     Text("没有到达和离开记录", color = AppTheme.colors.muted)
                 }
             }
-            dayKindText(record.dayKind, record.holidayName)?.let {
+            dayKindText(record.dayKind, record.holidayName, record.finalMinutes > 0)?.let {
                 Text(it, color = dayBadgeColor(record.dayKind), modifier = Modifier.padding(top = 6.dp))
             }
         }
@@ -645,7 +645,7 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
         ) {
             Text("${record.date.monthValue}月${record.date.dayOfMonth}日", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
-                listOfNotNull(dayKindText(record.dayKind, record.holidayName), record.status.ifBlank { null }).joinToString(" · ").ifBlank { "暂无记录" },
+                listOfNotNull(dayKindText(record.dayKind, record.holidayName, record.finalMinutes > 0), record.status.ifBlank { null }).joinToString(" · ").ifBlank { "暂无记录" },
                 color = statusColor(record.status)
             )
             Spacer(Modifier.height(16.dp))
