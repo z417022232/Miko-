@@ -104,6 +104,17 @@ class ForegroundLocationService : Service(), LocationListener {
     @Volatile private var classifiedPlaceSince = 0L
     private val learnedCache = RevisionCache<Pair<WorkSettings, ShiftProfileLearner.Profile>>()
     @Volatile private var cachedSettings: com.example.worktimetracker.data.entity.UserSettingsEntity? = null
+
+    /** 本轮 Movement Burst 的上限（毫秒）。在 Burst 起始时定死，期间改设置不影响本轮。 */
+    private var burstCapMillisAtStart: Long = MOTION_BURST_MILLIS
+
+    /** 「常规采集间隔」（毫秒）：用户档位 → 毫秒的换算与夹取统一在 SamplingTuning。 */
+    private fun normalIntervalMillis(): Long =
+        SamplingTuning.normalIntervalMillis(cachedSettings?.samplingIntervalMinutes)
+
+    /** Movement Burst 的实际上限（毫秒）：只能调低，永远不突破 10 分钟硬顶。 */
+    private fun motionBurstMillis(): Long =
+        SamplingTuning.burstCapMillis(cachedSettings?.burstCapMinutes)
     private var locationManager: LocationManager? = null
     private val watchdogHandler = Handler(Looper.getMainLooper())
     private var lastFixReceivedAt: Long = 0L
@@ -678,22 +689,25 @@ class ForegroundLocationService : Service(), LocationListener {
     private fun startMotionBurst(now: Long) {
         watchdogHandler.removeCallbacks(endMotionBurstRunnable)
         burstStartedAt = now
+        // 上限在本轮起始时定死：既读用户档位，又把值锁住，避免顺延口径随设置漂移
+        val cap = motionBurstMillis()
+        burstCapMillisAtStart = cap
         burstMediumPhase = false
-        motionBurstUntil = now + MOTION_BURST_MILLIS
+        motionBurstUntil = now + cap
         burstConfirmPlace = null
         burstConfirmCount = 0
-        watchdogHandler.postDelayed(endMotionBurstRunnable, MOTION_BURST_MILLIS)
+        watchdogHandler.postDelayed(endMotionBurstRunnable, cap)
         if (currentSamplingIntervalMillis != LocationSamplingPolicy.FAST_INTERVAL_MILLIS) {
             currentSamplingIntervalMillis = LocationSamplingPolicy.FAST_INTERVAL_MILLIS
             pendingSamplingIntervalMillis = currentSamplingIntervalMillis
             registrationState.invalidate(SOURCE_LOCATION)
             startLocationUpdates()
         }
-        logEvent("MOTION_BURST", "检测到移动：定位切至1分钟档，环境扫描BURST（硬顶10分钟）")
+        logEvent("MOTION_BURST", "检测到移动：定位切至1分钟档，环境扫描BURST（硬顶${cap / 60_000}分钟）")
     }
 
     private fun extendMotionBurst(now: Long) {
-        val hardEnd = burstStartedAt + MOTION_BURST_MILLIS
+        val hardEnd = burstStartedAt + burstCapMillisAtStart
         if (now >= hardEnd) {
             // 10 分钟硬顶已到：仍在移动不再顺延 1 分钟档，降为 5 分钟档继续跟踪（MOVING_TRACK 阶段）
             if (!burstMediumPhase) {
@@ -704,15 +718,15 @@ class ForegroundLocationService : Service(), LocationListener {
                     registrationState.invalidate(SOURCE_LOCATION)
                     startLocationUpdates()
                 }
-                logEvent("MOTION_BURST", "Burst达10分钟硬顶：仍在移动，降为5分钟档继续跟踪")
+                logEvent("MOTION_BURST", "Burst达${burstCapMillisAtStart / 60_000}分钟硬顶：仍在移动，降为5分钟档继续跟踪")
             }
             // 关键：MOVING_TRACK 阶段每次移动证据都要重排结束回调，
             // 否则硬顶时刻的旧回调触发 endMotionBurst → 重算策略 → 移动又被映射回 1 分钟档
-            motionBurstUntil = now + MOTION_BURST_MILLIS
+            motionBurstUntil = now + burstCapMillisAtStart
             burstConfirmPlace = null
             burstConfirmCount = 0
             watchdogHandler.removeCallbacks(endMotionBurstRunnable)
-            watchdogHandler.postDelayed(endMotionBurstRunnable, MOTION_BURST_MILLIS)
+            watchdogHandler.postDelayed(endMotionBurstRunnable, burstCapMillisAtStart)
             return
         }
         // 硬顶内顺延：上限锁死在硬顶时间点，而不是 now+10 分钟
@@ -767,14 +781,15 @@ class ForegroundLocationService : Service(), LocationListener {
             speedMetersPerSecond = speed,
             nowMillis = System.currentTimeMillis(),
             workStartMinutes = settings.workStartMinutes,
-            workEndMinutes = settings.workEndMinutes
+            workEndMinutes = settings.workEndMinutes,
+            normalIntervalMillis = normalIntervalMillis()
         )
         // MOVING_TRACK 保护：Burst 结束时若判定仍在移动，普通策略会把移动映射回 1 分钟档；
         // 长途移动最低保持 5 分钟档，只有停止移动后才交回普通策略的 1/5/10/30 分钟档
-        val effectiveInterval = if (speed >= MOVING_SPEED_METERS_PER_SECOND &&
-            interval < LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS) {
-            logEvent("MOTION_BURST", "结束时机仍在移动：最低保持5分钟档，不回1分钟档")
-            LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS
+        val movingFloor = SamplingTuning.movingTrackFloorMillis(cachedSettings?.samplingIntervalMinutes)
+        val effectiveInterval = if (speed >= MOVING_SPEED_METERS_PER_SECOND && interval < movingFloor) {
+            logEvent("MOTION_BURST", "结束时机仍在移动：最低保持${movingFloor / 60_000}分钟档，不回1分钟档")
+            movingFloor
         } else interval
         val decision = LocationRegistrationPolicy.intervalChange(currentSamplingIntervalMillis, effectiveInterval)
         pendingSamplingIntervalMillis = effectiveInterval
@@ -797,7 +812,8 @@ class ForegroundLocationService : Service(), LocationListener {
                 nearShiftWindow = nearShiftWindow(now),
                 stableKnownPlace = lastResolvedPlace == ResolvedPlace.HOME ||
                     lastResolvedPlace == ResolvedPlace.COMPANY
-            )
+            ),
+            cooldownMillis = normalIntervalMillis()
         )
         if (decision == ScanDecision.NONE) return
         // BURST 才允许主动 Wi-Fi 扫描；SNAPSHOT 只读取系统已有快照
@@ -1014,7 +1030,8 @@ class ForegroundLocationService : Service(), LocationListener {
             speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
             nowMillis = System.currentTimeMillis(),
             workStartMinutes = settings.workStartMinutes,
-            workEndMinutes = settings.workEndMinutes
+            workEndMinutes = settings.workEndMinutes,
+            normalIntervalMillis = normalIntervalMillis()
         )
         val decision = LocationRegistrationPolicy.intervalChange(currentSamplingIntervalMillis, interval)
         if (!decision.reconfigure) return
@@ -1104,6 +1121,7 @@ class ForegroundLocationService : Service(), LocationListener {
 
         /** Movement Burst 窗口：Motion 触发后定位 1 分钟档最长保持时长（方案二） */
         const val MOTION_BURST_MILLIS = 10 * 60_000L
+
         const val MOVING_SPEED_METERS_PER_SECOND = 1.5f
         private const val HOME_STABLE_RADIUS_METERS = 100
         private const val SHIFT_WINDOW_MARGIN_MINUTES = 180

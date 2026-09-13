@@ -35,12 +35,17 @@ import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.Paid
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.WorkOutline
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -93,7 +98,11 @@ import java.time.format.DateTimeFormatter
 import com.example.worktimetracker.ui.theme.AppTheme
 import com.example.worktimetracker.ui.theme.ThemeMode
 
-private enum class SettingsPage { ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME }
+private enum class SettingsPage {
+    ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME,
+    /** v4 界面稿新增：计薪规则 / 常规采集间隔 / Burst 上限 */
+    PAY_RULES, INTERVAL, BURST
+}
 private enum class LocationTarget { COMPANY, HOME }
 
 @Composable
@@ -112,6 +121,9 @@ fun SettingsScreen(
         SettingsPage.DATA -> DataSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.LOGS -> LogsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.HOLIDAY -> HolidayDataPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.PAY_RULES -> PayRulesPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.INTERVAL -> SamplingIntervalPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.BURST -> BurstCapPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.THEME -> ThemeSettingsPage(
             current = themeMode,
             onChange = onThemeModeChange,
@@ -131,6 +143,7 @@ private fun SettingsHome(
     val holidayStatus by vm.holidayStatus.collectAsState()
     var showTimes by remember { mutableStateOf(false) }
     var showDefault by remember { mutableStateOf(false) }
+    var showClear by remember { mutableStateOf(false) }
     val permissions = PermissionManager.check(context)
 
     Column(
@@ -143,26 +156,35 @@ private fun SettingsHome(
         Spacer(Modifier.height(14.dp))
         TrackingStatusCard(permissions, onClick = { onOpen(SettingsPage.PERMISSIONS) })
         Spacer(Modifier.height(14.dp))
-        SectionTitle("工作")
+        SectionTitle("记录")
         SettingsGroup {
             SettingsRow(
-                Icons.Outlined.Schedule,
-                "上下班时间",
-                "${formatClock(settings.workStartMinutes)} — ${formatClock(settings.workEndMinutes)}"
-            ) { showTimes = true }
-            ThinDivider()
-            SettingsRow(
-                Icons.Outlined.Timer,
-                "默认工时",
-                if (settings.hasDefaultHours) formatMinutes(settings.defaultWorkMinutes ?: 0) else "关闭 · 按实际定位计算"
-            ) { showDefault = true }
+                Icons.Outlined.Security,
+                "到达自动打卡",
+                if (permissions.ready) "权限完整 · 自动记录已就绪" else "有权限需要处理",
+                tint = if (permissions.ready) AppTheme.colors.green else AppTheme.colors.orange
+            ) { onOpen(SettingsPage.PERMISSIONS) }
             ThinDivider()
             SettingsRow(
                 Icons.Outlined.LocationOn,
-                "公司与家庭",
+                "地点管理",
                 locationSummary(settings),
                 tint = AppTheme.colors.green
             ) { onOpen(SettingsPage.LOCATION) }
+            ThinDivider()
+            SettingsRow(
+                Icons.Outlined.EventAvailable,
+                "排班与假日",
+                "${formatClock(settings.workStartMinutes)} — ${formatClock(settings.workEndMinutes)} · ${holidaySummary(holidayStatus)}",
+                tint = AppTheme.colors.orange
+            ) { onOpen(SettingsPage.HOLIDAY) }
+            ThinDivider()
+            SettingsRow(
+                Icons.Outlined.Paid,
+                "计薪规则",
+                formatHourlyRate(settings.hourlyRateCents) ?: "未设置时薪",
+                tint = AppTheme.colors.orange
+            ) { onOpen(SettingsPage.PAY_RULES) }
             ThinDivider()
             SettingsRow(
                 Icons.Outlined.Tune,
@@ -172,36 +194,65 @@ private fun SettingsHome(
             ) { onOpen(SettingsPage.RULES) }
         }
         Spacer(Modifier.height(14.dp))
-        SectionTitle("系统与数据")
+        SectionTitle("精度与功耗")
+        SettingsGroup {
+            AccuracyRow(settings.locationAccuracyMode) { vm.saveAccuracyMode(it) }
+            ThinDivider()
+            SettingsRow(
+                Icons.Outlined.Speed,
+                "常规采集间隔",
+                "${settings.samplingIntervalMinutes} min",
+                tint = AppTheme.colors.blue
+            ) { onOpen(SettingsPage.INTERVAL) }
+            ThinDivider()
+            SettingsRow(
+                Icons.Outlined.Bolt,
+                "Burst 上限",
+                "${settings.burstCapMinutes} min · 硬顶 10 min",
+                tint = AppTheme.colors.purple
+            ) { onOpen(SettingsPage.BURST) }
+        }
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("数据与外观")
         SettingsGroup {
             SettingsRow(
-                Icons.Outlined.Security,
-                "权限与自动记录",
-                if (permissions.ready) "权限完整" else "有权限需要处理",
-                tint = if (permissions.ready) AppTheme.colors.green else AppTheme.colors.orange
-            ) { onOpen(SettingsPage.PERMISSIONS) }
-            ThinDivider()
-            SettingsRow(Icons.Outlined.Backup, "导出与备份", "Excel、PDF、CSV 和 JSON", tint = AppTheme.colors.blue) {
-                onOpen(SettingsPage.DATA)
-            }
-            ThinDivider()
-            SettingsRow(Icons.Outlined.DarkMode, "界面主题", "${themeMode.label} · ${themeMode.summary}", tint = AppTheme.colors.purple) {
-                onOpen(SettingsPage.THEME)
-            }
+                Icons.Outlined.Backup,
+                "导出工时记录",
+                "CSV / Excel / PDF / JSON，可先导出再清空",
+                tint = AppTheme.colors.blue
+            ) { onOpen(SettingsPage.DATA) }
             ThinDivider()
             SettingsRow(
-                Icons.Outlined.EventAvailable,
-                "节假日数据",
-                holidaySummary(holidayStatus),
-                tint = AppTheme.colors.orange
-            ) { onOpen(SettingsPage.HOLIDAY) }
+                Icons.Outlined.DarkMode,
+                "界面主题",
+                "${themeMode.label} · ${themeMode.summary}",
+                tint = AppTheme.colors.purple
+            ) { onOpen(SettingsPage.THEME) }
+        }
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("诊断")
+        SettingsGroup {
+            SettingsRow(
+                Icons.Outlined.BugReport,
+                "诊断日志",
+                "状态机 / 证据 / 采集 / 人工",
+                tint = AppTheme.colors.muted
+            ) { onOpen(SettingsPage.LOGS) }
             ThinDivider()
-            SettingsRow(Icons.Outlined.BugReport, "运行日志", "定位异常时用于检查", tint = AppTheme.colors.muted) {
-                onOpen(SettingsPage.LOGS)
-            }
+            SettingsRow(
+                Icons.Outlined.DeleteForever,
+                "清空本地记录",
+                "删除全部工时、地点配置与日志，无法恢复",
+                tint = AppTheme.colors.red
+            ) { showClear = true }
         }
         Spacer(Modifier.height(24.dp))
-        Text("工时记录助手 · 本地单机版", color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.CenterHorizontally))
+        Text(
+            "工时记录助手 · 本地单机版 · 不联网也能记录",
+            color = AppTheme.colors.muted,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.align(Alignment.CenterHorizontally)
+        )
         Spacer(Modifier.height(12.dp))
     }
 
@@ -217,6 +268,46 @@ private fun SettingsHome(
     }
     if (showDefault) {
         DefaultHoursDialog(settings, vm, onDismiss = { showDefault = false })
+    }
+    if (showClear) {
+        ClearLocalDataDialog(
+            onExportFirst = { showClear = false; onOpen(SettingsPage.DATA) },
+            onConfirm = { vm.clearAllLocalData(); showClear = false },
+            onDismiss = { showClear = false }
+        )
+    }
+}
+
+/**
+ * 定位精度三档。
+ *
+ * 改的是系统定位请求的精度档（耗电与判准的取舍），不是一个开关——
+ * 所以用三个并列选项而不是 Switch，让用户看得见"选它要付出什么"。
+ */
+@Composable
+private fun AccuracyRow(current: String, onChange: (String) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+        Text("定位精度")
+        Text(
+            "精度越高，进出车间的判定越准，耗电也越高。",
+            color = AppTheme.colors.muted,
+            style = MaterialTheme.typography.bodySmall
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(
+                UserSettingsEntity.LOCATION_ACCURACY_POWER_SAVING to "省电",
+                UserSettingsEntity.LOCATION_ACCURACY_BALANCED to "平衡",
+                UserSettingsEntity.LOCATION_ACCURACY_HIGH to "高"
+            ).forEach { (value, label) ->
+                FilterChip(
+                    selected = current == value,
+                    onClick = { onChange(value) },
+                    label = { Text(label) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
     }
 }
 
@@ -257,7 +348,7 @@ private fun locationSummary(settings: UserSettingsEntity): String {
 }
 
 @Composable
-private fun DefaultHoursDialog(settings: UserSettingsEntity, vm: WorkTimeViewModel, onDismiss: () -> Unit) {
+internal fun DefaultHoursDialog(settings: UserSettingsEntity, vm: WorkTimeViewModel, onDismiss: () -> Unit) {
     var enabled by remember(settings.hasDefaultHours) { mutableStateOf(settings.hasDefaultHours) }
     var hours by remember(settings.defaultWorkMinutes) { mutableIntStateOf((settings.defaultWorkMinutes ?: 12 * 60) / 60) }
     var showPicker by remember { mutableStateOf(false) }

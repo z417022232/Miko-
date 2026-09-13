@@ -13,7 +13,14 @@ class LocationSamplingPolicy(private val zoneId: ZoneId = ZoneId.systemDefault()
         speedMetersPerSecond: Float,
         nowMillis: Long,
         workStartMinutes: Int,
-        workEndMinutes: Int
+        workEndMinutes: Int,
+        /**
+         * 「常规采集间隔」（用户档位，1/3/5/10 分钟）。
+         *
+         * 只替换"班次窗口附近"这一档：快速档（转换/贴边/移动）与稳定档（家/公司久坐）
+         * 仍由状态决定——那是省电与判准的核心，不交给用户调。默认 5 分钟 = 历史行为。
+         */
+        normalIntervalMillis: Long = WORK_WINDOW_INTERVAL_MILLIS
     ): Long {
         val transitionState = currentState in setOf("LEAVING_HOME", "NEAR_COMPANY", "TEMP_LEAVE")
         val nearFenceEdge = distanceToFenceMeters?.let {
@@ -25,7 +32,8 @@ class LocationSamplingPolicy(private val zoneId: ZoneId = ZoneId.systemDefault()
         val minuteOfDay = Instant.ofEpochMilli(nowMillis).atZone(zoneId).hour * 60 +
             Instant.ofEpochMilli(nowMillis).atZone(zoneId).minute
         if (withinWindow(minuteOfDay, workStartMinutes) || withinWindow(minuteOfDay, workEndMinutes)) {
-            return WORK_WINDOW_INTERVAL_MILLIS
+            // 夹在 [快速档, 默认档] 之间：用户档位不能比 1 分钟更激进，也不该比 10 分钟更省电
+            return normalIntervalMillis.coerceIn(FAST_INTERVAL_MILLIS, DEFAULT_INTERVAL_MILLIS)
         }
 
         val stable = (currentState == "REST" && locationType == "HOME") ||

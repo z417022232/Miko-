@@ -22,9 +22,13 @@ data class ScanPolicyInput(
  */
 class AmbientScanPolicy {
 
-    fun evaluate(input: ScanPolicyInput): ScanDecision {
+    fun evaluate(
+        input: ScanPolicyInput,
+        /** 扫描冷却：与「常规采集间隔」同档，避免比基础采集更频繁地唤醒射频。 */
+        cooldownMillis: Long = SCAN_COOLDOWN_MILLIS
+    ): ScanDecision {
         if (input.now < 0) return ScanDecision.NONE
-        if (withinCooldown(input)) {
+        if (withinCooldown(input, cooldownMillis)) {
             return ScanDecision.NONE
         }
         if (input.significantMotion || input.gnssStale) return ScanDecision.BURST
@@ -33,8 +37,8 @@ class AmbientScanPolicy {
         return ScanDecision.NONE
     }
 
-    private fun withinCooldown(input: ScanPolicyInput): Boolean =
-        input.lastScanAt > 0 && input.now - input.lastScanAt < SCAN_COOLDOWN_MILLIS
+    private fun withinCooldown(input: ScanPolicyInput, cooldownMillis: Long): Boolean =
+        input.lastScanAt > 0 && input.now - input.lastScanAt < cooldownMillis.coerceAtLeast(60_000L)
 
     companion object {
         const val SCAN_COOLDOWN_MILLIS = 5 * 60_000L
