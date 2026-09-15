@@ -11,7 +11,9 @@ import com.example.worktimetracker.domain.payroll.PayRateKey
 import com.example.worktimetracker.domain.payroll.PayRateResolver
 import com.example.worktimetracker.domain.payroll.PayRateSet
 import com.example.worktimetracker.domain.payroll.SlipDraftSeeder
+import com.example.worktimetracker.domain.payroll.MonthChoice
 import com.example.worktimetracker.domain.payroll.SlipItemKey
+import com.example.worktimetracker.domain.payroll.SlipMonthResolver
 import com.example.worktimetracker.domain.payroll.SlipStatus
 import com.example.worktimetracker.ui.PayrollPresenter
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,19 +48,20 @@ class ForecastViewModel(application: Application) : AndroidViewModel(application
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message
 
+    /**
+     * 有歧义时待用户裁决的月份对（见 [SlipMonthResolver]）。
+     * 非 null = 录入页弹框问「这笔是哪个月的工资」，用户答完才定月份。
+     */
+    private val _pendingChoice = MutableStateFlow<MonthChoice?>(null)
+    val pendingChoice: StateFlow<MonthChoice?> = _pendingChoice
+
     private var segments: List<PayRateSegmentEntity> = emptyList()
 
     init {
         viewModelScope.launch {
             segments = db.payrollDao().rateSegments()
-            val slips = slipDao.allSlips()
-            _slips.value = slips
-            // 默认停在**最近一张工资条**的计薪月，而不是自然月：发薪日拿到的是**上月**的条，
-            // 自然月通常还没有工资条（用户 2026-09-15 的场景就是如此）。
-            slips.lastOrNull()?.payrollMonth
-                ?.let { runCatching { YearMonth.parse(it) }.getOrNull() }
-                ?.let { _month.value = it }
-            load(_month.value)
+            refreshSlips()
+            openAt(YearMonth.now())
         }
     }
 
@@ -69,10 +72,52 @@ class ForecastViewModel(application: Application) : AndroidViewModel(application
     fun today() { moveTo(YearMonth.now()) }
     fun reload() = load(_month.value)
 
+    /**
+     * 从别处（日历月卡 / 计薪规则页）进录入页时的入口。
+     *
+     * 把「用户当前所在的那个月」当锚点交给 [SlipMonthResolver] 判定打开哪个**计薪月**；
+     * 判定为有歧义时不猜，挂起 [pendingChoice] 让界面弹框问用户，用户答完走 [chooseMonth]。
+     *
+     * @param anchor 用户点录入时所在的月份；null = 自然月（今天）
+     */
+    fun openAt(anchor: YearMonth? = null) {
+        val target = anchor ?: YearMonth.now()
+        viewModelScope.launch {
+            if (_slips.value.isEmpty()) refreshSlips()
+            when (val outcome = SlipMonthResolver.resolve(target, monthsWithSlip())) {
+                is SlipMonthResolver.Outcome.Direct -> {
+                    _pendingChoice.value = null
+                    moveTo(outcome.payrollMonth)
+                }
+                is SlipMonthResolver.Outcome.Ambiguous -> {
+                    // 先把锚点那个月铺在背后，用户选完再切，避免闪一屏空白。
+                    moveTo(outcome.anchor)
+                    _pendingChoice.value = MonthChoice(outcome.previous, outcome.anchor)
+                }
+            }
+        }
+    }
+
+    /** 用户裁决了「这笔是哪个月的工资」。 */
+    fun chooseMonth(payrollMonth: YearMonth) {
+        _pendingChoice.value = null
+        moveTo(payrollMonth)
+    }
+
+    /** 关掉提问框：保持当前铺着的锚点月份（用户可自己翻页）。 */
+    fun dismissMonthChoice() { _pendingChoice.value = null }
+
     private fun moveTo(target: YearMonth) {
         _month.value = target
         load(target)
     }
+
+    private suspend fun refreshSlips() {
+        _slips.value = slipDao.allSlips()
+    }
+
+    private fun monthsWithSlip(): Set<YearMonth> =
+        _slips.value.mapNotNull { runCatching { YearMonth.parse(it.payrollMonth) }.getOrNull() }.toSet()
 
     private fun load(target: YearMonth) {
         val monthKey = target.toString()

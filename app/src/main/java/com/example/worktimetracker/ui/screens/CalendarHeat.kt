@@ -373,7 +373,8 @@ internal fun MonthSummaryCard(
     projection: MonthProjection?,
     paymentLabel: String,
     onOpenPayroll: () -> Unit,
-    onEditSalary: () -> Unit
+    onEditSalary: () -> Unit,
+    onOpenSlip: () -> Unit = {}
 ) {
     val headline = salaryCents ?: payroll?.netCents
     Card(
@@ -453,6 +454,12 @@ internal fun MonthSummaryCard(
                 TextButton(onClick = onOpenPayroll) { Text("工资明细") }
                 TextButton(onClick = onEditSalary) {
                     Text(if (salaryCents == null) "录入实发工资" else "修改实发工资")
+                }
+            }
+            // 分项工资条（另一套表 salary_slips）：按**这个月**当锚点进录入页
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                TextButton(onClick = onOpenSlip) {
+                    Text("工资条录入与核对（分项 · 双校验）›")
                 }
             }
         }

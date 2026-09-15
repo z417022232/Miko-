@@ -92,7 +92,9 @@ import com.example.worktimetracker.ui.theme.AppTheme
 fun CalendarScreen(
     vm: WorkTimeViewModel,
     onOpenMonthly: () -> Unit = {},
-    onOpenToday: () -> Unit = {}
+    onOpenToday: () -> Unit = {},
+    /** 从月卡进「工资条录入与核对」；参数是**当前日历所在月**（作为录入页的锚点） */
+    onOpenSlip: (YearMonth) -> Unit = {}
 ) {
     val month by vm.month.collectAsState()
     val records by vm.records.collectAsState()
@@ -259,7 +261,8 @@ fun CalendarScreen(
             projection = monthProjection,
             paymentLabel = paymentLabel,
             onOpenPayroll = { showPayroll = true },
-            onEditSalary = { showSalaryEditor = true }
+            onEditSalary = { showSalaryEditor = true },
+            onOpenSlip = { onOpenSlip(month) }
         )
         Spacer(Modifier.height(12.dp))
         SelectedDayCard(

@@ -15,6 +15,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -24,6 +25,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -32,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.worktimetracker.domain.payroll.MonthChoice
 import com.example.worktimetracker.domain.payroll.SlipItemKey
 import com.example.worktimetracker.domain.payroll.SlipItemNature
 import com.example.worktimetracker.domain.payroll.SlipItemStage
@@ -60,10 +63,26 @@ import java.time.YearMonth
 private val MONEY_INPUT = Regex("""\d{0,8}([.]\d{0,2})?""")
 
 @Composable
-internal fun SlipEntryPage(onBack: () -> Unit, vm: ForecastViewModel = viewModel()) {
+internal fun SlipEntryPage(
+    onBack: () -> Unit,
+    /**
+     * 进来时用户**所在的那个月**（`yyyy-MM`）；null = 自然月。
+     * 只作为锚点，真正打开哪个计薪月由 `ForecastViewModel.openAt` 判定。
+     */
+    initialMonth: String? = null,
+    vm: ForecastViewModel = viewModel(),
+) {
     val month by vm.month.collectAsState()
     val editor by vm.editor.collectAsState()
     val message by vm.message.collectAsState()
+    val choice by vm.pendingChoice.collectAsState()
+    val slips by vm.slips.collectAsState()
+
+    // 锚点判定：本月没条子且上月也空着 -> VM 挂起 pendingChoice，下面弹框问用户。
+    // 有明确答案（本月已有条 / 上月已录）时直接定月份，不打扰。
+    LaunchedEffect(initialMonth) {
+        vm.openAt(initialMonth?.let { runCatching { YearMonth.parse(it) }.getOrNull() })
+    }
 
     Column(
         Modifier
@@ -78,6 +97,25 @@ internal fun SlipEntryPage(onBack: () -> Unit, vm: ForecastViewModel = viewModel
         )
         Spacer(Modifier.height(8.dp))
         SlipMonthPager(month, vm::previousMonth, vm::nextMonth, vm::today)
+
+        // 上一个计薪月还空着 -> 提醒可补录（不阻塞，用户自己翻页即可）
+        val prevMonth = month.minusMonths(1)
+        if (slips.isNotEmpty() && slips.none { it.payrollMonth == prevMonth.toString() }) {
+            Text(
+                "上一个计薪月（${payrollMonthLabel(prevMonth)}）还没有工资条，可用「‹ 上一月」补录。",
+                style = MaterialTheme.typography.labelSmall,
+                color = AppTheme.colors.orange
+            )
+        }
+
+        // 有歧义：这笔算上月补录还是本月工资？用户答完才定
+        choice?.let {
+            MonthChoiceDialog(
+                choice = it,
+                onPick = vm::chooseMonth,
+                onDismiss = vm::dismissMonthChoice,
+            )
+        }
         Spacer(Modifier.height(8.dp))
 
         val state = editor
@@ -462,3 +500,54 @@ private fun natureLabel(nature: SlipItemNature): String = when (nature) {
     SlipItemNature.FLOATING -> "浮动"
     SlipItemNature.ONE_TIME -> "一次性"
 }
+
+// ---------------------------------------------------------------------------
+// 「这笔是哪个月的工资」提问框
+// ---------------------------------------------------------------------------
+
+/**
+ * 歧义裁决框。
+ *
+ * 场景：`monthly_salaries.month` = **发薪月** = 计薪月 + 1。站在 10 月的日历上点录入时，
+ * 刚发下来的「9 月工资」还没录、而当月也想录 —— 两个都对，所以必须问，不能替用户猜。
+ */
+@Composable
+private fun MonthChoiceDialog(
+    choice: MonthChoice,
+    onPick: (YearMonth) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("这笔工资是哪个月的？") },
+        text = {
+            Column {
+                Text(
+                    "${payrollMonthLabel(choice.anchor)}的日历上还没有工资条，" +
+                        "而${payrollMonthLabel(choice.previous)}也还空着，分不清这笔是补上月还是录当月。",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "计薪月是干活那个月，发薪月 = 计薪月 + 1：" +
+                        "${payrollMonthLabel(choice.previous)}的工资在 " +
+                        "${payrollMonthLabel(choice.previous.plusMonths(1))} 发。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.muted
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onPick(choice.previous) }) {
+                Text("${payrollMonthLabel(choice.previous)}（补录）")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onPick(choice.anchor) }) {
+                Text("${payrollMonthLabel(choice.anchor)}")
+            }
+        }
+    )
+}
+
+private fun payrollMonthLabel(month: YearMonth): String = "${month.year} 年 ${month.monthValue} 月"
