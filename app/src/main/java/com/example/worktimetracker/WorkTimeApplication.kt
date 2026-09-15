@@ -9,6 +9,7 @@ import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.GeofenceRecovery
 import com.example.worktimetracker.data.HistoricalRecordRepair
+import com.example.worktimetracker.data.SalarySlipDraftRepair
 import com.example.worktimetracker.domain.payroll.PayRateSeed
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +23,9 @@ class WorkTimeApplication : Application() {
         ServiceRecovery.schedule(this)
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             HistoricalRecordRepair.runOnce(this@WorkTimeApplication)
+            // 工资条历史草稿的**分项**（DB v13）：表头由迁移灌，分项留在 Kotlin
+            // （SlipDraftSeeder）保证与 PayRateSeed 同源，所以在这里补灌一次。
+            SalarySlipDraftRepair.runOnce(this@WorkTimeApplication)
             database.userSettingsDao().getSettings()?.let { GeofenceRecovery.register(this@WorkTimeApplication, it) }
         }
     }
@@ -37,7 +41,7 @@ class WorkTimeApplication : Application() {
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                 MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
-                MIGRATION_11_12
+                MIGRATION_11_12, MIGRATION_12_13
             )
             .build()
     }
@@ -185,6 +189,72 @@ class WorkTimeApplication : Application() {
                     stmt.bindLong(5, now)
                     stmt.executeInsert()
                 }
+            }
+        }
+
+        /**
+         * 「计薪月 → 条上应发（分）」历史草稿种子。
+         *
+         * 来源：`verification/计薪规则v2-工资条口径.md` §4 对账表的「实际应发」列，**原样收录、不做修正**
+         * （06 月那 9411.86 就是条上印的值，与各部件加总差 360，正是要靠校验①暴露出来的东西）。
+         * 2025-12 与 2026-08 两个月口径文档里没有应发数据 → 保持未填写（null），由用户照条补。
+         */
+        private val SLIP_GROSS_SEED = listOf(
+            "2026-01" to 840_051L,    // 8400.51
+            "2026-02" to 758_703L,    // 7587.03
+            "2026-03" to 1_084_172L,  // 10841.72
+            "2026-04" to 940_862L,    // 9408.62
+            "2026-05" to 880_955L,    // 8809.55
+            "2026-06" to 941_186L,    // 9411.86（条上值；少打一项 360，保留原数字）
+            "2026-07" to 871_183L,    // 8711.83
+        )
+
+        /**
+         * DB v13「计薪预测与发薪对账」第一步：工资条两张表 + 历史草稿表头。
+         *
+         * **只建新表**，`monthly_salaries` / `work_records` / `manual_override` /
+         * `pay_rate_segments` / `monthly_pay_params` 一律不碰。
+         *
+         * 历史分项（基本工资、加班工资…那些能由分段常量推出的项）**不在这里写 SQL**，
+         * 而是由 `SlipDraftSeeder` 在 Kotlin 侧生成 —— 保证 `PayRateSeed` 改了草稿跟着改，只有一处真相。
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `salary_slips` (" +
+                        "`payrollMonth` TEXT NOT NULL, `paymentDate` TEXT NOT NULL, " +
+                        "`status` TEXT NOT NULL, `slipAttendDays` INTEGER, `slipNightShifts` INTEGER, " +
+                        "`declaredGrossCents` INTEGER, `declaredNetCents` INTEGER, `confirmedAt` INTEGER, " +
+                        "`revision` INTEGER NOT NULL, `note` TEXT, " +
+                        "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`payrollMonth`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `salary_slip_items` (" +
+                        "`payrollMonth` TEXT NOT NULL, `itemKey` TEXT NOT NULL, `rawLabel` TEXT, " +
+                        "`amountCents` INTEGER, `stage` TEXT NOT NULL, `nature` TEXT NOT NULL, " +
+                        "`rawText` TEXT, `needsReview` INTEGER NOT NULL, `note` TEXT, " +
+                        "`updatedAt` INTEGER NOT NULL, PRIMARY KEY(`payrollMonth`, `itemKey`))"
+                )
+
+                // 历史草稿表头：直接从 monthly_salaries 复制（**只读源，不修改那张表**）
+                db.execSQL(
+                    "INSERT OR IGNORE INTO salary_slips " +
+                        "(payrollMonth, paymentDate, status, declaredNetCents, revision, createdAt, updatedAt) " +
+                        "SELECT payrollMonth, paymentDate, 'DRAFT', netSalaryCents, 1, updatedAt, updatedAt " +
+                        "FROM monthly_salaries WHERE payrollMonth <> ''"
+                )
+                for ((payrollMonth, grossCents) in SLIP_GROSS_SEED) {
+                    db.execSQL(
+                        "UPDATE salary_slips SET declaredGrossCents = " + grossCents +
+                            " WHERE payrollMonth = '" + payrollMonth + "'"
+                    )
+                }
+                // 已知有疑点的计薪月 → 待核对（06 月夜班津贴、07 月工龄+病假、08 月工龄）
+                db.execSQL(
+                    "UPDATE salary_slips SET status = 'PENDING_REVIEW' " +
+                        "WHERE payrollMonth IN ('2026-06', '2026-07', '2026-08')"
+                )
             }
         }
         val MIGRATION_10_11 = object : Migration(10, 11) {

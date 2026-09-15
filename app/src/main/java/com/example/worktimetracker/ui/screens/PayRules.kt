@@ -70,7 +70,11 @@ import java.time.YearMonth
 // ---------------------------------------------------------------------------
 
 @Composable
-internal fun PayRulesPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
+internal fun PayRulesPage(
+    vm: WorkTimeViewModel,
+    onBack: () -> Unit,
+    onOpenSlip: () -> Unit = {},
+) {
     val settings by vm.settings.collectAsState()
     val month by vm.month.collectAsState()
     val segments by vm.payRateSegments.collectAsState()
@@ -105,6 +109,13 @@ internal fun PayRulesPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         Spacer(Modifier.height(4.dp))
 
         SettingsGroup {
+            SettingsRow(
+                Icons.Outlined.Receipt,
+                "工资条录入与核对",
+                "分项照条录入 · 应发/实发分开校验 · 保留原始数字不自动修正",
+                tint = AppTheme.colors.blue
+            ) { onOpenSlip() }
+            ThinDivider()
             SettingsRow(
                 Icons.Outlined.WorkHistory,
                 "本月计薪参数",

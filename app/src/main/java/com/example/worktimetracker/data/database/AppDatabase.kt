@@ -9,6 +9,7 @@ import com.example.worktimetracker.data.dao.LocationLogDao
 import com.example.worktimetracker.data.dao.ManualOverrideDao
 import com.example.worktimetracker.data.dao.MonthlySalaryDao
 import com.example.worktimetracker.data.dao.PayrollDao
+import com.example.worktimetracker.data.dao.SalarySlipDao
 import com.example.worktimetracker.data.dao.SiteDao
 import com.example.worktimetracker.data.dao.UserSettingsDao
 import com.example.worktimetracker.data.dao.WorkRecordDao
@@ -24,6 +25,8 @@ import com.example.worktimetracker.data.entity.ManualOverrideEntity
 import com.example.worktimetracker.data.entity.MonthlySalaryEntity
 import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
 import com.example.worktimetracker.data.entity.PayRateSegmentEntity
+import com.example.worktimetracker.data.entity.SalarySlipEntity
+import com.example.worktimetracker.data.entity.SalarySlipItemEntity
 import com.example.worktimetracker.data.entity.SiteEntity
 import com.example.worktimetracker.data.entity.SiteEvidenceSourceEntity
 import com.example.worktimetracker.data.entity.UserSettingsEntity
@@ -48,9 +51,11 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         SiteEntity::class,
         SiteEvidenceSourceEntity::class,
         PayRateSegmentEntity::class,
-        MonthlyPayParamsEntity::class
+        MonthlyPayParamsEntity::class,
+        SalarySlipEntity::class,
+        SalarySlipItemEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -66,4 +71,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun environmentEvidenceDao(): EnvironmentEvidenceDao
     abstract fun siteDao(): SiteDao
     abstract fun payrollDao(): PayrollDao
+    abstract fun salarySlipDao(): SalarySlipDao
 }

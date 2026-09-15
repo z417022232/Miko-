@@ -103,7 +103,9 @@ private enum class SettingsPage {
     /** v4 界面稿新增：计薪规则 / 常规采集间隔 / Burst 上限 */
     PAY_RULES, INTERVAL, BURST,
     /** v4.3 界面稿 09/10/11：多地点管理（LOCATION 保留为校准兜底入口） */
-    SITES
+    SITES,
+    /** v6 第一步（DB v13）：工资条录入与核对（独立 ForecastViewModel） */
+    SLIP_ENTRY
 }
 private enum class LocationTarget { COMPANY, HOME }
 
@@ -128,7 +130,12 @@ fun SettingsScreen(
         SettingsPage.DATA -> DataSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.LOGS -> LogsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.HOLIDAY -> HolidayDataPage(vm, onBack = { page = SettingsPage.ROOT })
-        SettingsPage.PAY_RULES -> PayRulesPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.PAY_RULES -> PayRulesPage(
+            vm,
+            onBack = { page = SettingsPage.ROOT },
+            onOpenSlip = { page = SettingsPage.SLIP_ENTRY }
+        )
+        SettingsPage.SLIP_ENTRY -> SlipEntryPage(onBack = { page = SettingsPage.ROOT })
         SettingsPage.INTERVAL -> SamplingIntervalPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.BURST -> BurstCapPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.THEME -> ThemeSettingsPage(
