@@ -31,6 +31,7 @@ import com.example.worktimetracker.domain.payroll.PayrollInputs
 import com.example.worktimetracker.data.entity.PayRateSegmentEntity
 import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
 import com.example.worktimetracker.ui.PayrollPresenter
+import com.example.worktimetracker.ui.YearStatsPresenter
 import com.example.worktimetracker.domain.engine.ManualRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewRecordEditor
 import com.example.worktimetracker.domain.engine.ReviewAcknowledger
@@ -1226,6 +1227,41 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     fun dailyPayCents(minutes: Int): Long? {
         val baseline = _payBaseline.value ?: return null
         return PayrollEngine.dailyEstimateCents(minutes, baseline.netCents, baseline.minutes)
+    }
+
+    // ---------------------------------------------------------------------
+    // 年度统计（「今日」Tab = XX 年数据统计）
+    // ---------------------------------------------------------------------
+
+    /**
+     * 年度统计：每月工时 / 每月实发 / 年休息日口径。
+     *
+     * 纯读、不落库（推算与统计都不回写）。跟着「今日」页的 30 秒心跳一起刷新：
+     * 查一年记录 = 一个 BETWEEN，本地库几百行，代价可以忽略；不刷新反而会出现
+     * 「刚补录完今天，切到年统计还是旧数」这种自相矛盾。
+     */
+    private val _yearStats = MutableStateFlow<YearStatsPresenter.YearStats?>(null)
+    val yearStats: StateFlow<YearStatsPresenter.YearStats?> = _yearStats
+
+    fun refreshYearStats(year: Int = _workday.value.year) {
+        viewModelScope.launch {
+            val rows = runCatching { db.workRecordDao().getMonthRecords("$year-01-01", "$year-12-31") }
+                .getOrDefault(emptyList())
+            val salaries = runCatching { db.monthlySalaryDao().all() }.getOrDefault(emptyList())
+            // 休息日口径的兜底日均：没有任何记录时才用设置里的默认工时
+            val fallback = _settings.value.defaultWorkMinutes
+                ?: YearStatsPresenter.WEEKEND_SCOPE_THRESHOLD_MINUTES
+            val today = _workday.value
+            _yearStats.value = withContext(Dispatchers.Default) {
+                YearStatsPresenter.build(
+                    year = year,
+                    records = rows,
+                    salaries = salaries,
+                    today = today,
+                    fallbackDailyMinutes = fallback
+                )
+            }
+        }
     }
 
     /** 重新读入分段常量与月度参数，再重算当月推算 + 日工资基准。 */
