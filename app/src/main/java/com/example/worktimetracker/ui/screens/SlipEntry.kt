@@ -524,14 +524,14 @@ private fun MonthChoiceDialog(
             Column {
                 Text(
                     "${payrollMonthLabel(choice.anchor)}的日历上还没有工资条，" +
-                        "而${payrollMonthLabel(choice.previous)}也还空着，分不清这笔是补上月还是录当月。",
+                        "而 ${payrollMonthLabel(choice.previous)}也还空着，分不清这笔是补上月还是录当月。",
                     style = MaterialTheme.typography.bodySmall
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "计薪月是干活那个月，发薪月 = 计薪月 + 1：" +
                         "${payrollMonthLabel(choice.previous)}的工资在 " +
-                        "${payrollMonthLabel(choice.previous.plusMonths(1))} 发。",
+                        "${payrollMonthLabel(choice.previous.plusMonths(1))}发放。",
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.muted
                 )
