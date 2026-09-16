@@ -81,6 +81,9 @@ import java.time.YearMonth
 
 private val MONEY_INPUT = Regex("""\d{0,8}([.]\d{0,2})?""")
 
+/** 一次最多选几张工资条截图。用户的条子是长图分两次截的（上半 + 下半），所以必须 > 1。 */
+private const val MAX_SLIP_PHOTOS = 4
+
 @Composable
 internal fun SlipEntryPage(
     onBack: () -> Unit,
@@ -108,20 +111,42 @@ internal fun SlipEntryPage(
     var ocrBusy by remember { mutableStateOf(false) }
     var ocrError by remember { mutableStateOf<String?>(null) }
     var pendingPhoto by remember { mutableStateOf<Uri?>(null) }
+    var ocrTotal by remember { mutableStateOf(0) }
+    // 上次识别到的原始文本行：识别不准时用户能自己看到"到底读出了什么"，
+    // 也是"是没读出来，还是读出来了没解析对"的唯一现场证据。
+    var ocrLines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var ocrRawOpen by remember { mutableStateOf(false) }
 
-    val recognize: (Uri) -> Unit = { uri ->
-        ocrBusy = true
-        ocrError = null
-        scope.launch {
-            try {
-                val lines = withContext(Dispatchers.IO) {
-                    SlipPhotoRecognizer.recognizeLines(context, uri)
+    /**
+     * 识别一批图，文本行按选择顺序拼接后**一次性**解析。
+     *
+     * ⚠️ **必须支持多张**：这张工资条是长图分两次截的（上半 + 下半），
+     * 只让选一张等于逼用户录两遍 —— 而且两次 `applyOcr` 会按 key 互相覆盖，
+     * 后一次的低质量结果能把前一次已经填对的项顶掉。
+     * 拼成一次 parse，则"同一分项只取首次命中"的规则在同一个 parse 内生效。
+     */
+    val recognizeAll: (List<Uri>) -> Unit = { uris ->
+        if (uris.isNotEmpty()) {
+            ocrBusy = true
+            ocrError = null
+            ocrTotal = uris.size
+            scope.launch {
+                try {
+                    val images = withContext(Dispatchers.IO) {
+                        uris.map { SlipPhotoRecognizer.recognize(context, it) }
+                    }
+                    // 面板展示**原始行 + 纵坐标**：识别不准时，这是"到底读出了什么、
+                    // 读在哪一行"的唯一现场证据（vivo 会把 logcat 的 D/W 级日志整个过滤掉）
+                    ocrLines = images.flatten().map { "y=${it.top}  ${it.text}" }
+                    val parsed = SlipOcrParser.parseRecognized(images)
+                    android.util.Log.w(SlipPhotoRecognizer.TAG, "picked ${uris.size} 张 -> ${parsed.summary}")
+                    vm.applyOcr(parsed)
+                } catch (e: Exception) {
+                    ocrError = "识别失败：" + (e.message ?: "无法读取这张图")
+                } finally {
+                    ocrBusy = false
+                    ocrTotal = 0
                 }
-                vm.applyOcr(SlipOcrParser.parse(lines))
-            } catch (e: Exception) {
-                ocrError = "识别失败：" + (e.message ?: "无法读取这张图")
-            } finally {
-                ocrBusy = false
             }
         }
     }
@@ -130,11 +155,11 @@ internal fun SlipEntryPage(
         ActivityResultContracts.TakePicture()
     ) { ok ->
         val uri = pendingPhoto
-        if (ok && uri != null) recognize(uri)
+        if (ok && uri != null) recognizeAll(listOf(uri))
     }
     val pickPhoto = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri -> if (uri != null) recognize(uri) }
+        ActivityResultContracts.PickMultipleVisualMedia(MAX_SLIP_PHOTOS)
+    ) { uris -> recognizeAll(uris) }
 
     // 锚点判定：本月没条子且上月也空着 -> VM 挂起 pendingChoice，下面弹框问用户。
     // 有明确答案（本月已有条 / 上月已录）时直接定月份，不打扰。
@@ -162,8 +187,13 @@ internal fun SlipEntryPage(
             Column(Modifier.padding(14.dp)) {
                 Text("拍照识别", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "对着工资条拍一张，或从相册选一张，自动填进下面的表头与分项。" +
+                    "对着工资条拍一张，或从相册选图，自动填进下面的表头与分项。" +
                         "只覆盖识别到的字段，没认出来的保持原样。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.muted
+                )
+                Text(
+                    "工资条太长、分几张截的？在相册里一次勾选多张即可（最多 $MAX_SLIP_PHOTOS 张）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.muted
                 )
@@ -198,16 +228,41 @@ internal fun SlipEntryPage(
                     ) {
                         Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.size(6.dp))
-                        Text("从相册选")
+                        Text("从相册选(可多张)")
                     }
                 }
                 if (ocrBusy) {
                     Spacer(Modifier.height(8.dp))
-                    Text("正在识别…", style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.muted)
+                    Text(
+                        if (ocrTotal > 1) "正在识别 $ocrTotal 张…" else "正在识别…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AppTheme.colors.muted
+                    )
                 }
                 ocrError?.let {
                     Spacer(Modifier.height(8.dp))
                     Text(it, style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.orange)
+                }
+                if (ocrLines.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "识别到 ${ocrLines.size} 行原文",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AppTheme.colors.muted,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { ocrRawOpen = !ocrRawOpen }) {
+                            Text(if (ocrRawOpen) "收起" else "查看识别原文")
+                        }
+                    }
+                    if (ocrRawOpen) {
+                        Text(
+                            ocrLines.joinToString("\n"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AppTheme.colors.muted
+                        )
+                    }
                 }
             }
         }

@@ -72,6 +72,12 @@ enum class SlipItemKey(
     SENIOR_ALLOWANCE("SENIOR_ALLOWANCE", "工龄工资", SlipItemStage.INCOME, SlipItemNature.FIXED),
     FULL_ATTENDANCE("FULL_ATTENDANCE", "全勤奖", SlipItemStage.INCOME, SlipItemNature.FIXED),
     OVERTIME_PAY("OVERTIME_PAY", "加班工资", SlipItemStage.INCOME, SlipItemNature.FIXED),
+
+    /**
+     * 法定节假日加班工资 —— 与 [OVERTIME_PAY] 是工资条上的**两栏**（2026-08 条：962.07 / 0）。
+     * 是否发生取决于当月有没有节假日出勤，所以按 FLOATING 参与学习（历史多为 0，中位数自会收敛到 0）。
+     */
+    HOLIDAY_OVERTIME_PAY("HOLIDAY_OVERTIME_PAY", "假期加班工资", SlipItemStage.INCOME, SlipItemNature.FLOATING),
     NIGHT_ALLOWANCE("NIGHT_ALLOWANCE", "夜班津贴", SlipItemStage.INCOME, SlipItemNature.FLOATING),
     BENEFIT_BONUS("BENEFIT_BONUS", "效益奖金", SlipItemStage.INCOME, SlipItemNature.FLOATING),
     HEAT_ALLOWANCE("HEAT_ALLOWANCE", "高温补贴", SlipItemStage.INCOME, SlipItemNature.FLOATING),
