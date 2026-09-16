@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
+import com.example.worktimetracker.domain.evidence.FusedStatusFormatter
 import com.example.worktimetracker.domain.evidence.SourceStatus
 import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import java.util.Locale
@@ -457,12 +459,65 @@ fun evidenceSourceStatusText(status: SourceStatus): String = when (status) {
 }
 
 /**
+ * 可信度可视化：一个档位词 + 一条按比例填充的横条 + 百分比小字。
+ *
+ * 光给「80%」用户无法判断该不该信（到底算高还是低？），所以档位词在前、
+ * 横条给出直观比例、百分比退为补充信息。
+ */
+@Composable
+fun ConfidenceMeter(
+    level: FusedStatusFormatter.ConfidenceLevel,
+    fraction: Float,
+    percentText: String?,
+    modifier: Modifier = Modifier,
+) {
+    val tint = when (level) {
+        FusedStatusFormatter.ConfidenceLevel.HIGH -> AppTheme.colors.green
+        FusedStatusFormatter.ConfidenceLevel.MEDIUM -> AppTheme.colors.blue
+        FusedStatusFormatter.ConfidenceLevel.LOW -> AppTheme.colors.orange
+        FusedStatusFormatter.ConfidenceLevel.NONE -> AppTheme.colors.muted
+    }
+    val safe = fraction.coerceIn(0f, 1f)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Text("可信度", style = MaterialTheme.typography.labelMedium, color = AppTheme.colors.muted)
+        Spacer(Modifier.width(8.dp))
+        Box(
+            Modifier
+                .width(96.dp)
+                .height(6.dp)
+                .clip(CircleShape)
+                .background(AppTheme.colors.muted.copy(alpha = 0.18f))
+        ) {
+            if (safe > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(safe)
+                        .height(6.dp)
+                        .clip(CircleShape)
+                        .background(tint)
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Text(
+            if (percentText == null) level.label else "${level.label} · $percentText",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = tint
+        )
+    }
+}
+
+/**
  * 四个来源的状态徽标行。
  *
- * 点任意一个图标都会**整体重取一次**（用户口径：「点击图标后更新一次 GPS/WIFI/蓝牙/基站的状态」），
- * 所以这里不按来源分别刷新 —— 四类证据本来就是一次环境采样里一起拿到的。
+ * **图标是纯状态展示，不可点**（用户 2026-09-16 口径）：四个图标长得像四个按钮，
+ * 点上任何一个又都只触发同一次整体取样，用户会误以为「点哪个只刷哪个」。现在把刷新
+ * 收敛成右侧唯一的动作「立即刷新状态」，一次把 GPS / Wi-Fi / 蓝牙 / 基站全部重取
+ * —— 四类证据本来就是同一次环境采样里一起拿到的。
  *
- * @param refreshing 正在等新取样：图标降为半透明并禁止重复点击
+ * @param refreshing 正在等新取样：整行降透明度并禁用重复点击
+ * @param trailingHint 右侧动作文案，默认「立即刷新状态」
  */
 @Composable
 fun EvidenceSourceRow(
@@ -475,19 +530,17 @@ fun EvidenceSourceRow(
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         EvidenceSourceKind.entries.forEach { kind ->
             val status = health[kind] ?: SourceStatus.UNKNOWN
-            EvidenceSourceBadge(kind, status, refreshing, onRefresh)
+            EvidenceSourceBadge(kind, status, refreshing)
             Spacer(Modifier.size(14.dp))
         }
         Spacer(Modifier.weight(1f))
-        Text(
-            when {
-                refreshing -> "刷新中…"
-                trailingHint != null -> trailingHint
-                else -> "点图标刷新"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = AppTheme.colors.muted
-        )
+        TextButton(onClick = onRefresh, enabled = !refreshing) {
+            Text(
+                if (refreshing) "刷新中…" else (trailingHint ?: "立即刷新状态"),
+                style = MaterialTheme.typography.bodySmall,
+                color = AppTheme.colors.blue
+            )
+        }
     }
 }
 
@@ -496,7 +549,6 @@ private fun EvidenceSourceBadge(
     kind: EvidenceSourceKind,
     status: SourceStatus,
     refreshing: Boolean,
-    onRefresh: () -> Unit,
 ) {
     val tint = evidenceSourceTint(status)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -504,8 +556,7 @@ private fun EvidenceSourceBadge(
             Modifier
                 .size(40.dp)
                 .clip(MaterialTheme.shapes.medium)
-                .background(tint.copy(alpha = if (refreshing) 0.30f else 1f))
-                .clickable(enabled = !refreshing) { onRefresh() },
+                .background(tint.copy(alpha = if (refreshing) 0.30f else 1f)),
             contentAlignment = Alignment.Center
         ) {
             Icon(

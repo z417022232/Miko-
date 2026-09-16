@@ -26,8 +26,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
+import androidx.compose.material.icons.outlined.Business
+import androidx.compose.material.icons.outlined.DirectionsWalk
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Event
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.LocationSearching
 import androidx.compose.material.icons.outlined.Today
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -59,6 +63,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -71,7 +76,10 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
 import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
+import com.example.worktimetracker.domain.evidence.FusedDecision
 import com.example.worktimetracker.domain.evidence.FusedStatusFormatter
+import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
+import com.example.worktimetracker.domain.evidence.ResolvedPlace
 import com.example.worktimetracker.domain.evidence.SourceStatus
 import com.example.worktimetracker.ui.CalendarHeatPresenter
 import com.example.worktimetracker.ui.MonthSummary
@@ -176,8 +184,13 @@ fun CalendarScreen(
         TodayLiveInfo(
             liveMinutes = live,
             headline = TodayStatusPresenter.headline(todayRecord),
-            placeLabel = fused?.place?.let { FusedStatusFormatter.placeLabel(it) } ?: "位置暂不确定",
-            confidence = fused?.let { FusedStatusFormatter.confidenceLabel(it) },
+            placeSentence = FusedStatusFormatter.placeSentence(fused),
+            place = fused?.place,
+            decision = fused?.decision,
+            basis = FusedStatusFormatter.basisLabel(fused),
+            confidenceLevel = FusedStatusFormatter.confidenceLevel(fused),
+            confidenceFraction = (fused?.confidence?.toFloat() ?: 0f).coerceIn(0f, 1f),
+            confidencePercent = fused?.let { FusedStatusFormatter.confidenceLabel(it) },
             health = sourceHealth,
             refreshing = evidenceRefresh.running,
             refreshMessage = evidenceRefresh.message
@@ -477,17 +490,42 @@ private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
 /**
  * 选中日的实时信息（只有「选中的就是今天」时才构造，其余时候为 null）。
  *
- * 全部来自内存态：融合快照（地点 / 置信度）+ 四源健康 + 实时计入分钟。**不落库**。
+ * 全部来自内存态：融合快照（地点 / 依据 / 可信度）+ 四源健康 + 实时计入分钟。**不落库**。
+ *
+ * 位置这块按用户 2026-09-16 口径改成「一眼看懂」三段式：主句（[placeSentence]）
+ * + 判断依据（[basis]）+ 可视化可信度（[confidenceLevel] / [confidenceFraction]），
+ * 不再直译成「位置：家 · 置信度 80%」这种看不出所以然的写法。
  */
 private data class TodayLiveInfo(
     val liveMinutes: TodayStatusPresenter.TodayMinutes,
     val headline: TodayStatusPresenter.Headline,
-    val placeLabel: String,
-    val confidence: String?,
+    val placeSentence: String,
+    val place: ResolvedPlace?,
+    val decision: FusedDecision?,
+    val basis: String?,
+    val confidenceLevel: FusedStatusFormatter.ConfidenceLevel,
+    val confidenceFraction: Float,
+    val confidencePercent: String?,
     val health: Map<EvidenceSourceKind, SourceStatus>,
     val refreshing: Boolean,
     val refreshMessage: String?
 )
+
+/** 地点 → 图标（UI 层唯一映射点，与四源图标一个思路）。 */
+private fun placeIcon(place: ResolvedPlace?): ImageVector = when (place) {
+    ResolvedPlace.HOME -> Icons.Outlined.Home
+    ResolvedPlace.COMPANY -> Icons.Outlined.Business
+    ResolvedPlace.MOVING -> Icons.Outlined.DirectionsWalk
+    else -> Icons.Outlined.LocationSearching
+}
+
+/** 决策档位 → 图标色：已确认=蓝、只能维持=橙、不确定=灰。 */
+@Composable
+private fun placeTint(decision: FusedDecision?): Color = when (decision) {
+    FusedDecision.CONFIRMED -> AppTheme.colors.blue
+    FusedDecision.MAINTAINED -> AppTheme.colors.orange
+    else -> AppTheme.colors.muted
+}
 
 /**
  * 「当日记录」卡。
@@ -625,13 +663,39 @@ private fun LiveStatusBlock(
                 color = AppTheme.colors.muted
             )
         }
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "位置：${live.placeLabel} · 置信度 ${live.confidence ?: "--"}",
-            style = MaterialTheme.typography.labelMedium,
-            color = AppTheme.colors.muted
-        )
         Spacer(Modifier.height(10.dp))
+        // 位置主句：图标 + 一句结论（现在在家 / 现在在公司 / 位置暂时判断不出来）
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                placeIcon(live.place),
+                contentDescription = null,
+                tint = placeTint(live.decision),
+                modifier = Modifier.size(19.dp)
+            )
+            Text(
+                live.placeSentence,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        if (live.basis != null) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "判断依据：${live.basis}",
+                style = MaterialTheme.typography.labelSmall,
+                color = AppTheme.colors.muted
+            )
+        }
+        Spacer(Modifier.height(9.dp))
+        ConfidenceMeter(
+            level = live.confidenceLevel,
+            fraction = live.confidenceFraction,
+            percentText = live.confidencePercent
+        )
+        Spacer(Modifier.height(12.dp))
         EvidenceSourceRow(
             health = live.health,
             refreshing = live.refreshing,

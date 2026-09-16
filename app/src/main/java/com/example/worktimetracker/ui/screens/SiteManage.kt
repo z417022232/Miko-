@@ -168,21 +168,19 @@ private fun SiteListPage(
                         Text("最近一次定位", fontWeight = FontWeight.SemiBold)
                         Text(lastLocationText, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
                     }
-                    TextButton(
-                        onClick = {
-                            // 真正的「重取一次」：拉起前台服务做一次性定位 + 环境扫描，
-                            // 而不是重读库里那行旧坐标（旧实现因此看起来「点了没反应」）
-                            vm.refreshEvidenceNow()
-                            vm.loadCurrentLocation { lat, lng -> if (lat != null && lng != null) here = lat to lng }
-                        },
-                        enabled = !refresh.running
-                    ) { Text(if (refresh.running) "刷新中…" else "刷新") }
                 }
                 Spacer(Modifier.height(10.dp))
+                // 刷新入口唯一：整行右侧的「立即刷新状态」一次重取四源 + 最近定位，
+                // 不再在标题行重复放一个「刷新」（两处同义按钮只会让人犹豫点哪个）。
                 EvidenceSourceRow(
                     health = health,
                     refreshing = refresh.running,
-                    onRefresh = { vm.refreshEvidenceNow() }
+                    onRefresh = {
+                        // 真正的「重取一次」：拉起前台服务做一次性定位 + 环境扫描，
+                        // 而不是重读库里那行旧坐标（旧实现因此看起来「点了没反应」）
+                        vm.refreshEvidenceNow()
+                        vm.loadCurrentLocation { lat, lng -> if (lat != null && lng != null) here = lat to lng }
+                    }
                 )
             }
         }

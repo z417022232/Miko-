@@ -63,6 +63,71 @@ object FusedStatusFormatter {
         return "${(snapshot.confidence * 100).toInt().coerceIn(0, 100)}%"
     }
 
+    /**
+     * 位置主句：一眼看懂「现在人在哪」。
+     *
+     * 为什么不用「位置：家」：那是把内部字段直译给用户看。用户要的是结论 ——
+     * 「现在在家 / 现在在公司 / 位置暂时判断不出来」，而且 UNKNOWN 时**绝不指认地点**
+     * （说"位置：暂不确定"等于没说，还不如直接讲清楚是判断不出来）。
+     */
+    fun placeSentence(snapshot: FusedStatusSnapshot?): String {
+        if (snapshot == null) return "还没有位置判断"
+        if (snapshot.decision == FusedDecision.UNKNOWN) return "位置暂时判断不出来"
+        return when (snapshot.place) {
+            ResolvedPlace.HOME -> "现在在家"
+            ResolvedPlace.COMPANY -> "现在在公司"
+            ResolvedPlace.MOVING -> "正在路上"
+            ResolvedPlace.UNKNOWN -> "位置暂时判断不出来"
+            ResolvedPlace.OTHER -> "在别的地方"
+        }
+    }
+
+    /**
+     * 置信度的**人话档位**。光一个「80%」用户没法判断该不该信，配一个词才直观。
+     *
+     * 分档线直接**复用融合引擎自己的门槛**，不另立魔数：
+     * - `CONFIRMED` 且 ≥ [EvidenceFusionEngine.GNSS_RELIABLE_QUALITY] → 高
+     *   （这就是引擎认定"可靠、可以改变工时状态"的那条线，UI 不能比它更保守）；
+     * - `CONFIRMED` 且 ≥ 0.70 → 中（环境证据刚好越过 1.40 双源门槛，
+     *   confidence = 质量和/来源类数，两源各 0.70 时正好是 0.70）；
+     * - `MAINTAINED` 最高只能给「中」——单源弱证据只能维持上一判断，**不允许**显示成高可信；
+     * - `UNKNOWN` / 置信度为 0 → 无（配合主句「位置暂时判断不出来」）。
+     */
+    enum class ConfidenceLevel(val label: String) {
+        HIGH("高"),
+        MEDIUM("中"),
+        LOW("低"),
+        NONE("—")
+    }
+
+    /** 判「中」的下限：环境证据双源门槛 1.40 摊到两类的值。 */
+    private const val AMBIENT_MEDIUM_FLOOR = 0.70
+
+    fun confidenceLevel(snapshot: FusedStatusSnapshot?): ConfidenceLevel {
+        if (snapshot == null) return ConfidenceLevel.NONE
+        if (snapshot.decision == FusedDecision.UNKNOWN || snapshot.confidence <= 0.0) {
+            return ConfidenceLevel.NONE
+        }
+        val raw = when {
+            snapshot.confidence >= EvidenceFusionEngine.GNSS_RELIABLE_QUALITY -> ConfidenceLevel.HIGH
+            snapshot.confidence >= AMBIENT_MEDIUM_FLOOR -> ConfidenceLevel.MEDIUM
+            else -> ConfidenceLevel.LOW
+        }
+        // 弱证据只能维持，不给「高」
+        return if (snapshot.decision == FusedDecision.MAINTAINED && raw == ConfidenceLevel.HIGH) {
+            ConfidenceLevel.MEDIUM
+        } else {
+            raw
+        }
+    }
+
+    /**
+     * 判断依据：为什么这么判。直接复用 [reasonLabel]，保证与融合详情页同一套人话。
+     * 无快照时返回 null（页面显示「还没有位置判断」即可）。
+     */
+    fun basisLabel(snapshot: FusedStatusSnapshot?): String? =
+        snapshot?.let { reasonLabel(it.reason) }
+
     /** 来源列表文案：GPS、网络定位、Wi-Fi、蓝牙、基站；为空返回 null。 */
     fun sourcesLabel(snapshot: FusedStatusSnapshot): String? {
         if (snapshot.sources.isEmpty()) return null

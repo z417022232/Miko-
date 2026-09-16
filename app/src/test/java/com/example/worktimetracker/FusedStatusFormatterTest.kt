@@ -78,4 +78,77 @@ class FusedStatusFormatterTest {
         assertNull(FusedStatusFormatter.confidenceLabel(s))
         assertFalse(FusedStatusFormatter.headline(s).contains("家"))
     }
+
+    // -------------------------------------------- 位置主句（一眼看懂「现在在哪」）
+
+    @Test fun placeSentenceSaysWhatUserWantsToKnow() {
+        assertEquals("现在在家", FusedStatusFormatter.placeSentence(
+            snapshot(ResolvedPlace.HOME, FusedDecision.CONFIRMED, "CONFIRMED_AMBIENT", 0.8)))
+        assertEquals("现在在公司", FusedStatusFormatter.placeSentence(
+            snapshot(ResolvedPlace.COMPANY, FusedDecision.CONFIRMED, "CONFIRMED_GNSS", 0.9)))
+        assertEquals("正在路上", FusedStatusFormatter.placeSentence(
+            snapshot(ResolvedPlace.MOVING, FusedDecision.CONFIRMED, "CONFIRMED_GNSS", 0.9)))
+        assertEquals("在别的地方", FusedStatusFormatter.placeSentence(
+            snapshot(ResolvedPlace.OTHER, FusedDecision.CONFIRMED, "CONFIRMED_GNSS", 0.9)))
+        assertEquals("位置暂时判断不出来", FusedStatusFormatter.placeSentence(
+            snapshot(ResolvedPlace.UNKNOWN, FusedDecision.UNKNOWN, "UNKNOWN_NO_DATA")))
+        assertEquals("还没有位置判断", FusedStatusFormatter.placeSentence(null))
+    }
+
+    @Test fun unknownDecisionNeverNamesAPlace() {
+        // 哪怕 place 字段残留了 HOME，只要决策是 UNKNOWN 就不能说「在家」
+        val s = snapshot(ResolvedPlace.HOME, FusedDecision.UNKNOWN, "UNKNOWN_CONFLICT")
+        assertEquals("位置暂时判断不出来", FusedStatusFormatter.placeSentence(s))
+    }
+
+    // -------------------------------------------- 可信度档位（贴引擎真实门槛）
+
+    @Test fun confirmedConfidenceTiers() {
+        fun level(c: Double) = FusedStatusFormatter.confidenceLevel(
+            snapshot(ResolvedPlace.HOME, FusedDecision.CONFIRMED, "CONFIRMED_AMBIENT", c))
+        // 高档线就是引擎自己的可靠线 0.80：达到即可改变工时状态，UI 不该比它更保守
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.HIGH, level(0.92))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.HIGH, level(0.85))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.HIGH, level(0.80))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.MEDIUM, level(0.79))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.MEDIUM, level(0.75))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.MEDIUM, level(0.70))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.LOW, level(0.69))
+        assertEquals("高", FusedStatusFormatter.ConfidenceLevel.HIGH.label)
+        assertEquals("中", FusedStatusFormatter.ConfidenceLevel.MEDIUM.label)
+        assertEquals("低", FusedStatusFormatter.ConfidenceLevel.LOW.label)
+        assertEquals("—", FusedStatusFormatter.ConfidenceLevel.NONE.label)
+    }
+
+    @Test fun weakEvidenceNeverShowsHigh() {
+        // MAINTAINED 是单源弱证据，只能维持上一判断 —— 不允许显示成「高」
+        val s = snapshot(ResolvedPlace.COMPANY, FusedDecision.MAINTAINED,
+            "MAINTAIN_WEAK_EVIDENCE", 0.95)
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.MEDIUM,
+            FusedStatusFormatter.confidenceLevel(s))
+        // 但它本来就没到高门槛时也不该被抬上来
+        val low = snapshot(ResolvedPlace.COMPANY, FusedDecision.MAINTAINED,
+            "MAINTAIN_WEAK_EVIDENCE", 0.60)
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.LOW,
+            FusedStatusFormatter.confidenceLevel(low))
+    }
+
+    @Test fun unknownOrZeroConfidenceIsNone() {
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.NONE,
+            FusedStatusFormatter.confidenceLevel(
+                snapshot(ResolvedPlace.UNKNOWN, FusedDecision.UNKNOWN, "UNKNOWN_NO_DATA")))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.NONE,
+            FusedStatusFormatter.confidenceLevel(
+                snapshot(ResolvedPlace.HOME, FusedDecision.CONFIRMED, "CONFIRMED_AMBIENT", 0.0)))
+        assertEquals(FusedStatusFormatter.ConfidenceLevel.NONE,
+            FusedStatusFormatter.confidenceLevel(null))
+    }
+
+    @Test fun basisLabelIsTheSameHumanTextAsReason() {
+        assertEquals("GPS 定位确认", FusedStatusFormatter.basisLabel(
+            snapshot(ResolvedPlace.COMPANY, FusedDecision.CONFIRMED, "CONFIRMED_GNSS", 0.92)))
+        assertEquals("当前没有可用的位置证据", FusedStatusFormatter.basisLabel(
+            snapshot(ResolvedPlace.UNKNOWN, FusedDecision.UNKNOWN, "UNKNOWN_NO_DATA")))
+        assertNull(FusedStatusFormatter.basisLabel(null))
+    }
 }
