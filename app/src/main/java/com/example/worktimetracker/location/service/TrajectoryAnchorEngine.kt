@@ -29,7 +29,13 @@ class TrajectoryAnchorEngine(
         val homeDistanceMeters: Double?,
         val homeAnchorDistanceMeters: Double?,
         val speedMetersPerSecond: Float,
-        val movingAway: Boolean
+        val movingAway: Boolean,
+        /**
+         * 可靠绝对定位（融合层判定为 CONFIRMED_GNSS）时为 true。
+         * 该证据在融合层已经过「质量 >= 0.80 的 GNSS 直接确认」这道门槛，
+         * 状态机不再要求连续两次 —— 否则一次定位回调空窗就能把已经成立的到岗时刻拖后。
+         */
+        val strongEvidence: Boolean = false
     )
 
     sealed class Event(open val occurredAt: Long, open val confirmedAt: Long) {
@@ -61,11 +67,17 @@ class TrajectoryAnchorEngine(
                 else -> previous
             }
             "LEAVING_HOME", "NEAR_COMPANY" -> if (companyStable) {
-                // 连续性中断（超过 20 分钟回调空窗）时，旧候选到达失效，从当前修复重新开始
+                // 连续性中断（超过 20 分钟回调空窗）时旧计数失效，但「已知最早在公司」的候选时刻仍要保留：
+                // 断流本身不构成离开证据，丢掉候选等于让这段回调空窗白白推迟到岗时刻。
+                // 只有候选已过期（超过 CANDIDATE_EXPIRE_MILLIS）才认为中间真的离开过公司。
                 val priorCount = if (continuous) previous.stableCompanyCount else 0
-                val candidate = if (continuous) previous.candidateCompanyArrivalTime ?: fix.time else fix.time
+                val candidate = previous.candidateCompanyArrivalTime
+                    ?.takeIf { fix.time - it <= CANDIDATE_EXPIRE_MILLIS }
+                    ?: fix.time
                 val count = priorCount + 1
-                if (count >= 2) {
+                // 可靠绝对定位（CONFIRMED_GNSS）单次即确认；环境证据（AMBIENT）仍需连续两次
+                val required = if (fix.strongEvidence) 1 else COMPANY_ARRIVAL_CONFIRM_COUNT
+                if (count >= required) {
                     events += Event.CompanyArrival(candidate, fix.time)
                     previous.copy(currentState = "WORKING", sessionStart = candidate,
                         candidateCompanyArrivalTime = candidate, companyArrivalConfirmedAt = fix.time,
@@ -144,4 +156,12 @@ class TrajectoryAnchorEngine(
         confirmedDepartureTime = null, homeArrivalTime = null, tempLeaveStart = null,
         stableCompanyCount = 0, stableHomeCount = 0, movingAwayCount = 1
     )
+
+    companion object {
+        /** 环境证据（AMBIENT）确认到岗所需的连续稳定读数次数。 */
+        const val COMPANY_ARRIVAL_CONFIRM_COUNT = 2
+
+        /** 候选到岗时刻的保鲜期：超过它说明断流期间很可能真的离开过公司，候选作废。 */
+        const val CANDIDATE_EXPIRE_MILLIS = 2 * 60 * 60_000L
+    }
 }

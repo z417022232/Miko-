@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.worktimetracker"
         minSdk = 29
         targetSdk = 35
-        versionCode = 23
-        versionName = "6.2"
+        versionCode = 24
+        versionName = "7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -60,6 +60,10 @@ dependencies {
 
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("com.google.android.gms:play-services-location:21.3.0")
+
+    // 工资条拍照识别：中文文本识别，模型随 APK 打包（bundled），
+    // 不依赖 Google Play 服务 —— 国行机也能离线跑。
+    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

@@ -373,7 +373,6 @@ internal fun MonthSummaryCard(
     projection: MonthProjection?,
     paymentLabel: String,
     onOpenPayroll: () -> Unit,
-    onEditSalary: () -> Unit,
     onOpenSlip: () -> Unit = {}
 ) {
     val headline = salaryCents ?: payroll?.netCents
@@ -452,14 +451,11 @@ internal fun MonthSummaryCard(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 TextButton(onClick = onOpenPayroll) { Text("工资明细") }
-                TextButton(onClick = onEditSalary) {
-                    Text(if (salaryCents == null) "录入实发工资" else "修改实发工资")
-                }
-            }
-            // 分项工资条（另一套表 salary_slips）：按**这个月**当锚点进录入页
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
+                // 2026-09-16 入口合并：原先把「录入实发工资」和「工资条录入与核对」并排挂在月卡上，
+                // 但实发本来就是工资条表头上的一栏。现在统一走一个入口 ——
+                // 录实发在录入页表头（「存为月度实发」），改实发也能从「工资明细」进，月卡不再堆两个按钮。
                 TextButton(onClick = onOpenSlip) {
-                    Text("工资条录入与核对（分项 · 双校验）›")
+                    Text(if (salaryCents == null) "录入工资条 ›" else "工资条录入与核对 ›")
                 }
             }
         }

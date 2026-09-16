@@ -107,7 +107,8 @@ fun CalendarScreen(
     val monthPayroll by vm.monthPayroll.collectAsState()
     val payBaseline by vm.payBaseline.collectAsState()
     val monthProjection by vm.monthProjection.collectAsState()
-    val today = remember { LocalDate.now() }
+    // 「今天」= 当前工作日：夜班没下班时仍是上班那一天（见 WorkdayClock）
+    val today by vm.workday.collectAsState()
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val selected = records.firstOrNull { it.date == selectedDate }
         ?: UiDayRecord(selectedDate, "", finalMinutes = 0)
@@ -261,7 +262,6 @@ fun CalendarScreen(
             projection = monthProjection,
             paymentLabel = paymentLabel,
             onOpenPayroll = { showPayroll = true },
-            onEditSalary = { showSalaryEditor = true },
             onOpenSlip = { onOpenSlip(month) }
         )
         Spacer(Modifier.height(12.dp))
@@ -301,6 +301,7 @@ fun CalendarScreen(
             summary = summary,
             payroll = monthPayroll,
             recordedSalaryCents = monthlySalaryCents,
+            onEditSalary = { showPayroll = false; showSalaryEditor = true },
             onDismiss = { showPayroll = false }
         )
     }
@@ -376,6 +377,7 @@ private fun PayrollDetailDialog(
     summary: MonthSummary,
     payroll: PayrollBreakdown?,
     recordedSalaryCents: Long?,
+    onEditSalary: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -407,6 +409,20 @@ private fun PayrollDetailDialog(
                 if (recordedSalaryCents != null) {
                     ThinDivider()
                     PayLine("已录入实发工资", formatCents(recordedSalaryCents), emphasize = true)
+                }
+                // 月卡上的「录入实发工资」已并入工资条录入页；这里留一个次级入口，
+                // 保证「月度实发」这个计薪基准在任何时候都改得到。
+                ThinDivider()
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "月度实发是计薪基准（基准月单价由它反推）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = AppTheme.colors.muted,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onEditSalary) {
+                        Text(if (recordedSalaryCents == null) "录入" else "修改")
+                    }
                 }
             }
         },

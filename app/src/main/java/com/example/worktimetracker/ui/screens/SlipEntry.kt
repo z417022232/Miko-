@@ -1,5 +1,24 @@
 package com.example.worktimetracker.ui.screens
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material.icons.outlined.PhotoLibrary
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
+import com.example.worktimetracker.domain.payroll.SlipOcrParser
+import com.example.worktimetracker.ui.SlipPhotoRecognizer
+import com.example.worktimetracker.ui.app.WorkTimeViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -70,6 +89,11 @@ internal fun SlipEntryPage(
      * 只作为锚点，真正打开哪个计薪月由 `ForecastViewModel.openAt` 判定。
      */
     initialMonth: String? = null,
+    /**
+     * 主 ViewModel（持有 `monthly_salaries`）。为 null 时隐藏「存为月度实发」入口 ——
+     * 设置页那条次级入口没有它，也不必为此多建一个 ViewModel 实例。
+     */
+    mainVm: WorkTimeViewModel? = null,
     vm: ForecastViewModel = viewModel(),
 ) {
     val month by vm.month.collectAsState()
@@ -77,6 +101,40 @@ internal fun SlipEntryPage(
     val message by vm.message.collectAsState()
     val choice by vm.pendingChoice.collectAsState()
     val slips by vm.slips.collectAsState()
+
+    // ---- 拍照 / 选图识别（ML Kit 中文，模型内置、离线可用）----
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var ocrBusy by remember { mutableStateOf(false) }
+    var ocrError by remember { mutableStateOf<String?>(null) }
+    var pendingPhoto by remember { mutableStateOf<Uri?>(null) }
+
+    val recognize: (Uri) -> Unit = { uri ->
+        ocrBusy = true
+        ocrError = null
+        scope.launch {
+            try {
+                val lines = withContext(Dispatchers.IO) {
+                    SlipPhotoRecognizer.recognizeLines(context, uri)
+                }
+                vm.applyOcr(SlipOcrParser.parse(lines))
+            } catch (e: Exception) {
+                ocrError = "识别失败：" + (e.message ?: "无法读取这张图")
+            } finally {
+                ocrBusy = false
+            }
+        }
+    }
+
+    val takePicture = rememberLauncherForActivityResult(
+        ActivityResultContracts.TakePicture()
+    ) { ok ->
+        val uri = pendingPhoto
+        if (ok && uri != null) recognize(uri)
+    }
+    val pickPhoto = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri -> if (uri != null) recognize(uri) }
 
     // 锚点判定：本月没条子且上月也空着 -> VM 挂起 pendingChoice，下面弹框问用户。
     // 有明确答案（本月已有条 / 上月已录）时直接定月份，不打扰。
@@ -97,6 +155,62 @@ internal fun SlipEntryPage(
         )
         Spacer(Modifier.height(8.dp))
         SlipMonthPager(month, vm::previousMonth, vm::nextMonth, vm::today)
+
+        // ------------------------------------------------------------ 拍照识别
+        Spacer(Modifier.height(10.dp))
+        SettingsGroup {
+            Column(Modifier.padding(14.dp)) {
+                Text("拍照识别", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "对着工资条拍一张，或从相册选一张，自动填进下面的表头与分项。" +
+                        "只覆盖识别到的字段，没认出来的保持原样。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.muted
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val dir = File(context.getExternalFilesDir(null), "slip_photo")
+                                .apply { mkdirs() }
+                            val file = File(dir, "slip_" + System.currentTimeMillis() + ".jpg")
+                            val uri = FileProvider.getUriForFile(
+                                context, context.packageName + ".fileprovider", file
+                            )
+                            pendingPhoto = uri
+                            takePicture.launch(uri)
+                        },
+                        enabled = !ocrBusy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Outlined.PhotoCamera, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text("拍照")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            pickPhoto.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        enabled = !ocrBusy,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.size(6.dp))
+                        Text("从相册选")
+                    }
+                }
+                if (ocrBusy) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("正在识别…", style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.muted)
+                }
+                ocrError?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.orange)
+                }
+            }
+        }
 
         // 上一个计薪月还空着 -> 提醒可补录（不阻塞，用户自己翻页即可）
         val prevMonth = month.minusMonths(1)
@@ -151,6 +265,33 @@ internal fun SlipEntryPage(
                         style = MaterialTheme.typography.labelSmall,
                         color = AppTheme.colors.muted
                     )
+                }
+                // 月度实发（monthly_salaries）是计薪基准。它以前单独挂在月卡上，
+                // 现在并进这一页：条上实发填好就能一键落库，不必再回日历找入口。
+                mainVm?.let { owner ->
+                    val targetMonth = runCatching { YearMonth.parse(state.payrollMonth) }.getOrNull()
+                    if (targetMonth != null && state.netText.isNotBlank()) {
+                        val already = state.recordedNetCents
+                        val sameAsRecorded = already != null && state.declaredNetCents == already
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            onClick = {
+                                val ok = owner.saveMonthlySalaryFor(
+                                    targetMonth, state.netText, state.paymentDate
+                                )
+                                vm.note(
+                                    if (ok) {
+                                        "已把 ${formatCents(state.declaredNetCents ?: 0L)} 记为 " +
+                                            state.payrollMonth + " 的月度实发（计薪基准）"
+                                    } else {
+                                        "金额格式不对，先检查「条上实发工资」"
+                                    }
+                                )
+                            }
+                        ) {
+                            Text(if (sameAsRecorded) "月度实发已是这个数" else "存为月度实发（计薪基准）")
+                        }
+                    }
                 }
             }
         }

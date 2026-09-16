@@ -83,7 +83,7 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
     val fused by vm.fusedStatus.collectAsState()
     val segments by vm.todaySegments.collectAsState()
     val payBaseline by vm.payBaseline.collectAsState()
-    val today = remember { LocalDate.now() }
+    val today by vm.workday.collectAsState()
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showPunch by remember { mutableStateOf(false) }
     var showSegments by remember { mutableStateOf(false) }

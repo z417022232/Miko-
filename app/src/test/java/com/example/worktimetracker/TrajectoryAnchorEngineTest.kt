@@ -144,8 +144,59 @@ class TrajectoryAnchorEngineTest {
         assertTrue(decision.events.isEmpty())
     }
 
+    // ---------- 2026-09-16：到岗时刻不再被「连续两次」门槛与回调空窗联手推迟 ----------
+
+    @Test fun strongGnssEvidenceConfirmsArrivalOnFirstFix() {
+        // 融合层已判为可靠绝对定位（质量 >= 0.80 的 GNSS）时，单次读数即确认到岗。
+        // 原实现一律要求连续两次，9/15 夜班因此把 20:51 的到岗拖到了 21:16。
+        val state = WorkStateEntity(currentState = "LEAVING_HOME", sessionId = "s")
+        val decision = engine.next(state,
+            fix(100L, LocationType.COMPANY, company = 80.0, companyAnchor = 70.0, strong = true), config)
+        val event = decision.events.single() as TrajectoryAnchorEngine.Event.CompanyArrival
+        assertEquals(100L, event.occurredAt)
+        assertEquals(100L, event.confirmedAt)
+        assertEquals("WORKING", decision.nextState.currentState)
+        assertEquals(100L, decision.nextState.sessionStart)
+    }
+
+    @Test fun ambientEvidenceStillNeedsTwoFixes() {
+        // 强证据通道不得放宽环境证据（CONFIRMED_AMBIENT）的门槛：单次仍不足以确认到岗
+        val state = WorkStateEntity(currentState = "LEAVING_HOME", sessionId = "s")
+        val first = engine.next(state,
+            fix(100L, LocationType.COMPANY, company = 30.0, companyAnchor = 20.0), config)
+        assertTrue(first.events.isEmpty())
+        assertEquals("LEAVING_HOME", first.nextState.currentState)
+        assertEquals(1, first.nextState.stableCompanyCount)
+    }
+
+    @Test fun arrivalTimeSurvivesTwentyFiveMinuteCallbackGap() {
+        // 9/15 实测：20:51 首次判为在公司后定位回调中断 25 分钟，恢复时连续性窗口（20 分钟）已断。
+        // 断流本身不构成离开证据，候选到岗时刻必须保留，恢复后只需再补一次稳定读数。
+        val firstSeen = 100L
+        val state = WorkStateEntity(currentState = "LEAVING_HOME", sessionId = "s",
+            candidateCompanyArrivalTime = firstSeen, stableCompanyCount = 1, lastLocationTime = firstSeen)
+        val resumed = engine.next(state,
+            fix(firstSeen + 25 * 60_000L, LocationType.COMPANY, company = 30.0, companyAnchor = 20.0), config)
+        assertTrue(resumed.events.isEmpty())
+        assertEquals(firstSeen, resumed.nextState.candidateCompanyArrivalTime)
+        val confirmed = engine.next(resumed.nextState,
+            fix(firstSeen + 26 * 60_000L, LocationType.COMPANY, company = 30.0, companyAnchor = 20.0), config)
+        assertEquals(firstSeen,
+            (confirmed.events.single() as TrajectoryAnchorEngine.Event.CompanyArrival).occurredAt)
+    }
+
+    @Test fun strongEvidenceStillRejectsExpiredCandidate() {
+        // 强证据也不能把一个早已过期的候选时刻翻出来当到岗时间
+        val state = WorkStateEntity(currentState = "NEAR_COMPANY", sessionId = "s",
+            candidateCompanyArrivalTime = 100L, stableCompanyCount = 1, lastLocationTime = 100L)
+        val decision = engine.next(state,
+            fix(54_000_100L, LocationType.COMPANY, company = 30.0, companyAnchor = 20.0, strong = true), config)
+        assertEquals(54_000_100L,
+            (decision.events.single() as TrajectoryAnchorEngine.Event.CompanyArrival).occurredAt)
+    }
+
     private fun fix(time: Long, type: LocationType, company: Double? = null, companyAnchor: Double? = null,
-        homeAnchor: Double? = null, moving: Boolean = false) = TrajectoryAnchorEngine.Fix(
-        time, type, 10f, "gps", company, companyAnchor, null, homeAnchor, 0f, moving
+        homeAnchor: Double? = null, moving: Boolean = false, strong: Boolean = false) = TrajectoryAnchorEngine.Fix(
+        time, type, 10f, "gps", company, companyAnchor, null, homeAnchor, 0f, moving, strong
     )
 }

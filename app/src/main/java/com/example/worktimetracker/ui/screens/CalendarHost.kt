@@ -39,7 +39,9 @@ fun CalendarHost(vm: WorkTimeViewModel, onOpenToday: () -> Unit = {}) {
         CalendarPage.MONTHLY -> StatisticsScreen(vm, onBack = { page = CalendarPage.HOME })
         CalendarPage.SLIP -> SlipEntryPage(
             onBack = { page = CalendarPage.HOME },
-            initialMonth = slipAnchorMonth
+            initialMonth = slipAnchorMonth,
+            // 把主 VM 传下去，录入页才能把「条上实发」一键存成月度实发（计薪基准）
+            mainVm = vm
         )
     }
 }

@@ -18,6 +18,7 @@ import com.example.worktimetracker.data.importer.LegacyAttendanceCsvImporter
 import com.example.worktimetracker.data.remote.HolidaySyncStore
 import com.example.worktimetracker.data.repository.HolidayRepository
 import com.example.worktimetracker.domain.engine.HolidayCalendar
+import com.example.worktimetracker.domain.engine.WorkdayClock
 import com.example.worktimetracker.domain.engine.WorkSessionEngine
 import com.example.worktimetracker.domain.engine.ShiftDetector
 import com.example.worktimetracker.domain.engine.WorkHourCalculator
@@ -97,6 +98,12 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val month: StateFlow<YearMonth> = _month
     private val _selectedDate = MutableStateFlow(LocalDate.now())
     val selectedDate: StateFlow<LocalDate> = _selectedDate
+    /**
+     * 「当前工作日」：夜班没下班之前它仍是**上班那一天**（2026-09-16）。
+     * 只有不存在未结束的在岗会话时，它才等于自然日，判定见 [WorkdayClock]。
+     */
+    private val _workday = MutableStateFlow(LocalDate.now())
+    val workday: StateFlow<LocalDate> = _workday
     private val _settings = MutableStateFlow(UserSettingsEntity())
     val settings: StateFlow<UserSettingsEntity> = _settings
     private val _records = MutableStateFlow<List<UiDayRecord>>(emptyList())
@@ -156,6 +163,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             val cachedHolidays = holidayRepository.restoreCache()
             if (cachedHolidays.isNotEmpty()) HolidayCalendar.apply(cachedHolidays)
             refreshHolidayStatus()
+            // 「今天」必须先定下来：夜班跨零点时它是上班日，日历与当日卡片都按它取数
+            refreshWorkday()
             loadMonth()
             refreshLastKnownLocation()
             refreshLogsOnce()
@@ -175,7 +184,14 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     }
     fun previousMonth() { moveToMonth(_month.value.minusMonths(1)) }
     fun nextMonth() { moveToMonth(_month.value.plusMonths(1)) }
-    fun today() { _month.value = YearMonth.now(); _selectedDate.value = LocalDate.now(); loadMonth() }
+    fun today() {
+        viewModelScope.launch {
+            val day = refreshWorkday()
+            _month.value = YearMonth.from(day)
+            _selectedDate.value = day
+            loadMonth()
+        }
+    }
     fun jumpToMonth(yearText: String, monthText: String) {
         val year = yearText.toIntOrNull()?.coerceIn(2000, 2100) ?: return
         val month = monthText.toIntOrNull()?.coerceIn(1, 12) ?: return
@@ -214,7 +230,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 // 构建 30 天展示模型要遍历整月（含节假日判定），挪到 Default 线程，
                 // 避免 Room 每次发射都在主线程重算一遍。
                 val built = withContext(Dispatchers.Default) {
-                    MonthlyRecordIndex.build(m, rows, LocalDate.now(), zone)
+                    MonthlyRecordIndex.build(m, rows, _workday.value, zone)
                 }
                 _records.value = built
                 _reviewRecords.value = built.filter { it.needsReview }
@@ -438,6 +454,36 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             _monthlySalaryPaymentDate.value = entry.paymentDate
         }
     }
+    /**
+     * 指定计薪月保存月度实发（工资条录入页把「条上实发」一键存为计薪基准时用）。
+     *
+     * 与 [saveMonthlySalary] 的区别只有一处：计薪月由调用方显式给出 ——
+     * 录入页可能正停在别的月份上，不能拿日历当前月顶替。
+     *
+     * @return 金额文本不合法（空 / 非数字 / 负数）时为 false，调用方可据此提示
+     */
+    fun saveMonthlySalaryFor(payrollMonth: YearMonth, text: String, paymentDateText: String): Boolean {
+        val cents = runCatching {
+            BigDecimal(text.trim().replace(",", ""))
+                .setScale(2, RoundingMode.HALF_UP)
+                .movePointRight(2)
+                .longValueExact()
+        }.getOrNull() ?: return false
+        if (cents < 0) return false
+        val paymentDate = runCatching { LocalDate.parse(paymentDateText) }.getOrNull()
+            ?: payrollRules.defaultPaymentDateForPayrollMonth(payrollMonth)
+        viewModelScope.launch {
+            val entry = payrollRules.createEntry(payrollMonth, paymentDate, cents)
+            db.monthlySalaryDao().save(entry)
+            // 只有正好停在那个月时才刷新月卡上的缓存值
+            if (payrollMonth == _month.value) {
+                _monthlySalaryCents.value = cents
+                _monthlySalaryPaymentDate.value = entry.paymentDate
+            }
+        }
+        return true
+    }
+
     fun refreshLastKnownLocation() {
         viewModelScope.launch {
             val last = db.locationLogDao().latest()
@@ -805,7 +851,32 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
 
     /** 只读刷新「今天」。今日页在进入、回到前台、以及每 30 秒心跳时调用。 */
     fun refreshToday() {
-        viewModelScope.launch { refreshToday(LocalDate.now()) }
+        viewModelScope.launch {
+            val before = _workday.value
+            val day = refreshWorkday()
+            // 跨过零点（或会话结束）导致工作日变化时，整月模型要跟着重建
+            if (day != before) loadMonth()
+            refreshDay(day)
+        }
+    }
+
+    /**
+     * 重新解析「当前工作日」并同步「今天」的语义。
+     *
+     * 只在工作日真的变化时改动视图状态，且**只跟随、不抢夺**：
+     * 用户若已经手动选了别的日期或月份，这里不去覆盖他。
+     */
+    private suspend fun refreshWorkday(): LocalDate {
+        val natural = LocalDate.now()
+        val state = runCatching { db.workStateDao().getState() }.getOrNull()
+        val day = WorkdayClock.today(state, natural, zone)
+        val previous = _workday.value
+        if (day != previous) {
+            _workday.value = day
+            if (_selectedDate.value == previous) _selectedDate.value = day
+            if (_month.value == YearMonth.from(previous)) _month.value = YearMonth.from(day)
+        }
+        return day
     }
 
     /** 指定日期的单日刷新（补录保存后要立刻反映到当日卡片）。 */
@@ -1173,7 +1244,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         val standardMinutes = _settings.value.defaultWorkMinutes ?: DEFAULT_WORK_MINUTES
         val stats = PayrollPresenter.projectionStats(
             records = records,
-            today = LocalDate.now(zone),
+            today = _workday.value,
             standardMinutes = standardMinutes,
             nightShiftsOverride = nightOverride
         )

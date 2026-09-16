@@ -388,7 +388,10 @@ class ForegroundLocationService : Service(), LocationListener {
             provider = location.provider ?: "unknown", companyDistanceMeters = companyDistance,
             companyAnchorDistanceMeters = companyDistance, homeDistanceMeters = homeDistance,
             homeAnchorDistanceMeters = homeDistance, speedMetersPerSecond = if (location.hasSpeed()) location.speed else 0f,
-            movingAway = movingAway
+            movingAway = movingAway,
+            // 融合层已判为可靠绝对定位（质量 >= 0.80 的 GNSS）时单次即确认到岗；
+            // 环境证据（CONFIRMED_AMBIENT）不享受该待遇，仍需连续两次
+            strongEvidence = fused?.reason?.startsWith(CONFIRMED_GNSS_PREFIX) == true
         ), TrajectoryAnchorEngine.Config(
             // 半径取「命中的那个地点」自己的半径：多车间半径不同时，离岗半径必须跟着实际地点走
             workMatch?.site?.radiusMeters ?: settings.companyRadiusMeters,
@@ -1140,8 +1143,10 @@ class ForegroundLocationService : Service(), LocationListener {
 
     companion object {
         const val NOTIFICATION_ID = 1001
-        private const val WATCHDOG_INTERVAL_MILLIS = 15 * 60_000L
-        private const val LOCATION_STALE_MILLIS = 15 * 60_000L
+        // 2026-09-16：原先 15 分钟一轮 + 15 分钟阈值，最坏要半小时才自愈；
+        // 9/15 夜班实测断流 25 分钟才重新注册，直接导致到岗时刻被推迟。
+        private const val WATCHDOG_INTERVAL_MILLIS = 3 * 60_000L
+        private const val LOCATION_STALE_MILLIS = 5 * 60_000L
         private const val LAST_KNOWN_MAX_AGE_MILLIS = 10 * 60_000L
         private const val SOURCE_LOCATION = "location"
         private const val GNSS_STALE_SCAN_MILLIS = 20 * 60_000L
@@ -1155,6 +1160,9 @@ class ForegroundLocationService : Service(), LocationListener {
         /** 生效地点集合的缓存时长：短到用户改完地点能马上生效，长到不会每次定位都查库 */
         private const val SITES_CACHE_MILLIS = 60_000L
         private const val SHIFT_WINDOW_MARGIN_MINUTES = 180
+        /** 融合层「可靠绝对定位」的原因前缀；只有它才算强证据。 */
+        private const val CONFIRMED_GNSS_PREFIX = "CONFIRMED_GNSS"
+
         private const val AMBIENT_NOMINAL_ACCURACY_METERS = 50f
         private const val AMBIENT_CORE_DISTANCE_METERS = 30.0
     }

@@ -13,6 +13,7 @@ import com.example.worktimetracker.domain.payroll.PayRateSet
 import com.example.worktimetracker.domain.payroll.SlipDraftSeeder
 import com.example.worktimetracker.domain.payroll.MonthChoice
 import com.example.worktimetracker.domain.payroll.SlipItemKey
+import com.example.worktimetracker.domain.payroll.SlipOcrParser
 import com.example.worktimetracker.domain.payroll.SlipMonthResolver
 import com.example.worktimetracker.domain.payroll.SlipStatus
 import com.example.worktimetracker.ui.PayrollPresenter
@@ -180,6 +181,33 @@ class ForecastViewModel(application: Application) : AndroidViewModel(application
         state.copy(items = state.items + (key to cur.copy(text = text)))
     }
 
+    /**
+     * 把工资条照片的识别结果一次性并入草稿。
+     *
+     * **只覆盖识别到的字段**：没认出来的保持原样 —— 照片拍糊是常态，
+     * 识别结果绝不能成为抹掉用户已有输入的途径。
+     */
+    fun applyOcr(parsed: SlipOcrParser.Parsed) {
+        if (parsed.isEmpty) {
+            _message.value = "这张图里没读到工资条数据，换个角度或换一张再试"
+            return
+        }
+        update { state ->
+            var next = state
+            parsed.paymentDate?.let { next = next.copy(paymentDate = it) }
+            parsed.grossText?.let { next = next.copy(grossText = it) }
+            parsed.netText?.let { next = next.copy(netText = it) }
+            parsed.attendDays?.let { next = next.copy(slipAttendDays = it) }
+            parsed.nightShifts?.let { next = next.copy(slipNightShifts = it) }
+            parsed.items.forEach { (key, text) ->
+                val cur = next.items[key] ?: SlipItemDraft()
+                next = next.copy(items = next.items + (key to cur.copy(text = text)))
+            }
+            next
+        }
+        _message.value = "照片已识别：" + parsed.summary + "（请核对后再保存）"
+    }
+
     /** 裁决「这项是收入还是扣款」（如「病假工资」）。 */
     fun toggleItemReview(key: SlipItemKey) = update { state ->
         val cur = state.items[key] ?: SlipItemDraft()
@@ -189,6 +217,9 @@ class ForecastViewModel(application: Application) : AndroidViewModel(application
     fun setStatus(status: SlipStatus) = update { it.copy(status = status) }
 
     fun clearMessage() { _message.value = "" }
+
+    /** 由录入页直接落一条提示（如「已存为月度实发」）。 */
+    fun note(text: String) { _message.value = text }
 
     /**
      * 按计薪参数把**能确定的 7 项**填进草稿（基本/岗位/工龄/全勤/加班/社保/公积金）；
