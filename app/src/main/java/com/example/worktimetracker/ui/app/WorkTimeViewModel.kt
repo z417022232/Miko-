@@ -265,7 +265,17 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                     currentYear,
                     System.currentTimeMillis()
                 )
-                if (needed) syncHolidaysNow() else refreshHolidayStatus()
+                if (needed) {
+                    syncHolidaysNow()
+                } else {
+                    // 启动时也做了一次检查：缓存没过期 ⇒ 明确告诉用户「已是最新」，
+                    // 而不是静默什么都不做（用户会以为这个功能没生效）。
+                    refreshHolidayStatus()
+                    _holidayStatus.value = _holidayStatus.value.copy(
+                        message = "数据已经是最新的（已缓存 ${holidayRepository.cachedYears().size} 年）",
+                        resultOk = true
+                    )
+                }
             }.onFailure { error ->
                 _holidayStatus.value = _holidayStatus.value.copy(updating = false)
                 runCatching {
@@ -1162,6 +1172,29 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 db.payrollDao().deletePayParams(payrollMonth)
             } else {
                 db.payrollDao().savePayParams(entity)
+            }
+            reloadPayrollConfig()
+        }
+    }
+
+    /**
+     * 只改某计薪月的**绩效系数**，其余分项原样保留。
+     *
+     * ⚠️ **不要用 [saveMonthlyPayParams] 代替** —— 那个是整行覆盖。界面既然只剩一个输入框，
+     * 直接调它会把「工资条导入」写进来的效益奖金 / 高温 / 病假 / 补发 / 社保公积金 / 夜班天数
+     * 全部抹成 0，预估会立刻失真。
+     */
+    fun savePerfCoefficient(payrollMonth: String, coefficient: String) {
+        val value = coefficient.trim().ifBlank { null }
+        if (value != null && PayrollPresenter.parseCoefficient(value) == null) return
+        viewModelScope.launch {
+            val existing = db.payrollDao().payParams(payrollMonth)
+            val merged = (existing ?: MonthlyPayParamsEntity(payrollMonth = payrollMonth))
+                .copy(perfCoefficient = value)
+            if (merged.isEmpty) {
+                db.payrollDao().deletePayParams(payrollMonth)
+            } else {
+                db.payrollDao().savePayParams(merged)
             }
             reloadPayrollConfig()
         }

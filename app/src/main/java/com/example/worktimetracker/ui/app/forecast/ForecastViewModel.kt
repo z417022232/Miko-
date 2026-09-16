@@ -7,6 +7,7 @@ import com.example.worktimetracker.WorkTimeApplication
 import com.example.worktimetracker.data.entity.PayRateSegmentEntity
 import com.example.worktimetracker.data.entity.SalarySlipEntity
 import com.example.worktimetracker.data.entity.SalarySlipItemEntity
+import com.example.worktimetracker.domain.payroll.PayParamsBackfill
 import com.example.worktimetracker.domain.payroll.PayRateKey
 import com.example.worktimetracker.domain.payroll.PayRateResolver
 import com.example.worktimetracker.domain.payroll.PayRateSet
@@ -324,6 +325,7 @@ class ForecastViewModel(application: Application) : AndroidViewModel(application
                     )
                 }
             )
+            backfillPayParams(state, now)
             _slips.value = slipDao.allSlips()
             _message.value = if (nowConfirmed) {
                 "已保存并标记为「已确认」，本月的浮动项可参与后续学习"
@@ -335,6 +337,28 @@ class ForecastViewModel(application: Application) : AndroidViewModel(application
                 db.monthlySalaryDao().getForPayrollMonth(state.payrollMonth)?.netSalaryCents
             )
         }
+    }
+
+    /**
+     * 把工资条里的浮动项**回填**到 `monthly_pay_params`（计薪月的引擎入参）。
+     *
+     * 为什么必须做：设置页已把 10 项浮动参数从 UI 移除（只留绩效系数），
+     * 但**引擎入参必须保留** —— 用户从相册导入 / 手录工资条后，
+     * 这些**实际金额**要落进 `monthly_pay_params`，预估才能按真实数据校准。
+     *
+     * 合并规则见 [PayParamsBackfill]（纯函数，已单测）。
+     */
+    private suspend fun backfillPayParams(state: SlipEditorState, now: Long) {
+        val nights = state.slipNightShifts.trim().let { if (it.isEmpty()) null else it.toIntOrNull() }
+        val dao = db.payrollDao()
+        val merged = PayParamsBackfill.mergeOrNull(
+            payrollMonth = state.payrollMonth,
+            current = dao.payParams(state.payrollMonth),
+            items = state.entries,
+            nightShifts = nights,
+            updatedAt = now,
+        ) ?: return
+        if (merged.isEmpty) dao.deletePayParams(state.payrollMonth) else dao.savePayParams(merged)
     }
 
     /** 一键把浮动项按**上月已确认工资条**的金额填入草稿（历史延续；仅填空白项）。 */

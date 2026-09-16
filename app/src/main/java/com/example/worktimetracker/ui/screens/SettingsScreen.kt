@@ -103,9 +103,9 @@ private enum class SettingsPage {
     /** v4 界面稿新增：计薪规则 / 常规采集间隔 / Burst 上限 */
     PAY_RULES, INTERVAL, BURST,
     /** v4.3 界面稿 09/10/11：多地点管理（LOCATION 保留为校准兜底入口） */
-    SITES,
-    /** v6 第一步（DB v13）：工资条录入与核对（独立 ForecastViewModel） */
-    SLIP_ENTRY
+    SITES
+    // 注：v6 的 SLIP_ENTRY 已移除 —— 工资条录入的唯一入口是日历月卡的「录入工资条 ›」
+    // （带月份锚点）。计薪规则页那条用的是自然月锚点，两条入口语义不一致，v7.2 去重。
 }
 private enum class LocationTarget { COMPANY, HOME }
 
@@ -132,10 +132,8 @@ fun SettingsScreen(
         SettingsPage.HOLIDAY -> HolidayDataPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.PAY_RULES -> PayRulesPage(
             vm,
-            onBack = { page = SettingsPage.ROOT },
-            onOpenSlip = { page = SettingsPage.SLIP_ENTRY }
+            onBack = { page = SettingsPage.ROOT }
         )
-        SettingsPage.SLIP_ENTRY -> SlipEntryPage(onBack = { page = SettingsPage.ROOT })
         SettingsPage.INTERVAL -> SamplingIntervalPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.BURST -> BurstCapPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.THEME -> ThemeSettingsPage(
@@ -169,13 +167,11 @@ private fun SettingsHome(
     ) {
         ScreenHeader("设置", "常用信息放在前面，其他功能按需进入")
         Spacer(Modifier.height(14.dp))
-        TrackingStatusCard(permissions, onClick = { onOpen(SettingsPage.PERMISSIONS) })
-        Spacer(Modifier.height(14.dp))
         SectionTitle("记录")
         SettingsGroup {
             SettingsRow(
                 Icons.Outlined.Security,
-                "到达自动打卡",
+                "权限设置",
                 if (permissions.ready) "权限完整 · 自动记录已就绪" else "有权限需要处理",
                 tint = if (permissions.ready) AppTheme.colors.green else AppTheme.colors.orange
             ) { onOpen(SettingsPage.PERMISSIONS) }
@@ -322,36 +318,6 @@ private fun AccuracyRow(current: String, onChange: (String) -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun TrackingStatusCard(status: PermissionStatus, onClick: () -> Unit) {
-    val ready = status.ready
-    Card(
-        onClick = onClick,
-        colors = CardDefaults.cardColors(containerColor = if (ready) AppTheme.colors.green.copy(alpha = 0.09f) else AppTheme.colors.orange.copy(alpha = 0.10f)),
-        shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Row(Modifier.padding(17.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                if (ready) Icons.Outlined.CheckCircle else Icons.Outlined.ErrorOutline,
-                null,
-                tint = if (ready) AppTheme.colors.green else AppTheme.colors.orange,
-                modifier = Modifier.size(28.dp)
-            )
-            Spacer(Modifier.size(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(if (ready) "自动记录准备就绪" else "自动记录需要检查", fontWeight = FontWeight.Bold)
-                Text(
-                    if (ready) "定位、后台定位和通知权限均已开启" else "点击查看缺少的权限或启动记录服务",
-                    color = AppTheme.colors.muted,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Text("查看", color = if (ready) AppTheme.colors.green else AppTheme.colors.orange, fontWeight = FontWeight.SemiBold)
         }
     }
 }

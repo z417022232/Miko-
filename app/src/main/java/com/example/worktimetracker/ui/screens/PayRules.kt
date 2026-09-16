@@ -73,16 +73,11 @@ import java.time.YearMonth
 internal fun PayRulesPage(
     vm: WorkTimeViewModel,
     onBack: () -> Unit,
-    onOpenSlip: () -> Unit = {},
 ) {
     val settings by vm.settings.collectAsState()
     val month by vm.month.collectAsState()
     val segments by vm.payRateSegments.collectAsState()
-    val payroll by vm.monthPayroll.collectAsState()
-    val recordedSalary by vm.monthlySalaryCents.collectAsState()
     val paramsMap by vm.payParams.collectAsState()
-    val baseline by vm.payBaseline.collectAsState()
-    val projection by vm.monthProjection.collectAsState()
 
     var editingKey by remember { mutableStateOf<PayRateKey?>(null) }
     var showParams by remember { mutableStateOf(false) }
@@ -110,13 +105,6 @@ internal fun PayRulesPage(
 
         SettingsGroup {
             SettingsRow(
-                Icons.Outlined.Receipt,
-                "工资条录入与核对",
-                "分项照条录入 · 应发/实发分开校验 · 保留原始数字不自动修正",
-                tint = AppTheme.colors.blue
-            ) { onOpenSlip() }
-            ThinDivider()
-            SettingsRow(
                 Icons.Outlined.WorkHistory,
                 "本月计薪参数",
                 if (params == null) "未设置 · 绩效系数按 1.0 计" else monthlyParamsSummary(params)
@@ -131,14 +119,6 @@ internal fun PayRulesPage(
                     "未开启 · 按实际定位时长扣休息"
                 }
             ) { showDefault = true }
-            ThinDivider()
-            SettingsRow(
-                Icons.Outlined.CalendarMonth,
-                "月度结算日",
-                "每月 15 日（次月发放上月工资）",
-                tint = AppTheme.colors.muted,
-                showChevron = false
-            ) {}
         }
         Spacer(Modifier.height(16.dp))
 
@@ -165,45 +145,6 @@ internal fun PayRulesPage(
             style = MaterialTheme.typography.labelSmall,
             color = AppTheme.colors.muted
         )
-        Spacer(Modifier.height(16.dp))
-
-        // ------------------------------------------------------ 当月推算
-        SectionLabel("${month.year} 年 ${month.monthValue} 月推算")
-        PayrollEstimateCard(payroll = payroll, recordedSalaryCents = recordedSalary, month = month)
-        projection?.let { pj ->
-            Spacer(Modifier.height(10.dp))
-            ProjectionCard(pj)
-        }
-        Spacer(Modifier.height(16.dp))
-
-        baseline?.let { b ->
-            SectionLabel("日工资基准月")
-            SettingsGroup {
-                SettingsRow(
-                    Icons.Outlined.Savings,
-                    "基准月 ${b.payrollMonth}",
-                    PayrollPresenter.baselineText(b.payrollMonth, b.netCents, b.minutes),
-                    tint = AppTheme.colors.green,
-                    showChevron = false
-                ) {}
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        // ---------------------------------------------------------- 页脚
-        Text(
-            "口径来源：按你 2026-09-13 提供的工资条（2025/12–2026/07）逐项反推并逐月对账 —— " +
-                "应发 6/7 月、个税 5/7 月、实发 5/7 月精确命中到分。\n\n" +
-                "· 加班工资不按真实加班算，公司每月包干固定小时数：\n" +
-                "    1.5 × 包干小时 ×（基本工资 ÷ 21.75 ÷ 8）\n" +
-                "· 夜班津贴 = 单价 × 当月夜班天数，天数由本机工时记录自动统计。\n" +
-                "· 绩效工资 =（绩效基数 + Δ月）× 系数 × 出勤折算系数（出勤天数 ÷ 21.75）；" +
-                "工资条印的「基数 600 × 系数」对不上条上的金额，所以也可以直接填金额。\n" +
-                "· 个税 =（应发 − 社保 − 公积金 − 5000）× 3%，公司用的是按月口径（非年度累计）。\n\n" +
-                "已手动录入实发的月份一律以录入值为准；这里只推算还没录入的月份，推算结果不会写进数据库。",
-            style = MaterialTheme.typography.labelSmall,
-            color = AppTheme.colors.muted
-        )
         Spacer(Modifier.height(12.dp))
     }
 
@@ -226,67 +167,6 @@ internal fun PayRulesPage(
     }
     if (showDefault) {
         DefaultHoursDialog(settings, vm, onDismiss = { showDefault = false })
-    }
-}
-
-/**
- * 整月预估卡：把还没记录的日子按标准工时补足，再乘基准月到手单价。
- *
- * 与上面「按公式推算」并列而不是替换 —— 两者口径不同，差额本身是信息
- * （公式法缺月度浮动项，单价法含浮动项）。
- */
-@Composable
-private fun ProjectionCard(projection: MonthProjection) {
-    val stats = projection.stats
-    SettingsGroup {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Text(
-                "整月预估（含未记录 ${stats.unrecordedDays} 天）",
-                style = MaterialTheme.typography.labelMedium,
-                color = AppTheme.colors.muted
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                formatCents(projection.netCents),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = AppTheme.colors.orange
-            )
-            Text(
-                "上满整月能拿多少（按到手单价折算）",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppTheme.colors.muted
-            )
-            Spacer(Modifier.height(8.dp))
-            ThinDivider()
-            Spacer(Modifier.height(8.dp))
-            PayLine("预估整月工时", PayrollPresenter.hoursLabel(stats.projectedMinutes))
-            PayLine("预估出勤", "${stats.projectedAttendDays} 天（含已记 ${stats.recordedDays} 天）")
-            PayLine("到手单价", formatCents(projection.hourlyCents) + "/小时")
-            if (stats.projectedNightShifts > 0) {
-                PayLine(
-                    "预估夜班",
-                    "${stats.projectedNightShifts} 夜" +
-                        if (stats.nightShiftsFromOverride) "（本月计薪参数）"
-                        else "（按最近班次延续）"
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                PayrollPresenter.projectionBasisText(stats, projection.standardMinutes),
-                style = MaterialTheme.typography.labelSmall,
-                color = AppTheme.colors.muted
-            )
-            Text(
-                "单价校准：" + PayrollPresenter.baselineText(
-                    projection.baseline.payrollMonth,
-                    projection.baseline.netCents,
-                    projection.baseline.minutes
-                ) + "；未记录日期按每日标准工时补足，节假日带薪不计工时。",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppTheme.colors.muted
-            )
-        }
     }
 }
 
@@ -322,54 +202,6 @@ private fun MonthPager(
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         TextButton(onClick = onToday) { Text("回到本月") }
-    }
-}
-
-/** 当月推算卡：出勤 → 各项收入 → 应发 → 扣款 → 预计到手。 */
-@Composable
-private fun PayrollEstimateCard(
-    payroll: PayrollBreakdown?,
-    recordedSalaryCents: Long?,
-    month: YearMonth
-) {
-    SettingsGroup {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Text(
-                "${month.monthValue} 月工资",
-                style = MaterialTheme.typography.labelMedium,
-                color = AppTheme.colors.muted
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                recordedSalaryCents?.let(::formatCents)
-                    ?: payroll?.let { formatCents(it.netCents) }
-                    ?: "—",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                color = AppTheme.colors.orange
-            )
-            Text(
-                if (recordedSalaryCents != null) "已录入实发（权威值）" else "预计到手（按公式推算）",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppTheme.colors.muted
-            )
-        }
-        ThinDivider()
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            if (payroll == null) {
-                Text("还没有可推算的数据", color = AppTheme.colors.muted)
-                return@Column
-            }
-            PayrollCompositionLines(payroll)
-            if (recordedSalaryCents != null) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "已录入实发 ${formatCents(recordedSalaryCents)}；与推算值的差额就是当月浮动项与扣款。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = AppTheme.colors.muted
-                )
-            }
-        }
     }
 }
 
@@ -483,20 +315,12 @@ private fun MonthlyPayParamsDialog(
     onDismiss: () -> Unit
 ) {
     val monthKey = month.toString()
+    // v7.2：这里只留「绩效系数」。其余 10 项（效益奖金/高温/病假/补发/其他加项/社保公积金覆盖/
+    // 夜班天数）**不再手工填** —— 它们由「工资条录入」按条上的分项落库后自动喂给引擎，
+    // 所以保存时必须走「只改系数、保留其余」的路径，绝不能整行覆盖把导入值抹掉。
     var coefficient by remember(monthKey) { mutableStateOf(draft.perfCoefficient) }
-    var delta by remember(monthKey) { mutableStateOf(draft.perfBaseDelta) }
-    var perfAmount by remember(monthKey) { mutableStateOf(draft.perfAmount) }
-    var bonus by remember(monthKey) { mutableStateOf(draft.benefitBonus) }
-    var heat by remember(monthKey) { mutableStateOf(draft.heatAllowance) }
-    var sick by remember(monthKey) { mutableStateOf(draft.sickPay) }
-    var back by remember(monthKey) { mutableStateOf(draft.backPay) }
-    var other by remember(monthKey) { mutableStateOf(draft.otherAdd) }
-    var social by remember(monthKey) { mutableStateOf(draft.socialOverride) }
-    var fund by remember(monthKey) { mutableStateOf(draft.housingFundOverride) }
-    var nights by remember(monthKey) { mutableStateOf(draft.nightShiftsOverride) }
 
     val coefficientOk = coefficient.isBlank() || PayrollPresenter.parseCoefficient(coefficient) != null
-    val nightsOk = nights.isBlank() || (nights.toIntOrNull()?.let { it in 0..31 } == true)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -504,49 +328,22 @@ private fun MonthlyPayParamsDialog(
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
-                    "每个月不一样的部分填这里；跨月不变的在上一页「计薪参数」里。留空 = 按 0 或默认值。",
+                    "只填绩效系数。其余分项（效益奖金、高温、病假、补发、社保公积金等）" +
+                        "在你「从相册导入工资条」时按条上的数字自动记录，不用手填。",
                     style = MaterialTheme.typography.labelSmall,
                     color = AppTheme.colors.muted
                 )
                 Spacer(Modifier.height(10.dp))
                 PayField("绩效系数", coefficient, { coefficient = it }, "如 1.0 / 0.8", error = !coefficientOk)
-                PayField("绩效基数 Δ月（元）", delta, { delta = it }, "留空 = 0")
-                PayField("绩效工资直接填金额（元）", perfAmount, { perfAmount = it }, "填了就忽略上面的乘积")
-                PayField("效益奖金（元）", bonus, { bonus = it }, "")
-                PayField("高温补贴（元）", heat, { heat = it }, "6–9 月常见 300")
-                PayField("病假工资（元）", sick, { sick = it }, "工资条上是加项，不是扣款")
-                PayField("补发（元）", back, { back = it }, "一次性补发")
-                PayField("其他加项（元）", other, { other = it }, "")
-                PayField("社保覆盖（元）", social, { social = it }, "留空 = 用计薪参数里的值")
-                PayField("公积金覆盖（元）", fund, { fund = it }, "留空 = 用计薪参数里的值")
-                PayField(
-                    "夜班天数覆盖", nights, { nights = it }, "留空 = 按本机记录的夜班天数",
-                    decimal = false, error = !nightsOk
-                )
             }
         },
         confirmButton = {
             TextButton(
                 onClick = {
-                    vm.saveMonthlyPayParams(
-                        monthKey,
-                        MonthlyPayDraft(
-                            perfCoefficient = coefficient,
-                            perfBaseDelta = delta,
-                            perfAmount = perfAmount,
-                            benefitBonus = bonus,
-                            heatAllowance = heat,
-                            sickPay = sick,
-                            backPay = back,
-                            otherAdd = other,
-                            socialOverride = social,
-                            housingFundOverride = fund,
-                            nightShiftsOverride = nights
-                        )
-                    )
+                    vm.savePerfCoefficient(monthKey, coefficient)
                     onDismiss()
                 },
-                enabled = coefficientOk && nightsOk
+                enabled = coefficientOk
             ) { Text("保存") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
