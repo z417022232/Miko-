@@ -42,6 +42,21 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
     }
 
     /**
+     * R1 迟到分钟数：`startTime − expectedStart`，**向零截断**（09:03:59 → 3min）。
+     *
+     * 这个口径是**全链路唯一**的迟到判据：状态机（WorkSessionEngine）与计薪
+     * （[calculateV1FinalMinutes]）都必须走这里，否则会出现
+     * 「状态机按毫秒判成迟到、计薪按分钟判成不迟到」的自相矛盾
+     * （2026-09-16 复查：09:03:01 两侧结论相反）。
+     */
+    fun arrivalLateMinutes(startMillis: Long, expectedStart: Long): Int =
+        TimeUnit.MILLISECONDS.toMinutes(startMillis - expectedStart).toInt()
+
+    /** R1：迟到是否超出容差。恰好等于容差**不算**迟到（规则：≤3min 不计）。 */
+    fun isArrivalLate(startMillis: Long, expectedStart: Long, toleranceMinutes: Int): Boolean =
+        arrivalLateMinutes(startMillis, expectedStart) > toleranceMinutes
+
+    /**
      * 按公司 v1 计薪规则（R1–R8）计算 finalMinutes。
      *
      * 规则要点：
@@ -72,6 +87,14 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         settings: WorkSettings,
         /** A5/R5: 班次类型，决定 expected 边界。白班 09:00→21:00；夜班 21:00→次日 09:00。 */
         shiftType: ShiftType = ShiftType.DAY_SHIFT,
+        /**
+         * A5/R5: 归属日（开班日）。传了就按它取班次窗口，不传才回落到「到岗时刻的日历日」。
+         *
+         * ⚠️ 必须由调用方传（[WorkSessionEngine] 用 `ShiftDetector.assignedDate` 的结果）：
+         * 凌晨 00:30 到岗的夜班，其开班日是**前一天**，按到岗日历日取窗口会整体挪后一天，
+         * 于是迟到变"早到"、早退变"本该 21:00 下班"，算出 0 分钟（2026-09-16 复查 P0）。
+         */
+        assignedDate: LocalDate? = null,
         lateToleranceMinutes: Int = settings.arrivalToleranceMinutes
     ): V1FinalResult {
         if (status == RecordStatus.REST) {
@@ -82,18 +105,20 @@ class WorkHourCalculator(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         }
 
         val trace = mutableListOf<String>()
-        // R5: workDate 归属日 = 上班日（开班日）
-        val date = Instant.ofEpochMilli(startMillis).atZone(zoneId).toLocalDate()
+        // R5: workDate 归属日 = 上班日（开班日）。有 assignedDate 就用它，
+        // 否则退回「startMillis 的日历日」（旧口径，仅作兜底）。
+        val startDate = Instant.ofEpochMilli(startMillis).atZone(zoneId).toLocalDate()
+        val date = assignedDate ?: startDate
         val endDate = Instant.ofEpochMilli(endMillis).atZone(zoneId).toLocalDate()
-        val crossesMidnight = endDate != date
+        // 跨夜看的是**真实日历跨越**（start 与 end 不同日），与归属日是不是前一天无关
+        val crossesMidnight = endDate != startDate
         if (crossesMidnight) trace.add("R5_CROSS_NIGHT")
         // A5: 班次边界按 shiftType 取，夜班 expected 跨到次日 09:00
         val window = expectedWindow(date, shiftType, settings)
         val expectedStart = window.first
         val expectedEnd = window.second
 
-        val arrivalLateMillis = startMillis - expectedStart
-        val arrivalLateMinutes = TimeUnit.MILLISECONDS.toMinutes(arrivalLateMillis).toInt()
+        val arrivalLateMinutes = arrivalLateMinutes(startMillis, expectedStart)
 
         // A8（用户 2026-09-12 确认）：默认工时短路**仅在正常出勤时**生效。
         //   设了默认工时「正常打卡」→ 直接计默认工时（08:45 到岗 / 21:00 离岗 → 默认值）

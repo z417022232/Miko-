@@ -121,4 +121,45 @@ class SlipOcrParserTest {
         val p = SlipOcrParser.parse(listOf("应发工资 7322.07", "实发工资 5919.96", "基本工资 3100.00"))
         assertEquals("识别到 应发、实发、1 个分项", p.summary)
     }
+
+    // ------------------------------------------ 2026-09-16 复查 P2：三项校验加固
+
+    @Test fun impossibleCalendarDateIsRejected() {
+        // OCR 把 2/30 认成 2/31 很常见；发薪日期是唯一会直接落库的字段 → 宁缺勿错
+        assertNull(SlipOcrParser.parse(listOf("发薪日期 2026-02-31")).paymentDate)
+        assertNull(SlipOcrParser.parse(listOf("发薪日期 2026/04/31")).paymentDate)
+        assertNull(SlipOcrParser.parse(listOf("发薪日期 2026-13-01")).paymentDate)
+        assertNull(SlipOcrParser.parse(listOf("发薪日期 2026-00-10")).paymentDate)
+        // 非闰年的 2/29 同样不存在
+        assertNull(SlipOcrParser.parse(listOf("发薪日期 2026-02-29")).paymentDate)
+        // 合法日期照常识别，闰年 2/29 要放行
+        assertEquals("2026-08-15", SlipOcrParser.parse(listOf("发薪日期 2026-08-15")).paymentDate)
+        assertEquals("2024-02-29", SlipOcrParser.parse(listOf("发薪日期 2024-02-29")).paymentDate)
+    }
+
+    @Test fun negativeAmountIsNotRecordedAsPositive() {
+        // 负号代表冲减，分项一律记正数 → 碰到负号放弃这一处，绝不把 -150 记成 150
+        val p = SlipOcrParser.parse(listOf("其他扣款 -150.00", "补发工资 -300.00"))
+        assertNull(p.items[SlipItemKey.OTHER_DEDUCT])
+        assertNull(p.items[SlipItemKey.BACK_PAY])
+        // 正数照常识别（不能因为加了负号判断就把正数也挡掉）
+        val ok = SlipOcrParser.parse(listOf("其他扣款 150.00"))
+        assertEquals("150.00", ok.items[SlipItemKey.OTHER_DEDUCT])
+    }
+
+    @Test fun parameterValueIsNotTakenAsGrossWhenAliasIsOnlyAPrefix() {
+        // 「应发工资基数 8000」是计薪参数：既不能被「应发工资」取数，
+        // 也不能被它的短前缀「应发」把 8000 吃成应发工资（参数被当成分项记账）
+        assertNull(SlipOcrParser.parse(listOf("应发工资基数 8000.00")).grossText)
+
+        // 参数与真值同屏时，必须取到真值
+        val mixed = SlipOcrParser.parse(listOf("应发工资基数 8000.00", "应发工资 7322.07"))
+        assertEquals("7322.07", mixed.grossText)
+    }
+
+    @Test fun parameterValueIsNotTakenAsNetWhenAliasIsOnlyAPrefix() {
+        assertNull(SlipOcrParser.parse(listOf("实发工资基数 5000.00")).netText)
+        val mixed = SlipOcrParser.parse(listOf("实发工资基数 5000.00", "实发工资 5919.96"))
+        assertEquals("5919.96", mixed.netText)
+    }
 }

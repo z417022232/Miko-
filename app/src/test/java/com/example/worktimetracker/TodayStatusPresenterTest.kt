@@ -110,6 +110,38 @@ class TodayStatusPresenterTest {
         assertFalse(result.running)
     }
 
+    @Test
+    fun `没打卡时不得显示固定工时`() {
+        // 2026-09-16 复查 P1：固定工时的前提是「今天上了班」。
+        // 当天还没有任何记录时显示 720 会让人以为已经出勤。
+        val result = TodayStatusPresenter.displayMinutes(
+            finalMinutes = 0,
+            startMillis = null,
+            endMillis = null,
+            nowMillis = 10L * 60 * 60 * 1000,
+            restDeductionMinutes = 60,
+            fixedMinutes = 720
+        )
+        assertEquals(0, result.minutes)
+        assertFalse("没有出勤就不能标成固定工时", result.fixed)
+        assertFalse(result.running)
+    }
+
+    @Test
+    fun `已离岗时固定工时不覆盖落库值`() {
+        // 已在岗 → 离岗：落库的 finalMinutes 是权威，固定值不得盖它
+        val result = TodayStatusPresenter.displayMinutes(
+            finalMinutes = 300,
+            startMillis = 1_000L,
+            endMillis = 2_000L,
+            nowMillis = 99_999_999L,
+            restDeductionMinutes = 60,
+            fixedMinutes = 720
+        )
+        assertEquals(300, result.minutes)
+        assertFalse(result.fixed)
+    }
+
     // --------------------------------------------------------------- 状态
 
     @Test

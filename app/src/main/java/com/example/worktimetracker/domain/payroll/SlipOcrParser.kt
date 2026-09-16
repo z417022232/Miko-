@@ -1,5 +1,7 @@
 package com.example.worktimetracker.domain.payroll
 
+import java.time.LocalDate
+
 /**
  * 工资条照片的 OCR 文本 → 录入草稿字段（**纯函数，零 IO，可单测**）。
  *
@@ -16,6 +18,11 @@ package com.example.worktimetracker.domain.payroll
  *    —— 真实案例（2026-08 条）：`绩效工资基数 600` 把 `绩效工资 810.00` 顶掉。
  * 5. **发薪日期不能取「第一个日期」**：条上第一个日期往往是入职日期
  *    （2026-08 条：`入职日期 2024/02/26`）。见 [pickPaymentDate]。
+ * 6. **日期必须过真实日历 / 金额不许带负号**（2026-09-16 复查 P2）：
+ *    `2026/02/31` 这种不存在的日期一律丢弃（OCR 把 `2/30` 认成 `2/31` 很常见）；
+ *    `-150` 代表冲减，分项一律记正数，遇到负号就放弃这一处。
+ * 7. **短别名不得顶着长标签取数**：`应发工资基数 8000` 里 `应发` 是 `应发工资` 的前缀，
+ *    若不占位就会把参数金额 8000 记成应发工资。见 [aliasHits]。
  */
 object SlipOcrParser {
 
@@ -246,13 +253,20 @@ object SlipOcrParser {
         return null
     }
 
+    /**
+     * 从一行里抠出日期。
+     *
+     * ⚠️ **必须按真实日历校验**（2026-09-16 复查 P2）：只查 `1..12` / `1..31` 会放过
+     * `2026/02/31`、`2026/04/31` 这类不存在的日期，而 OCR 把 `2/30` 认成 `2/31` 很常见。
+     * 发薪日期是**唯一会直接落库的字段**，宁缺勿错 —— 判不出来就返回 null（不覆盖用户输入）。
+     */
     private fun extractDate(line: String): String? {
         val m = DATE.find(line) ?: return null
         val y = m.groupValues[1].toIntOrNull() ?: return null
         val mo = m.groupValues[2].toIntOrNull() ?: return null
         val d = m.groupValues[3].toIntOrNull() ?: return null
-        if (mo !in 1..12 || d !in 1..31) return null
-        return "%04d-%02d-%02d".format(y, mo, d)
+        val date = runCatching { LocalDate.of(y, mo, d) }.getOrNull() ?: return null
+        return date.toString()
     }
 
     /** 整行就是一个金额（可带千分位）。 */
@@ -289,18 +303,60 @@ object SlipOcrParser {
     private val PARAM_SUFFIXES =
         listOf("系数", "基数", "单价", "比例", "起征点", "税率", "折算", "标准", "上限", "下限")
 
-    /** 表头类字段：命中别名后，取它右侧**紧跟**的第一个数字。 */
+    /**
+     * 表头类字段：命中别名后，取它右侧**紧跟**的第一个数字。
+     *
+     * 两处加固（2026-09-16 复查 P2）：
+     * 1. **长标签占位**：同一起点被更长的已知标签盖住时，短别名不得再取数。
+     *    否则 `应发工资基数 8000 … 应发工资 5000` 会先被 `应发工资` 判成参数行、
+     *    再被它的前缀 `应发` 把参数金额 `8000` 吃成应发工资（**参数被当成分项记账**）。
+     * 2. **负号不当正数**：`其他扣款 -150` 这类写法里负号代表冲减，
+     *    分项一律记正数金额，遇到负号直接放弃这一处、继续找后面的正数（宁缺勿错）。
+     */
     private fun valueAfter(line: String, aliases: List<String>): String? {
-        for (alias in aliases) {
-            val at = line.indexOf(alias)
-            if (at < 0) continue
-            val seg = line.substring(at + alias.length)
+        for ((_, end) in aliasHits(line, aliases)) {
+            val seg = line.substring(end)
             if (seg.trimStart().startsWithAny(PARAM_SUFFIXES)) continue
             val hit = NUM.find(seg) ?: continue
             if (hit.range.first > GAP_LIMIT) continue
+            if (isNegativeAt(seg, hit.range.first)) continue
             return hit.value.replace(",", "")
         }
         return null
+    }
+
+    /**
+     * 一组别名在行内的全部命中区间，**长别名优先**且**被更长命中覆盖的位置直接丢弃**。
+     *
+     * 与 [itemPairs] 的区间互斥是同一套判据，这里是它的表头字段版。
+     */
+    private fun aliasHits(line: String, aliases: List<String>): List<Pair<Int, Int>> {
+        val all = mutableListOf<Pair<Int, Int>>()
+        aliases.forEach { alias ->
+            var from = 0
+            while (true) {
+                val at = line.indexOf(alias, from)
+                if (at < 0) break
+                all += at to (at + alias.length)
+                from = at + 1
+            }
+        }
+        val sorted = all.sortedWith(
+            compareByDescending<Pair<Int, Int>> { it.second - it.first }.thenBy { it.first }
+        )
+        val claimed = mutableListOf<Pair<Int, Int>>()
+        return sorted.filter { cand ->
+            val overlapped = claimed.any { cand.first < it.second && cand.second > it.first }
+            if (!overlapped) claimed += cand
+            !overlapped
+        }
+    }
+
+    /** `seg` 里 [index] 处那个数字前面是否紧跟负号（半角 / 全角 / 数学减号）。 */
+    private fun isNegativeAt(seg: String, index: Int): Boolean {
+        val before = seg.substring(0, index).trimEnd()
+        if (before.isEmpty()) return false
+        return before.last() in setOf('-', '－', '−', '—')
     }
 
     private fun String.startsWithAny(prefixes: List<String>): Boolean =
@@ -339,6 +395,8 @@ object SlipOcrParser {
             val seg = line.substring(hit.end, limit)
             val num = NUM.find(seg) ?: return@forEachIndexed
             if (num.range.first > GAP_LIMIT) return@forEachIndexed
+            // 负号代表冲减，分项一律记正数金额：遇到就不取（2026-09-16 复查 P2）
+            if (isNegativeAt(seg, num.range.first)) return@forEachIndexed
             out += key to num.value.replace(",", "")
         }
         return out

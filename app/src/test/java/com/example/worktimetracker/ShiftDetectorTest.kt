@@ -23,6 +23,10 @@ import java.time.ZoneId
  *   取距离最近者（Duration.toMinutes() 向零截断）；最近锚点时刻等于 workStartMinutes 时刻 ⇒ 白班，
  *   否则 ⇒ 夜班。候选列表以 dayStart 开头，故完全并列时（15:00:00）判定为**白班**。
  *
+ * 2026-09-16 起 `detectShift` 与 `assignedDate` 共同委托 [ShiftDetector.anchorFor]：
+ * **班次与归属日必须来自同一个锚点**，否则凌晨到岗会出现「识别为夜班、却归到当天」的矛盾。
+ * 识别结果本身一字未改（下面的冻结边界用例可证）。
+ *
  * 2026-09-13 设备实测：8 月 29 条记录 28 条与库中 shift 完全一致；唯一"不一致"是 id=158
  * 库内为中文 '白班'（UI 手工写入）而算法预测 DAY_SHIFT——语义一致，非算法错误。
  * 全库另有 4 条枚举不一致（id=66/71/114 为旧软件导入时无条件盖 DAY_SHIFT，
@@ -88,9 +92,9 @@ class ShiftDetectorTest {
         val start = ms(2026, 8, 1, 20, 44)
         val end = ms(2026, 8, 2, 9, 12)
         assertEquals(ShiftType.NIGHT_SHIFT, detector.detectShift(start, settings))
-        assertEquals("2026-08-01", detector.assignedDate(start))
+        assertEquals("2026-08-01", detector.assignedDate(start, settings))
         assertTrue(detector.crossesMidnight(start, end))
-        assertEquals("跨夜归属日不得由 endMillis 推导", "2026-08-01", detector.assignedDate(start))
+        assertEquals("跨夜归属日不得由 endMillis 推导", "2026-08-01", detector.assignedDate(start, settings))
     }
 
     // ---------- 识别边界（9:00 与 21:00 两个锚点的 Voronoi 分界）----------
@@ -160,11 +164,31 @@ class ShiftDetectorTest {
 
     // ---------- 归属日 / 跨夜派生 ----------
 
-    @Test fun assignedDateFollowsStartMillis() {
-        assertEquals("2026-09-12", detector.assignedDate(ms(2026, 9, 12, 9, 0)))
-        assertEquals("2026-08-01", detector.assignedDate(ms(2026, 8, 1, 20, 44)))
-        // 次日凌晨到岗 → 归当天（startMillis 的本地日期）
-        assertEquals("2026-08-02", detector.assignedDate(ms(2026, 8, 2, 2, 0)))
+    /**
+     * 归属日 = **吸附锚点的开班日**，不是「到岗时刻的日历日」。
+     *
+     * 2026-09-16 复查 P0 修正：凌晨到岗曾被归到当天，与「识别为夜班」自相矛盾
+     * （夜班开班在前一晚 21:00），还会和当天白班撞在同一个 workDate。
+     */
+    @Test fun assignedDateFollowsShiftAnchor() {
+        assertEquals("早班 09:00 到岗 → 当天", "2026-09-12", detector.assignedDate(ms(2026, 9, 12, 9, 0), settings))
+        assertEquals("夜班 20:44 到岗 → 当天", "2026-08-01", detector.assignedDate(ms(2026, 8, 1, 20, 44), settings))
+        // 次日凌晨 02:00 到岗：最近锚点是**前一晚 21:00**（夜班开班）→ 归属日必须是 8/1
+        assertEquals("凌晨到岗 → 归前一晚开班的那个夜班", "2026-08-01", detector.assignedDate(ms(2026, 8, 2, 2, 0), settings))
+        // 而当天早班 08:00 到岗仍归当天，两者不会撞在同一天
+        assertEquals("早班到岗 → 当天", "2026-08-02", detector.assignedDate(ms(2026, 8, 2, 8, 0), settings))
+    }
+
+    /** 班次与归属日必须同源：`anchorFor` 一次产出两者，不允许分叉。 */
+    @Test fun shiftAndAssignedDateComeFromTheSameAnchor() {
+        listOf(
+            ms(2026, 8, 1, 20, 44), ms(2026, 8, 2, 2, 0), ms(2026, 8, 2, 8, 0),
+            ms(2026, 8, 2, 0, 30), ms(2026, 8, 1, 9, 0)
+        ).forEach { arrival ->
+            val anchor = detector.anchorFor(arrival, settings)
+            assertEquals("detectShift 必须等于锚点班次 @ $arrival", anchor.shift, detector.detectShift(arrival, settings))
+            assertEquals("assignedDate 必须等于锚点日期 @ $arrival", anchor.date.toString(), detector.assignedDate(arrival, settings))
+        }
     }
 
     @Test fun crossesMidnightReflectsCalendarDateChange() {

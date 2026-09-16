@@ -58,23 +58,41 @@ object SourceHealthJudge {
     /** 明确表示「这个来源根本不可用」的失败原因。 */
     private val HARD_FAILURES = setOf("PERMISSION", "SECURITY", "DISABLED")
 
+    /**
+     * 允许的时钟偏差。回调时间比当前时间还晚超过这个量，就不是"新鲜"，而是数据异常
+     * （系统改过时间、时区跳变、写库时用了错的时钟）。
+     *
+     * ⚠️ 若不挡，`now - lastCallbackAt` 是负数，永远超不过 [FRESH_WINDOW_MILLIS]，
+     * 一个**永远不会过期**的脏时间戳会把来源一直显示成"正常"，看门狗也永远不动作
+     * （2026-09-16 复查 P2）。
+     */
+    const val FUTURE_SKEW_TOLERANCE_MILLIS = 5 * 60_000L
+
     fun status(health: LocationHealthEntity?, now: Long): SourceStatus = when {
         health == null -> SourceStatus.UNKNOWN
         !health.registered -> SourceStatus.ABNORMAL
         health.lastFailure in HARD_FAILURES -> SourceStatus.ABNORMAL
         health.lastCallbackAt <= 0L -> SourceStatus.UNKNOWN
+        // 时间戳落在未来 → 数据异常，不能因为"差值算出来是负的"就当正常
+        health.lastCallbackAt > now + FUTURE_SKEW_TOLERANCE_MILLIS -> SourceStatus.ABNORMAL
         now - health.lastCallbackAt > FRESH_WINDOW_MILLIS -> SourceStatus.ABNORMAL
         else -> SourceStatus.NORMAL
     }
 
-    /** 异常时的中文原因（界面上给用户看的一句话）；正常/未知返回 `null`。 */
-    fun reason(health: LocationHealthEntity?): String? = when {
+    /**
+     * 异常时的中文原因（界面上给用户看的一句话）；正常/未知返回 `null`。
+     *
+     * 需要 [now] 才能区分「过期」与「时间戳异常」两种异常。
+     */
+    fun reason(health: LocationHealthEntity?, now: Long): String? = when {
         health == null -> null
         !health.registered -> "未注册"
         health.lastFailure == "PERMISSION" -> "缺少权限"
         health.lastFailure == "SECURITY" -> "系统安全策略拦截"
         health.lastFailure == "DISABLED" -> "开关已关闭"
         health.lastCallbackAt <= 0L -> null
+        health.lastCallbackAt > now + FUTURE_SKEW_TOLERANCE_MILLIS -> "回调时间异常"
+        now - health.lastCallbackAt > FRESH_WINDOW_MILLIS -> "长时间没有回调"
         else -> null
     }
 

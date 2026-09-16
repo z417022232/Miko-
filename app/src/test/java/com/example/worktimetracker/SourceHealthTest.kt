@@ -16,7 +16,9 @@ import org.junit.Test
  * 守三件事：
  *  1. **没数据 ≠ 正常**（显示「暂无数据」而不是蓝色，不谎报）；
  *  2. **权限/开关故障才算红**，`EMPTY`（附近没有 AP）不算故障；
- *  3. **过期才算红**：静止/室内长时间不回调是正常的，不能秒判异常。
+ *  3. **过期才算红**：静止/室内长时间不回调是正常的，不能秒判异常；
+ *  4. **时间戳落在未来也算红**（2026-09-16 新增）：脏数据不能让来源"永远新鲜"，
+ *     且每一种异常都必须给得出中文原因。
  */
 class SourceHealthTest {
 
@@ -52,7 +54,7 @@ class SourceHealthTest {
     fun `权限缺失即使刚刚回调过也算异常`() {
         val health = row("wifi", lastCallbackAt = now - 1_000L, lastFailure = "PERMISSION")
         assertEquals(SourceStatus.ABNORMAL, SourceHealthJudge.status(health, now))
-        assertEquals("缺少权限", SourceHealthJudge.reason(health))
+        assertEquals("缺少权限", SourceHealthJudge.reason(health, now))
     }
 
     @Test
@@ -61,7 +63,7 @@ class SourceHealthTest {
             SourceStatus.ABNORMAL,
             SourceHealthJudge.status(row("bluetooth", lastFailure = "DISABLED"), now)
         )
-        assertEquals("开关已关闭", SourceHealthJudge.reason(row("bluetooth", lastFailure = "DISABLED")))
+        assertEquals("开关已关闭", SourceHealthJudge.reason(row("bluetooth", lastFailure = "DISABLED"), now))
     }
 
     @Test
@@ -77,12 +79,34 @@ class SourceHealthTest {
     fun `超过新鲜窗口没有回调算异常`() {
         val stale = row("cell", lastCallbackAt = now - SourceHealthJudge.FRESH_WINDOW_MILLIS - 1)
         assertEquals(SourceStatus.ABNORMAL, SourceHealthJudge.status(stale, now))
+        // 异常必须给得出原因，否则界面只有红点却说不出为什么（2026-09-16 复查 P2）
+        assertEquals("长时间没有回调", SourceHealthJudge.reason(stale, now))
     }
 
     @Test
     fun `恰好在新鲜窗口边界内仍是正常`() {
         val edge = row("cell", lastCallbackAt = now - SourceHealthJudge.FRESH_WINDOW_MILLIS + 1)
         assertEquals(SourceStatus.NORMAL, SourceHealthJudge.status(edge, now))
+        assertEquals(null, SourceHealthJudge.reason(edge, now))
+    }
+
+    // ---------- 时间异常（2026-09-16 复查 P2）----------
+
+    @Test
+    fun `回调时间落在未来算异常而不是永远新鲜`() {
+        // 系统改过时间 / 时区跳变 / 写库用了错的时钟：差值算出来是负的，
+        // 不挡的话这个来源会永远显示"正常"，看门狗也永远不动作
+        val future = row("gnss", lastCallbackAt = now + SourceHealthJudge.FUTURE_SKEW_TOLERANCE_MILLIS + 1)
+        assertEquals(SourceStatus.ABNORMAL, SourceHealthJudge.status(future, now))
+        assertEquals("回调时间异常", SourceHealthJudge.reason(future, now))
+    }
+
+    @Test
+    fun `轻微时钟偏差仍算正常`() {
+        // 几秒到几分钟的偏差很常见（回调时间由写入时刻决定），不能判成异常
+        val slight = row("gnss", lastCallbackAt = now + 60_000L)
+        assertEquals(SourceStatus.NORMAL, SourceHealthJudge.status(slight, now))
+        assertEquals(null, SourceHealthJudge.reason(slight, now))
     }
 
     @Test

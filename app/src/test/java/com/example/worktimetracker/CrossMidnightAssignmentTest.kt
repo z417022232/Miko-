@@ -25,8 +25,8 @@ class CrossMidnightAssignmentTest {
     // 不配 defaultHours，走真实 v1 公式（R1–R8），而不是 R_DEFAULT_HOURS 直传
     private val settings = WorkSettings(workStartMinutes = 9 * 60, workEndMinutes = 21 * 60)
 
-    private fun ms(y: Int, m: Int, d: Int, h: Int, min: Int) =
-        LocalDateTime.of(y, m, d, h, min).atZone(zone).toInstant().toEpochMilli()
+    private fun ms(y: Int, m: Int, d: Int, h: Int, min: Int, sec: Int = 0) =
+        LocalDateTime.of(y, m, d, h, min, sec).atZone(zone).toInstant().toEpochMilli()
 
     // ---------- 归属日 ----------
 
@@ -104,19 +104,78 @@ class CrossMidnightAssignmentTest {
     // ---------- 强校验本体 ----------
 
     @Test fun validateAssignmentPassesForStartDate() {
-        val violations = engine.validateAssignment(ms(2026, 8, 1, 21, 0), "2026-08-01")
+        val violations = engine.validateAssignment(ms(2026, 8, 1, 21, 0), "2026-08-01", settings)
         assertTrue("上班日归属应无违规", violations.isEmpty())
     }
 
     @Test fun validateAssignmentFlagsEndDateMismatch() {
         // 故意传下班日 → 必须报违规（护栏：防止有人把 workDate 改成 endMillis 日期）
-        val violations = engine.validateAssignment(ms(2026, 8, 1, 21, 0), "2026-08-02")
+        val violations = engine.validateAssignment(ms(2026, 8, 1, 21, 0), "2026-08-02", settings)
         assertEquals(1, violations.size)
         assertTrue(violations.first().contains("R5"))
         assertTrue(violations.first().contains("2026-08-01"))
     }
 
     @Test fun validateAssignmentIsSilentWhenNoStartEvidence() {
-        assertTrue(engine.validateAssignment(null, "2026-08-02").isEmpty())
+        assertTrue(engine.validateAssignment(null, "2026-08-02", settings).isEmpty())
+    }
+
+    // ---------- 午夜后到岗（2026-09-16 复查 P0）：归前一晚开班的那个夜班 ----------
+
+    @Test fun arrivalAfterMidnightIsAssignedToThePreviousNightShift() {
+        // 8/2 凌晨 00:30 才到岗：最近锚点是 8/1 21:00（夜班开班）→ 归 8/1
+        val s = engine.buildSession(ms(2026, 8, 2, 0, 30), ms(2026, 8, 2, 9, 0), settings)
+        assertEquals("凌晨到岗必须归前一晚开班日", "2026-08-01", s.assignedDate)
+        assertEquals(ShiftType.NIGHT_SHIFT, s.shiftType)
+        assertFalse("归属日不得落成到岗当天", s.assignedDate == "2026-08-02")
+        assertFalse("正常构造下 R5 强校验不应报违规", s.reviewReason?.contains("R5 归属日异常") == true)
+    }
+
+    @Test fun arrivalAfterMidnightIsLateAgainstThePreviousNightStart() {
+        // 8/1 21:00 开班、8/2 00:30 才到 → 迟到 210min，向上取整到 01:00 起算
+        val s = engine.buildSession(ms(2026, 8, 2, 0, 30), ms(2026, 8, 2, 9, 0), settings)
+        assertEquals(RecordStatus.ARRIVAL_EXCEPTION, s.status)
+        assertTrue("应标记迟到", s.needsReview)
+        assertTrue("迟到 210min", s.reviewReason?.contains("210min") == true)
+        assertTrue("取整到 01:00", s.v1RuleTrace.contains("R1_ALIGN_UP"))
+        // 复查 #1 的更深一层：计薪窗口也必须按**开班日**取，否则会被套成
+        // 「8/2 21:00 开班」，迟到变早到、早退变尚未上班，最终算出 0 分钟。
+        assertEquals("01:00 起算", ms(2026, 8, 2, 1, 0), s.v1EffectiveStartMillis)
+        assertEquals("09:00 正常下班", ms(2026, 8, 2, 9, 0), s.v1EffectiveEndMillis)
+        assertEquals("8h − 1h 午休", 420, s.finalMinutes)
+    }
+
+    @Test fun nightShiftEnteredAfterMidnightWithNormalEndStillGetsFullPay() {
+        // 同样凌晨到岗，但按 21:00 开班算只迟到 210min（不是"早到"）——
+        // 若窗口取错日子，这里会算成 0 分钟
+        val s = engine.buildSession(ms(2026, 8, 2, 0, 30), ms(2026, 8, 2, 9, 0), settings)
+        assertFalse("不得算出 0 分钟", s.finalMinutes == 0)
+        assertEquals(420, s.finalMinutes)
+    }
+
+    @Test fun sameMorningDayShiftStillLandsOnItsOwnDate() {
+        // 与上一条同一天：8/2 08:00 到岗是白班 → 归 8/2，两条记录不会互相覆盖
+        val night = engine.buildSession(ms(2026, 8, 2, 0, 30), ms(2026, 8, 2, 9, 0), settings)
+        val day = engine.buildSession(ms(2026, 8, 2, 8, 0), ms(2026, 8, 2, 21, 0), settings)
+        assertEquals("2026-08-01", night.assignedDate)
+        assertEquals("2026-08-02", day.assignedDate)
+        assertEquals(ShiftType.DAY_SHIFT, day.shiftType)
+    }
+
+    // ---------- 迟到判定粒度：引擎与计薪必须同口径（2026-09-16 复查 P1）----------
+
+    @Test fun lateByThreeMinutesAndOneSecondIsNotLateByRule() {
+        // 09:03:01 —— 按分钟截断是 3min，规则「≤3min 不计」，两侧都必须判成不迟到
+        val s = engine.buildSession(ms(2026, 9, 12, 9, 3, 1), ms(2026, 9, 12, 21, 0), settings)
+        assertEquals("状态机不得判成到岗异常", RecordStatus.WORK, s.status)
+        assertFalse("不得出现迟到复核项", s.needsReview)
+        assertTrue("计薪走 R1（仍按 09:00 起算）", s.v1RuleTrace.contains("R1"))
+        assertFalse(s.v1RuleTrace.contains("R1_ALIGN_UP"))
+    }
+
+    @Test fun lateByFourMinutesIsLateOnBothSides() {
+        val s = engine.buildSession(ms(2026, 9, 12, 9, 4, 0), ms(2026, 9, 12, 21, 0), settings)
+        assertEquals(RecordStatus.ARRIVAL_EXCEPTION, s.status)
+        assertTrue(s.v1RuleTrace.contains("R1_ALIGN_UP"))
     }
 }

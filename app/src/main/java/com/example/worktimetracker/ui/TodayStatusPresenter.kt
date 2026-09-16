@@ -26,9 +26,12 @@ object TodayStatusPresenter {
      *
      * 取值顺序（与结算口径保持一致，让数字在收工时不会突然跳变）：
      * 1. 已离岗（endMillis != null）→ 用落库的 [finalMinutes]；
-     * 2. 开启了固定工时 → 用固定值（当天无论如何都按这个数计，不显示跳动）；
-     * 3. 只有上班时间 → 「已持续时长 − 休息扣除」，下限 0，并标记计时中；
-     * 4. 什么都没记 → 落库值（通常 0）。
+     * 2. 没有上班时间（startMillis == null）→ 用落库值（通常 0）。
+     *    **必须排在固定工时之前**：固定工时是"这一天按 N 分钟计"的口径，
+     *    只有真的上了班才谈得上；没打卡却显示固定工时会让人以为今天已经出勤了
+     *    （2026-09-16 复查 P1）；
+     * 3. 开了固定工时 → 用固定值（当天无论如何都按这个数计，不显示跳动）；
+     * 4. 其余 → 「已持续时长 − 休息扣除」，下限 0，并标记计时中。
      */
     fun displayMinutes(
         finalMinutes: Int,
@@ -39,8 +42,8 @@ object TodayStatusPresenter {
         fixedMinutes: Int? = null
     ): TodayMinutes = when {
         endMillis != null -> TodayMinutes(finalMinutes.coerceAtLeast(0), running = false, fixed = false)
-        fixedMinutes != null -> TodayMinutes(fixedMinutes.coerceAtLeast(0), running = false, fixed = true)
         startMillis == null -> TodayMinutes(finalMinutes.coerceAtLeast(0), running = false, fixed = false)
+        fixedMinutes != null -> TodayMinutes(fixedMinutes.coerceAtLeast(0), running = false, fixed = true)
         else -> {
             val elapsed = ((nowMillis - startMillis) / 60_000L).toInt().coerceAtLeast(0)
             TodayMinutes((elapsed - restDeductionMinutes).coerceAtLeast(0), running = true, fixed = false)

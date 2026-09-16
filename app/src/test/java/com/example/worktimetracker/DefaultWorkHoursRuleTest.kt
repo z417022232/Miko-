@@ -94,6 +94,35 @@ class DefaultWorkHoursRuleTest {
         assertTrue(s.needsReview)
     }
 
+    /**
+     * 复查 #2 护栏（2026-09-16）：逐分钟扫过 09:00–09:10，
+     * **凡迟到者一律拿不到默认工时且必须进复核**，容差内的仍按默认工时。
+     */
+    @Test fun lateArrivalNeverGetsDefaultHoursAndAlwaysNeedsReview() {
+        (0..10).forEach { plus ->
+            val start = ms(2026, 7, 22, 9, 0) + plus * 60_000L
+            val s = engine.buildSession(start, ms(2026, 7, 22, 21, 0), withDefault)
+            if (plus <= 3) {
+                assertEquals("迟到 ${plus}min 在容差内 → 仍走默认工时", 12 * 60, s.finalMinutes)
+                assertFalse("容差内不该要求复核", s.needsReview)
+            } else {
+                assertFalse("迟到 ${plus}min 绝不能拿到默认工时", s.finalMinutes == 12 * 60)
+                assertTrue("迟到 ${plus}min 必须标记复核：${s.reviewReason}", s.needsReview)
+                assertTrue(s.v1RuleTrace.contains("R_DEFAULT_BYPASS_LATE"))
+            }
+        }
+    }
+
+    /**
+     * 复查 #4 的引擎侧护栏（2026-09-16）：当天**一条打卡证据都没有**时，
+     * 默认工时不得凭空造出一整天工时（界面侧同口径见 `TodayStatusPresenterTest`）。
+     */
+    @Test fun noAttendanceNeverYieldsDefaultHours() {
+        val s = engine.buildSession(null, null, withDefault)
+        assertEquals("没有出勤就没有工时", 0, s.finalMinutes)
+        assertTrue("应走空边界分支：${s.v1RuleTrace}", s.v1RuleTrace.contains("R_NULL_BOUNDS"))
+    }
+
     // ---------- 夜班与白班算法一致 ----------
 
     @Test fun nightShiftWithDefaultHoursNormalAttendanceUsesDefaultHours() {

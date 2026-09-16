@@ -17,17 +17,22 @@ class WorkSessionEngine(
     fun buildSession(startMillis: Long?, endMillis: Long?, settings: WorkSettings): WorkSession {
         val effectiveStart = startMillis ?: fallbackStart(endMillis, settings)
         val shift = effectiveStart?.let { shiftDetector.detectShift(it, settings) } ?: ShiftType.DAY_SHIFT
-        val assigned = effectiveStart?.let { shiftDetector.assignedDate(it) } ?: LocalDate.now(zoneId).toString()
+        // R5：归属日 = 吸附后班次的**开班日**（凌晨到岗 → 前一晚那个夜班），
+        // 与 detectShift 同源于 ShiftDetector.anchorFor，不会分叉。
+        val assigned = effectiveStart?.let { shiftDetector.assignedDate(it, settings) }
+            ?: LocalDate.now(zoneId).toString()
         val expectedStart = shiftDetector.expectedStart(LocalDate.parse(assigned), shift, settings).atZone(zoneId).toInstant().toEpochMilli()
         val expectedEnd = shiftDetector.expectedEnd(LocalDate.parse(assigned), shift, settings).atZone(zoneId).toInstant().toEpochMilli()
         val effectiveEnd = endMillis ?: expectedEnd
         val actual = calculator.actualMinutes(effectiveStart, effectiveEnd)
         val status = detectStatus(effectiveStart, effectiveEnd, expectedStart, expectedEnd, settings)
-        val arrivalLate = effectiveStart != null && effectiveStart > expectedStart + settings.arrivalToleranceMinutes * 60_000L
+        // R1：迟到判定与计薪同口径（分钟截断），且恰好等于容差不算迟到
+        val arrivalLate = effectiveStart != null &&
+            calculator.isArrivalLate(effectiveStart, expectedStart, settings.arrivalToleranceMinutes)
         val finalStatus = if (arrivalLate && status == RecordStatus.WORK) RecordStatus.ARRIVAL_EXCEPTION else status
-        // A5/R5: 跨夜判定 + 归属不变式强校验（workDate 必须 == 上班日的本地日期）
+        // A5/R5: 跨夜判定 + 归属不变式强校验（workDate 必须 == 开班日的本地日期）
         val crossesMidnight = effectiveStart != null && shiftDetector.crossesMidnight(effectiveStart, endMillis)
-        val assignmentViolations = validateAssignment(effectiveStart, assigned)
+        val assignmentViolations = validateAssignment(effectiveStart, assigned, settings)
 
         // A1: finalize 自动按 v1 规则算 finalMinutes
         val v1Result = calculator.calculateV1FinalMinutes(
@@ -35,7 +40,10 @@ class WorkSessionEngine(
             startMillis = effectiveStart,
             endMillis = effectiveEnd,
             settings = settings,
-            shiftType = shift
+            shiftType = shift,
+            // R5 关键：把**开班日**传下去，公式才能取到正确的班次窗口。
+            // 不传的话凌晨到岗会被套成"次日 21:00 开班"，迟到变早到、算出 0 分钟。
+            assignedDate = LocalDate.parse(assigned)
         )
 
         // A2: needsReview 结构化原因（对照 verification/工时计薪规则.md §3 触发矩阵）
@@ -45,7 +53,7 @@ class WorkSessionEngine(
             reviewReasons.add("R7 早退 ${earlyMin}min")
         }
         if (arrivalLate) {
-            val lateMin = TimeUnit.MILLISECONDS.toMinutes(effectiveStart - expectedStart).toInt()
+            val lateMin = calculator.arrivalLateMinutes(effectiveStart!!, expectedStart)
             reviewReasons.add("R1 迟到 ${lateMin}min")
         }
         if (startMillis == null) reviewReasons.add("缺上班时间")
@@ -73,17 +81,21 @@ class WorkSessionEngine(
     }
 
     /**
-     * A5/R5 强校验：workDate 必须等于【上班日（开班日）】的本地日期。
+     * A5/R5 强校验：workDate 必须等于【开班日】的本地日期。
      *
-     * 这是不可协商的不变式：跨夜班次（夜班 21:00→次日 09:00）记上班日，
+     * 这是不可协商的不变式：跨夜班次（夜班 21:00→次日 09:00）记开班日，
      * 否则会与次日白班落在同一 workDate 而互相覆盖。
      * 返回违规说明列表（空 = 通过）。正常构造下永远为空，作为上下游改动的护栏。
      */
-    internal fun validateAssignment(effectiveStart: Long?, assignedDate: String): List<String> {
+    internal fun validateAssignment(
+        effectiveStart: Long?,
+        assignedDate: String,
+        settings: WorkSettings
+    ): List<String> {
         if (effectiveStart == null) return emptyList()
-        val startDate = Instant.ofEpochMilli(effectiveStart).atZone(zoneId).toLocalDate().toString()
+        val startDate = shiftDetector.assignedDate(effectiveStart, settings)
         return if (startDate != assignedDate) {
-            listOf("R5 归属日异常：workDate=$assignedDate 应为上班日 $startDate")
+            listOf("R5 归属日异常：workDate=$assignedDate 应为开班日 $startDate")
         } else emptyList()
     }
 

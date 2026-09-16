@@ -35,7 +35,8 @@ class FusedStatusFormatterTest {
     @Test fun maintainedShowsPlaceWithoutOverstating() {
         val s = snapshot(ResolvedPlace.COMPANY, FusedDecision.MAINTAINED,
             "MAINTAIN_WEAK_EVIDENCE", 0.70, setOf(EvidenceSource.WIFI))
-        assertEquals("当前判断：公司", FusedStatusFormatter.headline(s))
+        // MAINTAINED 是单源弱证据维持上一判断 → 语气必须比 CONFIRMED 弱一档
+        assertEquals("暂时判断：公司", FusedStatusFormatter.headline(s))
         assertEquals("暂时维持", FusedStatusFormatter.decisionLabel(s.decision))
         assertEquals("当前只有单一环境来源，等待更多证据", FusedStatusFormatter.reasonLabel(s.reason))
         assertEquals("Wi-Fi", FusedStatusFormatter.sourcesLabel(s))
@@ -99,6 +100,19 @@ class FusedStatusFormatterTest {
         // 哪怕 place 字段残留了 HOME，只要决策是 UNKNOWN 就不能说「在家」
         val s = snapshot(ResolvedPlace.HOME, FusedDecision.UNKNOWN, "UNKNOWN_CONFLICT")
         assertEquals("位置暂时判断不出来", FusedStatusFormatter.placeSentence(s))
+    }
+
+    @Test fun maintainedPlaceSentenceIsTentativeNotConfirmed() {
+        // 2026-09-16 复查 P1：MAINTAINED 不得写成确认式「现在在家」
+        fun maintained(place: ResolvedPlace) = FusedStatusFormatter.placeSentence(
+            snapshot(place, FusedDecision.MAINTAINED, "MAINTAIN_WEAK_EVIDENCE", 0.70))
+        assertEquals("暂时判断仍在家", maintained(ResolvedPlace.HOME))
+        assertEquals("暂时判断仍在公司", maintained(ResolvedPlace.COMPANY))
+        assertEquals("可能还在路上", maintained(ResolvedPlace.MOVING))
+        assertEquals("暂时判断还在别处", maintained(ResolvedPlace.OTHER))
+        // 且确认式措辞一个字都不许出现
+        listOf(ResolvedPlace.HOME, ResolvedPlace.COMPANY, ResolvedPlace.MOVING, ResolvedPlace.OTHER)
+            .forEach { assertFalse(maintained(it).startsWith("现在")) }
     }
 
     // -------------------------------------------- 可信度档位（贴引擎真实门槛）

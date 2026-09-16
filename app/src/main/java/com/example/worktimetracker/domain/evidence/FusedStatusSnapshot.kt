@@ -33,12 +33,17 @@ object FusedStatusFormatter {
         FusedDecision.UNKNOWN -> "位置不确定"
     }
 
-    /** 卡片标题：UNKNOWN 不指认地点，只说明暂不确定。 */
+    /**
+     * 卡片标题：UNKNOWN 不指认地点，只说明暂不确定。
+     *
+     * ⚠️ **MAINTAINED 不能写成"当前判断"**：那是单源弱证据维持上一轮结论，
+     * 语气必须比 CONFIRMED 弱一档（2026-09-16 复查 P1）。
+     */
     fun headline(snapshot: FusedStatusSnapshot?): String {
         if (snapshot == null) return "暂无位置判断"
         return when (snapshot.decision) {
-            FusedDecision.CONFIRMED, FusedDecision.MAINTAINED ->
-                "当前判断：${placeLabel(snapshot.place)}"
+            FusedDecision.CONFIRMED -> "当前判断：${placeLabel(snapshot.place)}"
+            FusedDecision.MAINTAINED -> "暂时判断：${placeLabel(snapshot.place)}"
             FusedDecision.UNKNOWN -> "当前位置暂不确定"
         }
     }
@@ -69,16 +74,22 @@ object FusedStatusFormatter {
      * 为什么不用「位置：家」：那是把内部字段直译给用户看。用户要的是结论 ——
      * 「现在在家 / 现在在公司 / 位置暂时判断不出来」，而且 UNKNOWN 时**绝不指认地点**
      * （说"位置：暂不确定"等于没说，还不如直接讲清楚是判断不出来）。
+     *
+     * ⚠️ **MAINTAINED（单源弱证据）必须换一种语气**（2026-09-16 复查 P1）：
+     * 它是"上一轮的结论还没被推翻"，不是"刚刚确认过"。写成「现在在家」等于把
+     * 弱证据说成了确认结论，用户会据此以为位置已被核实。所以统一降级成
+     * 「暂时判断仍在家 / 仍在公司」，把不确定性摆在明面上。
      */
     fun placeSentence(snapshot: FusedStatusSnapshot?): String {
         if (snapshot == null) return "还没有位置判断"
         if (snapshot.decision == FusedDecision.UNKNOWN) return "位置暂时判断不出来"
+        val maintained = snapshot.decision == FusedDecision.MAINTAINED
         return when (snapshot.place) {
-            ResolvedPlace.HOME -> "现在在家"
-            ResolvedPlace.COMPANY -> "现在在公司"
-            ResolvedPlace.MOVING -> "正在路上"
+            ResolvedPlace.HOME -> if (maintained) "暂时判断仍在家" else "现在在家"
+            ResolvedPlace.COMPANY -> if (maintained) "暂时判断仍在公司" else "现在在公司"
+            ResolvedPlace.MOVING -> if (maintained) "可能还在路上" else "正在路上"
             ResolvedPlace.UNKNOWN -> "位置暂时判断不出来"
-            ResolvedPlace.OTHER -> "在别的地方"
+            ResolvedPlace.OTHER -> if (maintained) "暂时判断还在别处" else "在别的地方"
         }
     }
 

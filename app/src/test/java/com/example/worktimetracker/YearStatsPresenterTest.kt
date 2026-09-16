@@ -264,4 +264,95 @@ class YearStatsPresenterTest {
         // 只算节日口径下的"休息日"必然也是含周末口径的子集
         assertTrue(festivalOnly.total < withWeekend.total)
     }
+
+    // ------------------------------------------------------------- 年份边界（2026-09-16 复查 P2）
+
+    @Test
+    fun `1 月 1 日：全年休息日都还没休完，且下一个休息日就是今天`() {
+        val jan1 = LocalDate.of(2026, 1, 1)
+        val stats = YearStatsPresenter.build(
+            year = 2026, records = emptyList(), salaries = emptyList(),
+            today = jan1, fallbackDailyMinutes = 480
+        )
+        // 口径：taken = 「截止今天（含今天）没出勤的休息日」；ahead = 「今天之后」。
+        // 元旦本身就是 2026 年的第一个休息日，所以今天落进 taken 这一个桶。
+        assertEquals(1, stats.rest.taken)
+        assertEquals(stats.rest.total - 1, stats.rest.ahead)
+        assertEquals(stats.rest.total, stats.rest.taken + stats.rest.ahead)
+        // 元旦是法定节日 → 今天本身就算休息，nextDate 不越过今天
+        assertEquals(DayKind.FESTIVAL, HolidayCalendar.info(jan1).kind)
+        assertEquals(jan1, stats.rest.nextDate)
+        assertEquals(0, stats.rest.daysUntilNext)
+    }
+
+    @Test
+    fun `年末：年内不再有未来休息日，nextDate 不会跨到下一年`() {
+        val dec31 = LocalDate.of(2026, 12, 31)
+        val lastRestInYear = generateSequence(dec31) { it.minusDays(1) }
+            .take(60)
+            .first { YearStatsPresenter.isRestDay(it, RestScope.INCLUDE_WEEKEND) }
+
+        val stats = YearStatsPresenter.build(
+            year = 2026, records = emptyList(), salaries = emptyList(),
+            today = dec31, fallbackDailyMinutes = 480
+        )
+        assertEquals("12/31 之后年内已无休息日", 0, stats.rest.ahead)
+        if (lastRestInYear != dec31) {
+            assertNull("最后一个休息日已过去，nextDate 必须留空", stats.rest.nextDate)
+            assertNull(stats.rest.daysUntilNext)
+            assertNull(stats.rest.nextName)
+        }
+        // 无论如何都不能指向 2027
+        assertTrue(stats.rest.nextDate == null || stats.rest.nextDate!!.year == 2026)
+    }
+
+    @Test
+    fun `月初与月末的记录都归入本年`() {
+        val stats = build(records = listOf(rec("2026-01-01", 480), rec("2026-12-31", 600)))
+        assertEquals(1080, stats.totalMinutes)
+        assertEquals(2, stats.workedDays)
+        assertEquals(480, stats.months.first { it.month == 1 }.minutes)
+        assertEquals(600, stats.months.first { it.month == 12 }.minutes)
+    }
+
+    @Test
+    fun `闰年 2 月 29 日的记录归入 2 月，且三桶恒等式仍成立`() {
+        val stats = YearStatsPresenter.build(
+            year = 2028,
+            records = listOf(rec("2028-02-29", 480)),
+            salaries = emptyList(),
+            today = LocalDate.of(2028, 6, 1),
+            fallbackDailyMinutes = 480
+        )
+        assertEquals(480, stats.months.first { it.month == 2 }.minutes)
+        val restDaysInYear = generateSequence(LocalDate.of(2028, 1, 1)) { it.plusDays(1) }
+            .takeWhile { it.year == 2028 }
+            .count { YearStatsPresenter.isRestDay(it, stats.rest.scope) }
+        assertTrue("闰年也要有休息日", restDaysInYear > 0)
+        assertEquals(restDaysInYear, stats.rest.total + stats.rest.workedOnRest)
+    }
+
+    @Test
+    fun `没有内置公告的年份也不能崩，且口径与计数自洽`() {
+        val stats = YearStatsPresenter.build(
+            year = 2030, records = emptyList(), salaries = emptyList(),
+            today = LocalDate.of(2030, 6, 1), fallbackDailyMinutes = 480
+        )
+        assertEquals(12, stats.months.size)
+        assertEquals(RestScope.INCLUDE_WEEKEND, stats.rest.scope)
+        val restDaysInYear = generateSequence(LocalDate.of(2030, 1, 1)) { it.plusDays(1) }
+            .takeWhile { it.year == 2030 }
+            .count { YearStatsPresenter.isRestDay(it, stats.rest.scope) }
+        assertTrue(restDaysInYear > 0)
+        assertEquals(restDaysInYear, stats.rest.total + stats.rest.workedOnRest)
+    }
+
+    @Test
+    fun `空年份的总工时为零但月份序列仍完整`() {
+        val stats = build()
+        assertEquals(0, stats.totalMinutes)
+        assertEquals(0, stats.workedDays)
+        assertEquals((1..12).toList(), stats.months.map { it.month })
+        assertTrue(stats.months.all { it.minutes == 0 && it.salaryCents == null })
+    }
 }

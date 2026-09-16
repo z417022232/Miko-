@@ -897,7 +897,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private suspend fun refreshWorkday(): LocalDate {
         val natural = LocalDate.now()
         val state = runCatching { db.workStateDao().getState() }.getOrNull()
-        val day = WorkdayClock.today(state, natural, zone)
+        val day = WorkdayClock.today(state, natural, zone, _settings.value.toDomain())
         val previous = _workday.value
         if (day != previous) {
             _workday.value = day
