@@ -26,7 +26,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccessTime
-import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.Today
@@ -71,7 +70,9 @@ import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
+import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
 import com.example.worktimetracker.domain.evidence.FusedStatusFormatter
+import com.example.worktimetracker.domain.evidence.SourceStatus
 import com.example.worktimetracker.ui.CalendarHeatPresenter
 import com.example.worktimetracker.ui.MonthSummary
 import com.example.worktimetracker.ui.TodayStatusPresenter
@@ -88,6 +89,20 @@ import java.time.format.TextStyle
 import java.util.Locale
 import com.example.worktimetracker.ui.theme.AppTheme
 
+/**
+ * 「日历」首页。
+ *
+ * 2026-09-16 重排（界面稿 Phase C）：
+ * - 顶部「月度统计」按钮与「今日实时条」一并撤掉：实时状态并入下方「当日记录」卡，
+ *   且**只在选中今天时**显示（历史日显示「该日无实时数据」）；
+ * - 「本月工时 / 本月工资」卡从页底提到页顶 —— 打开日历第一眼就是本月结论。
+ *
+ * @param onOpenMonthly 月度统计页入口。按钮已按要求从顶部移除，参数暂时保留：
+ *   `CalendarHost` 的 MONTHLY 分支还在，等年度统计页做「月份下钻」时接回来，
+ *   现在删参数会让那条分支变成纯死代码（不留入口、也没人接）。
+ * @param onOpenToday 底部「今日」Tab 本身就在导航栏里，日历不再需要二级跳转入口。
+ */
+@Suppress("UNUSED_PARAMETER")
 @Composable
 fun CalendarScreen(
     vm: WorkTimeViewModel,
@@ -112,6 +127,18 @@ fun CalendarScreen(
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val selected = records.firstOrNull { it.date == selectedDate }
         ?: UiDayRecord(selectedDate, "", finalMinutes = 0)
+    // 整月模型会给「当天没有数据库记录」的日子合成一条 status="休息" 的占位行
+    // （见 MonthlyRecordIndex.build），那是给热力图兜底的，不是事实。
+    // 而「今天」这一天有更权威的来源：todayRecord（按当前工作日单日查库，30 秒心跳刷新）。
+    // 有记录就用它；确实没记录就把占位行降级成「暂无记录」——否则卡片上会出现
+    // 「休息」和实时块里的「今天还没有记录」并排打架（2026-09-16 真机发现）。
+    // （委托属性（by collectAsState）不支持智能转换，先落到局部变量）
+    val todayRow = todayRecord
+    val cardRecord = when {
+        selectedDate != today -> selected
+        todayRow != null -> todayRow
+        else -> selected.copy(status = "")
+    }
     var monthDrag by remember { mutableFloatStateOf(0f) }
     var showMonthPicker by remember { mutableStateOf(false) }
     var showDetail by remember { mutableStateOf(false) }
@@ -121,8 +148,9 @@ fun CalendarScreen(
     var batchDates by remember(month) { mutableStateOf(emptySet<LocalDate>()) }
     var showBatchEditor by remember { mutableStateOf(false) }
 
-    // 实时条心跳：30 秒一次，只为让"已持续"的数字往前走、并把后台写入拉回来。
-    // 与「今日」页同一口径——这里绝不写库。
+    // 实时心跳：30 秒一次。撤掉顶部条幅后它仍有两个作用 ——
+    // 让「当日记录」里的「实时计入」数字往前走，并把后台服务写进库的到岗/离岗拉回界面。
+    // 与「今日」页同一口径：这里绝不写库。
     LaunchedEffect(Unit) {
         while (true) {
             nowMillis = System.currentTimeMillis()
@@ -139,6 +167,24 @@ fun CalendarScreen(
         restDeductionMinutes = settings.restDeductionMinutes,
         fixedMinutes = if (settings.hasDefaultHours) settings.defaultWorkMinutes else null
     )
+    // 当日记录卡里的「实时」块：只在选中**今天**（当前工作日）时才有内容。
+    // 融合快照与四源健康都是内存态，不落库、也不往历史日回填 ——
+    // 给历史日编一份"当时的实时状态"只会误导，那里一律显示「该日无实时数据」。
+    val sourceHealth by vm.sourceHealth.collectAsState()
+    val evidenceRefresh by vm.evidenceRefresh.collectAsState()
+    val todayLive = if (selectedDate == today) {
+        TodayLiveInfo(
+            liveMinutes = live,
+            headline = TodayStatusPresenter.headline(todayRecord),
+            placeLabel = fused?.place?.let { FusedStatusFormatter.placeLabel(it) } ?: "位置暂不确定",
+            confidence = fused?.let { FusedStatusFormatter.confidenceLabel(it) },
+            health = sourceHealth,
+            refreshing = evidenceRefresh.running,
+            refreshMessage = evidenceRefresh.message
+        )
+    } else {
+        null
+    }
     val cells = remember(month, records, selectedDate, today) {
         CalendarHeatPresenter.buildCells(month, records, today, selectedDate)
     }
@@ -170,24 +216,22 @@ fun CalendarScreen(
                 "已记录 ${summary.workDays} 天 · 点格子看当天"
             },
             action = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 月度统计仍完整保留，只是从一级入口降级为标题栏下钻
-                    IconButton(onClick = onOpenMonthly) {
-                        Icon(Icons.Outlined.BarChart, contentDescription = "月度统计", tint = AppTheme.colors.blue)
-                    }
-                    IconButton(onClick = { vm.today() }) {
-                        Icon(Icons.Outlined.Today, contentDescription = "回到今天", tint = AppTheme.colors.blue)
-                    }
+                // 顶部只留「回到今天」。原「月度统计」按钮已撤（月度结论已由本月卡 + 年度统计页承担）
+                IconButton(onClick = { vm.today() }) {
+                    Icon(Icons.Outlined.Today, contentDescription = "回到今天", tint = AppTheme.colors.blue)
                 }
             }
         )
         Spacer(Modifier.height(12.dp))
-        TodayLiveStrip(
-            minutes = live,
-            headline = TodayStatusPresenter.headline(todayRecord),
-            placeLabel = fused?.place?.let { FusedStatusFormatter.placeLabel(it) } ?: "位置暂不确定",
-            confidence = fused?.let { FusedStatusFormatter.confidenceLabel(it) },
-            onOpenToday = onOpenToday
+        // 本月工时 / 本月工资：从页底提到页顶（原来要滚过热力图才看得到本月结论）
+        MonthSummaryCard(
+            summary = summary,
+            salaryCents = monthlySalaryCents,
+            payroll = monthPayroll,
+            projection = monthProjection,
+            paymentLabel = paymentLabel,
+            onOpenPayroll = { showPayroll = true },
+            onOpenSlip = { onOpenSlip(month) }
         )
         Spacer(Modifier.height(12.dp))
         // 月份切换过渡动画：按新旧月份大小决定滑动方向（去下一个月，新内容从右进；
@@ -255,20 +299,13 @@ fun CalendarScreen(
             }
         }
         Spacer(Modifier.height(12.dp))
-        MonthSummaryCard(
-            summary = summary,
-            salaryCents = monthlySalaryCents,
-            payroll = monthPayroll,
-            projection = monthProjection,
-            paymentLabel = paymentLabel,
-            onOpenPayroll = { showPayroll = true },
-            onOpenSlip = { onOpenSlip(month) }
-        )
-        Spacer(Modifier.height(12.dp))
         SelectedDayCard(
-            record = selected,
-            dayPayCents = vm.dailyPayCents(selected.finalMinutes),
+            record = cardRecord,
+            dayPayCents = vm.dailyPayCents(cardRecord.finalMinutes),
             hasBaseline = payBaseline != null,
+            live = todayLive,
+            onRefreshEvidence = { vm.refreshEvidenceNow() },
+            onConsumeRefreshMessage = { vm.clearEvidenceRefreshMessage() },
             onEdit = { showDetail = true }
         )
         Spacer(Modifier.height(12.dp))
@@ -437,11 +474,38 @@ private fun dayBadgeColor(kind: DayKind): Color = when (kind) {
     else -> AppTheme.colors.muted
 }
 
+/**
+ * 选中日的实时信息（只有「选中的就是今天」时才构造，其余时候为 null）。
+ *
+ * 全部来自内存态：融合快照（地点 / 置信度）+ 四源健康 + 实时计入分钟。**不落库**。
+ */
+private data class TodayLiveInfo(
+    val liveMinutes: TodayStatusPresenter.TodayMinutes,
+    val headline: TodayStatusPresenter.Headline,
+    val placeLabel: String,
+    val confidence: String?,
+    val health: Map<EvidenceSourceKind, SourceStatus>,
+    val refreshing: Boolean,
+    val refreshMessage: String?
+)
+
+/**
+ * 「当日记录」卡。
+ *
+ * 2026-09-16 起它同时承接原「今日」页的两块内容（打卡去向 + 实时状态）：
+ * - 到岗 / 离岗 / 离家 / 到家时间 = 已经发生的**打卡事实**，任何一天都能显示；
+ * - [live] != null（选中的是今天）= 当前实时判断：在上班 / 已下班、位置、置信度，
+ *   以及 GPS / Wi-Fi / 蓝牙 / 基站四源状态徽标（正常蓝、异常红，点图标重取一次并给短反馈）。
+ *   选中历史日时这一块退化成一句「该日无实时数据」。
+ */
 @Composable
 private fun SelectedDayCard(
     record: UiDayRecord,
     dayPayCents: Long?,
     hasBaseline: Boolean,
+    live: TodayLiveInfo?,
+    onRefreshEvidence: () -> Unit,
+    onConsumeRefreshMessage: () -> Unit,
     onEdit: () -> Unit
 ) {
     val weekday = record.date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
@@ -515,6 +579,71 @@ private fun SelectedDayCard(
             dayKindText(record.dayKind, record.holidayName, record.finalMinutes > 0)?.let {
                 Text(it, color = dayBadgeColor(record.dayKind), modifier = Modifier.padding(top = 6.dp))
             }
+            // 分界线以下都是「实时」内容：选中今天才成立，历史日如实说没有
+            Spacer(Modifier.height(10.dp))
+            ThinDivider()
+            Spacer(Modifier.height(10.dp))
+            if (live != null) {
+                LiveStatusBlock(live, onRefreshEvidence, onConsumeRefreshMessage)
+            } else {
+                Text(
+                    "该日无实时数据（GPS / Wi-Fi / 蓝牙 / 基站状态只在今天显示）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = AppTheme.colors.muted
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 当日记录卡里的「实时块」。
+ *
+ * 原先是日历顶部的常驻条幅（已删除的 `TodayLiveStrip`）：占着首页黄金位置，内容却只在
+ * 今天成立 —— 翻到别的月份时它还在报「今天」的状态，反而误导。现在并入当日记录卡：
+ * 选中今天 → 实时状态 + 四源徽标；选中历史日 → 那一句「该日无实时数据」。
+ *
+ * 四源一次环境采样本来就一起拿到，所以点任意一个图标都是**整体重取一次**，
+ * 由 `WorkTimeViewModel.refreshEvidenceNow()` 拉起前台服务做一次性定位 + 环境扫描。
+ */
+@Composable
+private fun LiveStatusBlock(
+    live: TodayLiveInfo,
+    onRefresh: () -> Unit,
+    onConsumeMessage: () -> Unit
+) {
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            StatusPill(live.headline.text, toneColor(live.headline.tone))
+            if (live.liveMinutes.running) StatusPill("计时中", AppTheme.colors.blue)
+            Text(
+                "实时计入 ${durationText(live.liveMinutes.minutes)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = AppTheme.colors.muted
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "位置：${live.placeLabel} · 置信度 ${live.confidence ?: "--"}",
+            style = MaterialTheme.typography.labelMedium,
+            color = AppTheme.colors.muted
+        )
+        Spacer(Modifier.height(10.dp))
+        EvidenceSourceRow(
+            health = live.health,
+            refreshing = live.refreshing,
+            onRefresh = onRefresh
+        )
+        if (live.refreshMessage != null) {
+            Spacer(Modifier.height(8.dp))
+            EvidenceRefreshBanner(
+                message = live.refreshMessage,
+                isRunning = live.refreshing,
+                onConsume = onConsumeMessage
+            )
         }
     }
 }

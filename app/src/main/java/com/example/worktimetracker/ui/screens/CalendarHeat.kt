@@ -12,11 +12,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -40,7 +37,6 @@ import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.DayCellModel
 import com.example.worktimetracker.ui.HeatLevel
 import com.example.worktimetracker.ui.MonthSummary
-import com.example.worktimetracker.ui.TodayStatusPresenter
 import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import com.example.worktimetracker.ui.theme.AppTheme
 
@@ -50,75 +46,6 @@ import com.example.worktimetracker.ui.theme.AppTheme
  * 分工：CalendarHeatPresenter 出"语义"（这格是满勤/不足/休息/节日），本文件只把语义映射成
  * 主题色与排版。所有颜色都走 AppTheme.colors，不写裸色值，浅色/深色共用一套判定。
  */
-
-// ---------------------------------------------------------------------------
-// 今日实时条
-// ---------------------------------------------------------------------------
-
-/**
- * 日历页顶部的「今日实时条」。
- *
- * 存在的意义：日历页是一级首页，用户打开 App 第一眼最想知道的是"我现在算不算在上班"。
- * 与其让他切到「今日」页，不如把结论直接摆在日历上方；点一下才进详情。
- * 这里只读 [TodayStatusPresenter] 与融合快照，不写库。
- */
-@Composable
-internal fun TodayLiveStrip(
-    minutes: TodayStatusPresenter.TodayMinutes,
-    headline: TodayStatusPresenter.Headline,
-    placeLabel: String,
-    confidence: String?,
-    onOpenToday: () -> Unit
-) {
-    val tone = toneColor(headline.tone)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.large)
-            .background(AppTheme.colors.blue.copy(alpha = if (AppTheme.colors.isDark) 0.14f else 0.08f))
-            .clickable(onClick = onOpenToday)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.Bottom) {
-                Text(
-                    durationText(minutes.minutes),
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = AppTheme.colors.blue
-                )
-                Spacer(Modifier.size(6.dp))
-                Text(
-                    "今日",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = AppTheme.colors.muted,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-            }
-            Spacer(Modifier.height(2.dp))
-            Text(
-                "${headline.text} · $placeLabel",
-                style = MaterialTheme.typography.labelMedium,
-                color = tone
-            )
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                confidence ?: "--",
-                fontWeight = FontWeight.Bold,
-                color = AppTheme.colors.blue
-            )
-            Text("置信度", style = MaterialTheme.typography.labelSmall, color = AppTheme.colors.muted)
-        }
-        Icon(
-            Icons.Outlined.ChevronRight,
-            contentDescription = "打开今日",
-            tint = AppTheme.colors.muted,
-            modifier = Modifier.size(20.dp)
-        )
-    }
-}
 
 // ---------------------------------------------------------------------------
 // 热力月历
