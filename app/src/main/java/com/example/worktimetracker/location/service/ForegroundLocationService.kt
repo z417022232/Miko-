@@ -176,6 +176,61 @@ class ForegroundLocationService : Service(), LocationListener {
     }
     private val departureConfirmation = Runnable { scope.launch { confirmDepartureIfDue() } }
 
+    /**
+     * 一次性刷新进行中标记。
+     *
+     * 由 [requestImmediateRefresh] 置位；`onLocationChanged` 收到**任何**一次回调即复位并恢复常规档。
+     * 看门狗兜底复位（[restoreAfterOneShot]）。
+     */
+    @Volatile private var oneShotRefreshInFlight = false
+    private val restoreAfterOneShot = Runnable {
+        if (!oneShotRefreshInFlight) return@Runnable
+        oneShotRefreshInFlight = false
+        logEvent("REFRESH", "一次性刷新超时未取到新定位，恢复常规采样档")
+        registrationState.invalidate(SOURCE_LOCATION)
+        startLocationUpdates()
+    }
+
+    /**
+     * 用户手动「立即刷新一次」：强制定位源立刻回调一次 + 一次环境扫描（四源）。
+     *
+     * ⚠️ 只做**重取样**，不碰状态机、不写工时记录 —— 结果该不该改状态仍由
+     * `TrajectoryAnchorEngine` 依弱证据/强证据规则决定（弱证据单源不得改状态机）。
+     */
+    private fun requestImmediateRefresh() {
+        val manager = getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            logEvent("REFRESH", "手动刷新失败：缺少定位权限")
+            return
+        }
+        oneShotRefreshInFlight = true
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { runCatching { manager.isProviderEnabled(it) }.getOrDefault(false) }
+        if (providers.isEmpty()) {
+            oneShotRefreshInFlight = false
+            logEvent("REFRESH", "手动刷新失败：没有可用的定位提供器")
+            return
+        }
+        runCatching {
+            manager.removeUpdates(this)
+            // 0ms / 0m 是 Android 规定的「尽快回调一次」，会带上系统缓存的最新定位
+            providers.forEach { manager.requestLocationUpdates(it, 0L, 0f, this) }
+        }.onFailure {
+            oneShotRefreshInFlight = false
+            logEvent("REFRESH", "手动刷新注册失败：${it.message}")
+            return
+        }
+        // 环境三源（Wi-Fi / 蓝牙 / 基站）也刷一次；BURST 才允许主动发起 Wi-Fi 扫描
+        ambientScanMayStartWifiScan = true
+        ambientScanRequested = true
+        processingSignal.trySend(Unit)
+        watchdogHandler.removeCallbacks(restoreAfterOneShot)
+        watchdogHandler.postDelayed(restoreAfterOneShot, ONE_SHOT_REFRESH_TIMEOUT_MILLIS)
+        logEvent("REFRESH", "收到手动刷新请求：定位与环境证据各重取一次")
+    }
+
     override fun onCreate() {
         super.onCreate()
         NotificationChannels.ensure(this)
@@ -228,6 +283,10 @@ class ForegroundLocationService : Service(), LocationListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // 手动「立即刷新一次」：由 UI 以 startForegroundService(ACTION_REFRESH_NOW) 触发
+        if (intent?.action == ACTION_REFRESH_NOW) {
+            requestImmediateRefresh()
+        }
         return START_STICKY
     }
 
@@ -239,6 +298,8 @@ class ForegroundLocationService : Service(), LocationListener {
         watchdogHandler.removeCallbacks(providerGlobalCheck)
         watchdogHandler.removeCallbacks(departureConfirmation)
         watchdogHandler.removeCallbacks(endMotionBurstRunnable)
+        watchdogHandler.removeCallbacks(restoreAfterOneShot)
+        oneShotRefreshInFlight = false
         locationManager?.removeUpdates(this)
         // 停止传感器、Wi-Fi/蓝牙扫描及所有定位监听
         motionController?.stop()
@@ -276,6 +337,15 @@ class ForegroundLocationService : Service(), LocationListener {
         // 同步更新聚合键：定位看护检查读取 SOURCE_LOCATION 的回调时间，
         // 与各 Provider（gps/network）分开记录，缺少会导致看护一直误判陈旧并反复重注册
         registrationState.recordCallback(SOURCE_LOCATION, now)
+        // 手动一次性刷新：任何一次回调都算「服务已响应」，立刻回到常规采样档
+        // （放在最前面，基线回调/被 fixGate 拦掉的回调也会复位，避免 8 秒兜底才恢复）
+        if (oneShotRefreshInFlight) {
+            oneShotRefreshInFlight = false
+            watchdogHandler.removeCallbacks(restoreAfterOneShot)
+            logEvent("REFRESH", "手动刷新已取到定位，恢复常规采样档")
+            registrationState.invalidate(SOURCE_LOCATION)
+            startLocationUpdates()
+        }
         // Provider 恢复后的首次回调仅用于建立基线，不作为证据
         if (!registrationState.mayEmitEvidence(provider)) {
             lastFixReceivedAt = now
@@ -1165,6 +1235,18 @@ class ForegroundLocationService : Service(), LocationListener {
 
         private const val AMBIENT_NOMINAL_ACCURACY_METERS = 50f
         private const val AMBIENT_CORE_DISTANCE_METERS = 30.0
+
+        /**
+         * 「立即刷新一次」：UI 手动取证（地点管理的「刷新」、当日记录的四源图标点击）。
+         *
+         * 语义是**一次性重取样**，不改变任何判定口径：强制定位源立刻回调一次
+         * （0ms / 0m，含系统缓存的最新定位），同时请求一次环境扫描（Wi-Fi/蓝牙/基站）。
+         * 拿到回调后立即恢复常规采样档，避免把高频定位一直挂着。
+         */
+        const val ACTION_REFRESH_NOW = "com.example.worktimetracker.action.REFRESH_NOW"
+
+        /** 一次性刷新的兜底时限：这么久还没回调就直接恢复常规档（低精度/室内可能拿不到） */
+        private const val ONE_SHOT_REFRESH_TIMEOUT_MILLIS = 8_000L
     }
 }
 

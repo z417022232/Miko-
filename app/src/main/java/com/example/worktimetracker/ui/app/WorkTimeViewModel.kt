@@ -42,6 +42,10 @@ import com.example.worktimetracker.location.evidence.ScannedWifi
 import com.example.worktimetracker.location.evidence.SiteWifiScanner
 import com.example.worktimetracker.location.evidence.WifiScanOutcome
 import com.example.worktimetracker.location.service.toSitePoint
+import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
+import com.example.worktimetracker.domain.evidence.SourceHealthJudge
+import com.example.worktimetracker.domain.evidence.SourceStatus
 import com.example.worktimetracker.domain.engine.SiteResolver
 import com.example.worktimetracker.ui.CompanyCalibrationProposal
 import com.example.worktimetracker.domain.model.WorkSettings
@@ -56,6 +60,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -85,6 +90,14 @@ data class DaySegmentDraft(
 )
 
 private const val DAY_MILLIS = 24L * 60L * 60L * 1000L
+
+/**
+ * 手动「立即刷新一次」的等待上限。
+ *
+ * 服务侧的一次性刷新兜底时限是 8 秒（`ONE_SHOT_REFRESH_TIMEOUT_MILLIS`），
+ * 这里多留 4 秒给环境扫描（Wi-Fi/BLE 扫描本身要 1~3 秒）落到 `location_health`。
+ */
+private const val REFRESH_WAIT_MILLIS = 12_000L
 
 class WorkTimeViewModel(application: Application) : AndroidViewModel(application) {
     private val db = (application as WorkTimeApplication).database
@@ -171,7 +184,11 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             refreshLastManualHours()
             refreshToday()
             reloadSites()
+            // 主地点唯一这条不变量要在启动时收敛一次：v11 迁移留下的「公司+家都是主地点」
+            // 只靠保存/启停动作是修不到的（那些动作用户可能几个月都不碰）
+            ensurePrimarySite()
             reloadPayrollConfig()
+            reloadSourceHealthNow()
         }
         // 自动同步放在**独立协程**里：它要联网（可能耗时数秒到数十秒），
         // 既不能拖慢首屏，也不能因为前序初始化步骤异常而被整体跳过。
@@ -1344,6 +1361,20 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     private val _siteEvidenceSources = MutableStateFlow<List<SiteEvidenceSourceEntity>>(emptyList())
     val siteEvidenceSources: StateFlow<List<SiteEvidenceSourceEntity>> = _siteEvidenceSources
 
+    /**
+     * 四个来源（GPS / Wi-Fi / 蓝牙 / 基站）的可用性。
+     *
+     * 键恒定存在：没有健康记录时是 [SourceStatus.UNKNOWN]，不会凭空显示「正常」。
+     */
+    private val _sourceHealth = MutableStateFlow(
+        EvidenceSourceKind.entries.associateWith { SourceStatus.UNKNOWN }
+    )
+    val sourceHealth: StateFlow<Map<EvidenceSourceKind, SourceStatus>> = _sourceHealth
+
+    /** 「立即刷新一次」的进行中/一次性提示状态。 */
+    private val _evidenceRefresh = MutableStateFlow(EvidenceRefreshState())
+    val evidenceRefresh: StateFlow<EvidenceRefreshState> = _evidenceRefresh
+
     /** Wi-Fi 选择页的扫描状态（界面稿 11）；候选只在内存，勾选后才由 [replaceWifiSources] 落哈希。 */
     private val _wifiScan = MutableStateFlow<WifiScanUi>(WifiScanUi.Idle)
     val wifiScan: StateFlow<WifiScanUi> = _wifiScan
@@ -1354,6 +1385,88 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             _sites.value = runCatching { db.siteDao().all() }.getOrDefault(emptyList())
             _siteEvidenceSources.value = runCatching { db.siteDao().allSources() }.getOrDefault(emptyList())
         }
+    }
+
+    /** 重新判定四个来源的可用性（进入相关页面时调一次，刷新完成后也调）。 */
+    fun reloadSourceHealth() {
+        viewModelScope.launch {
+            val rows = runCatching { db.environmentEvidenceDao().allHealth() }.getOrDefault(emptyList())
+            _sourceHealth.value = SourceHealthJudge.snapshot(rows, System.currentTimeMillis())
+        }
+    }
+
+    /** 消费掉一次性反馈提示（Snackbar 展示完之后调）。 */
+    fun clearEvidenceRefreshMessage() {
+        _evidenceRefresh.value = _evidenceRefresh.value.copy(message = null)
+    }
+
+    /**
+     * 用户手动「立即刷新一次」：让前台服务重取一次定位 + 环境三源（Wi-Fi / 蓝牙 / 基站），
+     * 然后重新判定四源状态并给一次性反馈。
+     *
+     * ⚠️ 这里**只做重取样**：拿到的新定位仍要按原有口径走融合与状态机，
+     * 弱证据（单源）依然不得改变工时状态 —— 手动刷新不是「绕过判定」的后门。
+     *
+     * 注意原实现的坑：只重读 `location_logs` 里最后一行，没有触发任何新采样，
+     * 所以在店里点多少次「刷新」都是同一串坐标 —— 用户会认为这个按钮是坏的。
+     */
+    fun refreshEvidenceNow() {
+        if (_evidenceRefresh.value.running) return
+        viewModelScope.launch {
+            _evidenceRefresh.value = EvidenceRefreshState(
+                running = true,
+                message = "正在重新取样 GPS / Wi-Fi / 蓝牙 / 基站…"
+            )
+            val beforeFix = runCatching { db.locationLogDao().latest()?.time }.getOrNull()
+            val beforeRows = runCatching { db.environmentEvidenceDao().allHealth() }
+                .getOrDefault(emptyList()).associateBy { it.name }
+
+            if (!ServiceRecovery.startRefresh(getApplication())) {
+                reloadSourceHealthNow()
+                _evidenceRefresh.value = EvidenceRefreshState(
+                    running = false,
+                    message = "刷新失败：缺少定位权限，或系统定位已关闭",
+                    completedAt = System.currentTimeMillis()
+                )
+                return@launch
+            }
+
+            // 服务侧一次性刷新的兜底时限是 8 秒，这里多留一点给环境扫描
+            val deadline = System.currentTimeMillis() + REFRESH_WAIT_MILLIS
+            var afterFix = beforeFix
+            while (System.currentTimeMillis() < deadline) {
+                delay(400)
+                afterFix = runCatching { db.locationLogDao().latest()?.time }.getOrNull()
+                if (afterFix != null && afterFix != beforeFix) break
+            }
+            val afterRows = runCatching { db.environmentEvidenceDao().allHealth() }
+                .getOrDefault(emptyList())
+            _sourceHealth.value = SourceHealthJudge.snapshot(afterRows, System.currentTimeMillis())
+            refreshLastKnownLocation()
+
+            val updated = afterRows.filter { row ->
+                val prev = beforeRows[row.name]
+                prev == null || row.lastCallbackAt > prev.lastCallbackAt
+            }.mapNotNull { row ->
+                EvidenceSourceKind.entries.firstOrNull { it.storageName == row.name }?.label
+            }
+            val gotFix = afterFix != null && afterFix != beforeFix
+            _evidenceRefresh.value = EvidenceRefreshState(
+                running = false,
+                message = when {
+                    gotFix && updated.isNotEmpty() -> "已刷新：新定位已取到，${updated.joinToString("、")}也已更新"
+                    gotFix -> "已刷新：新定位已取到"
+                    updated.isNotEmpty() -> "已刷新：${updated.joinToString("、")}已更新（定位这次没变化）"
+                    else -> "已重新取样，四个来源这次都没有新回调（室内或静止时属正常）"
+                },
+                completedAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    private suspend fun reloadSourceHealthNow() {
+        val rows = runCatching { db.environmentEvidenceDao().allHealth() }.getOrDefault(emptyList())
+        _sourceHealth.value = SourceHealthJudge.snapshot(rows, System.currentTimeMillis())
     }
 
     /** 每个地点已选证据源数量（地点列表右侧的「N 个证据源」）。 */
@@ -1517,15 +1630,56 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** 保证「有且仅有一个启用的主地点」这条不变量。 */
+    /**
+     * 保证「有且仅有一个启用的主地点」这条不变量。
+     *
+     * 修的是两个真实缺陷（2026-09-16 真机核对发现）：
+     * 1. **两个主地点并存** —— v11 迁移把「公司」和「家」都写成了主地点，
+     *    旧实现 `if (all.any { it.isPrimary && it.enabled }) return` 只要**存在**一个就收工，
+     *    于是两行都带「主」，[SiteResolver.matching] 的「主地点优先」退化成不确定。
+     *    → 多于一个启用主地点时只留一个（优先带证据源的），其余清掉。
+     * 2. **空壳地点抢占主地点** —— 刚新建、还没挂 Wi-Fi/GPS 的地点被顶成主地点后，
+     *    它在判定里什么都匹配不到。→ 需要补主地点时**优先选带证据源的**。
+     *
+     * 只有一个主地点时**什么都不做** —— 不覆盖用户自己的选择。
+     * ⚠️ 本方法只改 `sites` 这张配置表，绝不碰任何工时记录。
+     */
     private suspend fun ensurePrimarySite() {
         runCatching {
             val dao = db.siteDao()
             val all = dao.all()
-            if (all.isEmpty()) return@runCatching
-            if (all.any { it.isPrimary && it.enabled }) return@runCatching
-            val pick = all.firstOrNull { it.enabled } ?: return@runCatching
-            dao.upsert(pick.copy(isPrimary = true, updatedAt = System.currentTimeMillis()))
+            val enabled = all.filter { it.enabled }
+            if (enabled.isEmpty()) return@runCatching
+            val primaries = enabled.filter { it.isPrimary }
+            if (primaries.size == 1) return@runCatching
+
+            val evidenceSiteIds = runCatching { dao.allSources().map { it.siteId }.toSet() }
+                .getOrDefault(emptySet())
+            fun hasEvidence(site: SiteEntity) = site.hasGps || site.id in evidenceSiteIds
+            // 排序只为「可复现」：先比有没有证据，再比 id（先建的通常就是公司）
+            val ranked = { pool: List<SiteEntity> ->
+                pool.sortedWith(
+                    compareByDescending<SiteEntity> { hasEvidence(it) }.thenBy { it.id }
+                )
+            }
+            val keeper = if (primaries.isNotEmpty()) ranked(primaries).first() else ranked(enabled).first()
+
+            val now = System.currentTimeMillis()
+            val demoted = all.filter { it.isPrimary && it.id != keeper.id }
+            demoted.forEach { stale ->
+                dao.upsert(stale.copy(isPrimary = false, updatedAt = now))
+            }
+            val promoted = !keeper.isPrimary
+            if (promoted) dao.upsert(keeper.copy(isPrimary = true, updatedAt = now))
+            if (demoted.isNotEmpty() || promoted) {
+                runCatching {
+                    db.appLogDao().insert(AppLogEntity(
+                        type = "SITE_PRIMARY_FIX",
+                        content = "主地点收敛为 #${keeper.id}「${keeper.name}」；" +
+                            "清理多余主地点 ${demoted.size} 个（原启用主地点 ${primaries.size} 个）"
+                    ))
+                }
+            }
         }
     }
 }

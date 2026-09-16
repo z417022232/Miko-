@@ -37,7 +37,6 @@ class EvidenceCoordinatorTest {
         var upsertCount = 0
 
         val usedForEventCount: Int get() = observations.count { it.usedForEvent }
-        val lastHealth: LocationHealthEntity? get() = health.lastOrNull()
 
         override suspend fun upsertFingerprint(fingerprint: EnvironmentFingerprintEntity) {
             upsertCount++
@@ -176,8 +175,14 @@ class EvidenceCoordinatorTest {
         val result = coordinator.collectAmbient(2_000_000L)
         assertEquals(ResolvedPlace.UNKNOWN, result.place)
         assertEquals(0, dao.usedForEventCount)
-        assertEquals("wifi", dao.lastHealth!!.name)
-        assertEquals(CollectorFailure.PERMISSION.name, dao.lastHealth!!.lastFailure)
+        // 健康行现在「成功与失败都写」（2026-09-16 起）：四源状态要能区分
+        // 「从未扫描」与「刚扫过一切正常」，只写失败行会让 lastCallbackAt 永远是 0。
+        // 所以这里按来源取，而不是取最后一行。
+        val wifiHealth = dao.health.single { it.name == "wifi" }
+        assertEquals(CollectorFailure.PERMISSION.name, wifiHealth.lastFailure)
+        assertEquals(0L, wifiHealth.lastSuccessAt)
+        // 这次蓝牙/基站返回 EMPTY（附近没扫到东西），同样要留下回调痕迹
+        assertEquals(setOf("wifi", "bluetooth", "cell"), dao.health.map { it.name }.toSet())
     }
 
     @Test fun twoAmbientSourcesConfirmKnownPlace() = runTest {

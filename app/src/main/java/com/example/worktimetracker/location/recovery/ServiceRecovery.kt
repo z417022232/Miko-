@@ -33,6 +33,28 @@ object ServiceRecovery {
         }.getOrDefault(false)
     }
 
+    /**
+     * 用户手动「立即刷新一次」：以 [ServiceRecoveryPolicy.RecoveryTrigger.USER_VISIBLE] 拉起服务，
+     * 并通过 Intent action 让服务立刻重取一次定位 + 环境三源（Wi-Fi / 蓝牙 / 基站）。
+     *
+     * 服务已在运行时 `onStartCommand` 会照常收到该 action，因此不需要先判断是否已启动。
+     *
+     * @return false = 权限不足或系统不允许前台服务，调用方应如实提示用户
+     */
+    fun startRefresh(context: Context): Boolean {
+        val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!ServiceRecoveryPolicy.canStartLocationService(ServiceRecoveryPolicy.RecoveryTrigger.USER_VISIBLE, fine, coarse)) return false
+        return runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ForegroundLocationService::class.java)
+                    .setAction(ForegroundLocationService.ACTION_REFRESH_NOW)
+            )
+            true
+        }.getOrDefault(false)
+    }
+
     fun schedule(context: Context): Boolean = runCatching {
         // 精确闹钟看门狗：与 WorkManager 健康巡检同时布防，
         // 闹钟触发时应用处于临时白名单窗口，可直接拉起前台服务

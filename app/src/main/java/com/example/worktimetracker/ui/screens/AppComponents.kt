@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,7 +20,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Bluetooth
+import androidx.compose.material.icons.outlined.CellTower
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.GpsFixed
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -43,8 +48,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
+import com.example.worktimetracker.domain.evidence.SourceStatus
 import com.example.worktimetracker.domain.payroll.PayrollBreakdown
 import java.util.Locale
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlin.math.abs
@@ -419,5 +427,136 @@ private fun WheelColumn(
                 }
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 四源状态（GPS / Wi-Fi / 蓝牙 / 基站）
+// ---------------------------------------------------------------------------
+
+/** 来源 → 图标。唯一的映射点，别在页面里各写一份。 */
+fun evidenceSourceIcon(kind: EvidenceSourceKind): ImageVector = when (kind) {
+    EvidenceSourceKind.GNSS -> Icons.Outlined.GpsFixed
+    EvidenceSourceKind.WIFI -> Icons.Outlined.Wifi
+    EvidenceSourceKind.BLUETOOTH -> Icons.Outlined.Bluetooth
+    EvidenceSourceKind.CELL -> Icons.Outlined.CellTower
+}
+
+/** 状态 → 颜色：正常=蓝、异常=红、未知=灰（灰是「后台还没记录过」，不谎报成正常）。 */
+@Composable
+fun evidenceSourceTint(status: SourceStatus): Color = when (status) {
+    SourceStatus.NORMAL -> AppTheme.colors.blue
+    SourceStatus.ABNORMAL -> AppTheme.colors.red
+    SourceStatus.UNKNOWN -> AppTheme.colors.muted
+}
+
+fun evidenceSourceStatusText(status: SourceStatus): String = when (status) {
+    SourceStatus.NORMAL -> "正常"
+    SourceStatus.ABNORMAL -> "异常"
+    SourceStatus.UNKNOWN -> "暂无数据"
+}
+
+/**
+ * 四个来源的状态徽标行。
+ *
+ * 点任意一个图标都会**整体重取一次**（用户口径：「点击图标后更新一次 GPS/WIFI/蓝牙/基站的状态」），
+ * 所以这里不按来源分别刷新 —— 四类证据本来就是一次环境采样里一起拿到的。
+ *
+ * @param refreshing 正在等新取样：图标降为半透明并禁止重复点击
+ */
+@Composable
+fun EvidenceSourceRow(
+    health: Map<EvidenceSourceKind, SourceStatus>,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+    trailingHint: String? = null,
+) {
+    Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        EvidenceSourceKind.entries.forEach { kind ->
+            val status = health[kind] ?: SourceStatus.UNKNOWN
+            EvidenceSourceBadge(kind, status, refreshing, onRefresh)
+            Spacer(Modifier.size(14.dp))
+        }
+        Spacer(Modifier.weight(1f))
+        Text(
+            when {
+                refreshing -> "刷新中…"
+                trailingHint != null -> trailingHint
+                else -> "点图标刷新"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = AppTheme.colors.muted
+        )
+    }
+}
+
+@Composable
+private fun EvidenceSourceBadge(
+    kind: EvidenceSourceKind,
+    status: SourceStatus,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
+) {
+    val tint = evidenceSourceTint(status)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .clip(MaterialTheme.shapes.medium)
+                .background(tint.copy(alpha = if (refreshing) 0.30f else 1f))
+                .clickable(enabled = !refreshing) { onRefresh() },
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                evidenceSourceIcon(kind),
+                contentDescription = "${kind.label} ${evidenceSourceStatusText(status)}",
+                tint = if (refreshing) tint else Color.White,
+                modifier = Modifier.size(21.dp)
+            )
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            kind.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (status == SourceStatus.ABNORMAL) AppTheme.colors.red else AppTheme.colors.muted
+        )
+    }
+}
+
+/**
+ * 「刷新一次」的一次性反馈条：出现几秒后自动消失。
+ *
+ * 自动消失是刻意的 —— 刷新结果多半是「这次没取到新定位（室内正常）」，
+ * 停留在页面上会被误读成故障。**由调用方在展示后消费掉消息**，避免重组时反复弹出。
+ */
+@Composable
+fun EvidenceRefreshBanner(
+    message: String?,
+    isRunning: Boolean,
+    onConsume: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    LaunchedEffect(message, isRunning) {
+        if (message != null && !isRunning) {
+            delay(3_500)
+            onConsume()
+        }
+    }
+    if (message == null) return
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isRunning) AppTheme.colors.blue.copy(alpha = 0.10f)
+            else AppTheme.colors.muted.copy(alpha = 0.10f)
+        ),
+        shape = MaterialTheme.shapes.large,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Text(
+            message,
+            style = MaterialTheme.typography.bodySmall,
+            color = AppTheme.colors.textPrimary,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+        )
     }
 }

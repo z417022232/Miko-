@@ -63,8 +63,11 @@ import java.util.Locale
  * 判定侧由 SiteResolver 统一收敛成 COMPANY / HOME 两个锚点，状态机完全不知道有多个地点。
  *
  * 两处刻意的实现取舍（与稿子的差异，都在页内写明）：
- * 1. 「至少 1 个证据源才能保存」：新地点还没保存时无法挂证据源（证据源以 siteId 为外键），
- *    所以门槛写成「有名称 + （有 GPS 坐标 或 已有证据源）」；GPS 坐标本身就是一类证据源。
+ * 1. 保存门槛**只有名称**，不要求「至少 1 个证据源」。
+ *    原因：证据源以 siteId 为外键，新地点在保存前**不可能**有证据源；
+ *    旧实现要求 `name.isNotBlank() && 证据源数 > 0`，于是新地点的「保存」永远是灰的，
+ *    而 Wi-Fi 行又被 `isNew` 挡住（「保存地点后即可选取」且不可点）——
+ *    用户彻底无法新增地点（2026-09-16 报障）。现在点 Wi-Fi 会先落地点再跳选取页。
  * 2. 蓝牙信标本期不给手动选取：它的哈希口径包含 manufacturer data / UUID 列表，
  *    前台手动扫很难与后台采集器逐位对齐，选错了反而污染证据。页面如实标注「跟随环境自动学习」。
  */
@@ -126,10 +129,13 @@ private fun SiteListPage(
     val sites by vm.sites.collectAsState()
     val sources by vm.siteEvidenceSources.collectAsState()
     val lastLocationText by vm.lastKnownLocationText.collectAsState()
+    val health by vm.sourceHealth.collectAsState()
+    val refresh by vm.evidenceRefresh.collectAsState()
     var here by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
     LaunchedEffect(Unit) {
         vm.refreshLastKnownLocation()
+        vm.reloadSourceHealth()
         vm.loadCurrentLocation { lat, lng -> if (lat != null && lng != null) here = lat to lng }
     }
 
@@ -154,18 +160,39 @@ private fun SiteListPage(
             shape = MaterialTheme.shapes.large,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.GpsFixed, null, tint = AppTheme.colors.blue)
-                Spacer(Modifier.size(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("最近一次定位", fontWeight = FontWeight.SemiBold)
-                    Text(lastLocationText, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+            Column(Modifier.padding(15.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.GpsFixed, null, tint = AppTheme.colors.blue)
+                    Spacer(Modifier.size(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("最近一次定位", fontWeight = FontWeight.SemiBold)
+                        Text(lastLocationText, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(
+                        onClick = {
+                            // 真正的「重取一次」：拉起前台服务做一次性定位 + 环境扫描，
+                            // 而不是重读库里那行旧坐标（旧实现因此看起来「点了没反应」）
+                            vm.refreshEvidenceNow()
+                            vm.loadCurrentLocation { lat, lng -> if (lat != null && lng != null) here = lat to lng }
+                        },
+                        enabled = !refresh.running
+                    ) { Text(if (refresh.running) "刷新中…" else "刷新") }
                 }
-                TextButton(onClick = {
-                    vm.refreshLastKnownLocation()
-                    vm.loadCurrentLocation { lat, lng -> if (lat != null && lng != null) here = lat to lng }
-                }) { Text("刷新") }
+                Spacer(Modifier.height(10.dp))
+                EvidenceSourceRow(
+                    health = health,
+                    refreshing = refresh.running,
+                    onRefresh = { vm.refreshEvidenceNow() }
+                )
             }
+        }
+        if (refresh.message != null) {
+            Spacer(Modifier.height(8.dp))
+            EvidenceRefreshBanner(
+                message = refresh.message,
+                isRunning = refresh.running,
+                onConsume = { vm.clearEvidenceRefreshMessage() }
+            )
         }
         Spacer(Modifier.height(14.dp))
 
@@ -330,6 +357,7 @@ private fun SiteEditPage(
     var showDelete by remember { mutableStateOf(false) }
     var showRadius by remember { mutableStateOf(false) }
     var locationHint by remember { mutableStateOf("") }
+    var actionHint by remember { mutableStateOf("") }
 
     val wifiCount = sources.count {
         it.siteId == siteId && it.sourceType == SiteEvidenceSourceEntity.TYPE_WIFI
@@ -403,13 +431,26 @@ private fun SiteEditPage(
                 Icons.Outlined.Wifi,
                 "Wi-Fi 网络",
                 when {
-                    isNew -> "保存地点后即可选取"
                     wifiCount > 0 -> "已选 $wifiCount 个"
+                    isNew -> "点这里先存下地点，紧接着选取"
                     else -> "未选 · 点这里扫描并勾选"
                 },
                 tint = if (wifiCount > 0) AppTheme.colors.green else AppTheme.colors.blue,
-                showChevron = !isNew,
-                onClick = { if (!isNew) onPickWifi(siteId!!) }
+                showChevron = true,
+                onClick = {
+                    // 新增地点还没有 siteId，证据源挂不上去 —— 先落地点再跳选取页。
+                    // 旧实现把这行写成「保存地点后即可选取」且不可点，用户就卡在
+                    // 「Wi-Fi 选不了 + 保存是灰的」这个死循环里，整个新增功能等于没有。
+                    if (isNew) {
+                        if (draft.name.isBlank()) {
+                            actionHint = "先给这个地点起个名字，保存后立刻能选 Wi-Fi"
+                        } else {
+                            vm.saveSite(draft) { newId -> onPickWifi(newId) }
+                        }
+                    } else {
+                        onPickWifi(siteId!!)
+                    }
+                }
             )
             ThinDivider()
             SettingsRow(
@@ -455,14 +496,26 @@ private fun SiteEditPage(
         Spacer(Modifier.height(14.dp))
 
         Text(
-            if (totalEvidence > 0) {
-                "已选 $totalEvidence 个证据源。至少需要 1 个才能保存；证据源越多，进出车间判定越快也越省电。"
-            } else {
-                "至少需要 1 个证据源才能保存。Wi-Fi 哈希 或 GPS 坐标，任选其一即可。"
+            when {
+                totalEvidence > 0 ->
+                    "已选 $totalEvidence 个证据源。证据源越多、越稳定，进出车间判定越快也越省电。"
+                isNew ->
+                    "先保存地点，紧接着会带你选 Wi-Fi；也可以先点「使用当前位置」拿 GPS 坐标。" +
+                        "证据源只是建议，不是门槛 —— 名字填好就能存。"
+                else ->
+                    "这个地点还没有证据源。点「Wi-Fi 网络」扫描并勾选，或先「使用当前位置」拿 GPS 坐标。"
             },
             style = MaterialTheme.typography.bodySmall,
             color = if (totalEvidence > 0) AppTheme.colors.muted else AppTheme.colors.orange
         )
+        if (actionHint.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                actionHint,
+                style = MaterialTheme.typography.bodySmall,
+                color = AppTheme.colors.orange
+            )
+        }
         Spacer(Modifier.height(14.dp))
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -475,8 +528,10 @@ private fun SiteEditPage(
                         if (saved.id == null) onPickWifi(newId) else onBack()
                     }
                 },
-                // 名称是硬门槛；证据源可以是 GPS 坐标，也可以是已挂的 Wi-Fi/蓝牙
-                enabled = draft.name.isNotBlank() && totalEvidence > 0,
+                // 唯一的硬门槛是名称。
+                // ⚠️ 不要再把「至少 1 个证据源」放回 enabled —— 新地点在保存前不可能有证据源
+                // （site_evidence_sources 以 siteId 为外键），那会让新增功能永久不可用。
+                enabled = draft.name.isNotBlank(),
                 modifier = Modifier.weight(1f)
             ) { Text("保存") }
         }

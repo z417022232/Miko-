@@ -109,18 +109,22 @@ class EvidenceCoordinator(
         val results = collectAll(now)
         val features = CollectorSnapshot.merge(results.map { it.second }).take(MAX_FEATURES_PER_ROUND)
         for ((name, result) in results) {
-            if (isHealthRelevantFailure(result.failure)) {
-                store.upsertHealth(
-                    LocationHealthEntity(
-                        name = name,
-                        lastCallbackAt = now,
-                        lastSuccessAt = 0L,
-                        registered = true,
-                        recoveryCount = 0,
-                        lastFailure = result.failure?.name
-                    )
+            // 成功与失败都写健康行（原实现只在失败时写，导致「最后回调时间」在
+            // Wi-Fi/蓝牙/基站上永远是 0，界面上就无法区分「从没扫描」和「刚扫过一切正常」）。
+            // ⚠️ 成功时把 lastFailure 清空是**正确**的：失败原因描述的是「这一次采集」，
+            // 而不是历史。ServiceHealthPolicy 依赖 lastFailure == PERMISSION 判降级，
+            // 权限真的缺失时每次采集都会失败，该信号不会因此丢失。
+            val previous = store.health(name)
+            store.upsertHealth(
+                LocationHealthEntity(
+                    name = name,
+                    lastCallbackAt = now,
+                    lastSuccessAt = if (result.failure == null) now else previous?.lastSuccessAt ?: 0L,
+                    registered = true,
+                    recoveryCount = 0,
+                    lastFailure = result.failure?.name
                 )
-            }
+            )
         }
         for (observation in ambientObservations(features, now)) {
             insertOncePerMinute(observation)
@@ -338,9 +342,6 @@ class EvidenceCoordinator(
             }
         }
     }
-
-    private fun isHealthRelevantFailure(failure: CollectorFailure?): Boolean =
-        failure != null && failure != CollectorFailure.EMPTY
 
     private fun dayOf(time: Long): String =
         LocalDate.ofInstant(Instant.ofEpochMilli(time), clock.zone).toString()
