@@ -1118,14 +1118,17 @@ class ForegroundLocationService : Service(), LocationListener {
 
     /** 环境融合确认的地点进入状态机：只在锚定距离上标记核心区，坐标距离未知。 */
     private suspend fun applyFusedEvidence(fused: FusedEvidence, now: Long) {
-        // 与 GPS 路径同一原则：只有 CONFIRMED 才能进入状态机（方案三）。
-        // MAINTAINED/UNKNOWN 由协调器更新 lastResolvedPlace 与诊断，这里直接放弃，
-        // 防止 TEMP_LEAVE 中弱公司证据累计两次就把状态推回 WORKING。
-        if (fused.decision != FusedDecision.CONFIRMED) return
-        if (fused.place == ResolvedPlace.UNKNOWN) return
         val app = application as WorkTimeApplication
         val settings = cachedSettings ?: app.database.userSettingsDao().getSettings()
             ?.also { cachedSettings = it } ?: return
+        // 与 GPS 路径同一原则：只有 CONFIRMED 才能进入状态机（方案三）。
+        // MAINTAINED/UNKNOWN 由协调器更新 lastResolvedPlace 与诊断，这里直接放弃，
+        // 防止 TEMP_LEAVE 中弱公司证据累计两次就把状态推回 WORKING。
+        if (fused.decision != FusedDecision.CONFIRMED || fused.place == ResolvedPlace.UNKNOWN) {
+            val previous = app.database.workStateDao().getState() ?: return
+            runJourneyShadowAmbient(app, previous, previous, fused, now, settings, emptyList())
+            return
+        }
         app.database.withTransaction {
             val previous = app.database.workStateDao().getState()
                 ?: return@withTransaction
@@ -1148,7 +1151,85 @@ class ForegroundLocationService : Service(), LocationListener {
             val decision = anchorEngine.next(previous, fix, TrajectoryAnchorEngine.Config(
                 settings.companyRadiusMeters, settings.homeRadiusMeters,
                 calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes))
+            runJourneyShadowAmbient(app, previous, decision.nextState, fused, now, settings, decision.events)
             persistStateTransition(app, previous, decision.nextState, now, now, settings, type, null)
+        }
+    }
+
+    /** 环境证据的一拍影子运行；弱证据会被新Reducer按 MAINTAINED/UNKNOWN 契约只维持。 */
+    private suspend fun runJourneyShadowAmbient(
+        app: WorkTimeApplication,
+        legacyBefore: com.example.worktimetracker.data.entity.WorkStateEntity,
+        legacyAfter: com.example.worktimetracker.data.entity.WorkStateEntity,
+        fused: FusedEvidence,
+        now: Long,
+        settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
+        legacyEvents: List<TrajectoryAnchorEngine.Event>
+    ) {
+        runCatching {
+            val observation = JourneyObservation(
+                now = now,
+                place = fused.place,
+                placeDecision = fused.decision,
+                confidence = fused.confidence,
+                evidenceSources = fused.sources,
+                motion = MotionPhase.UNKNOWN,
+                motionObservedAt = null,
+                secondsSinceFix = 0L,
+                hasActiveWorkSession = legacyBefore.currentState == "WORKING" || legacyBefore.currentState == "TEMP_LEAVE",
+                distanceToHomeMeters = null,
+                distanceToWorkMeters = null
+            )
+            val health = EvidenceHealth(
+                secondsSinceFix = 0L,
+                secondsSinceReliableFix = if (fused.decision == FusedDecision.CONFIRMED) 0L else Long.MAX_VALUE,
+                confidence = fused.confidence,
+                placeDecision = fused.decision,
+                locationAvailable = true,
+                providerFailureStreak = 0,
+                freshness = EvidenceFreshness.FRESH
+            )
+            val homeStable = fused.place == ResolvedPlace.HOME
+            val bootstrap = LegacyJourneyNormalizer.normalize(legacyBefore.currentState, homeStable, false)?.let {
+                JourneySnapshot(it.primary, null, it.primary, legacyBefore.updatedAt)
+            }
+            val oldTier = LegacySamplingTierMapper.fromInterval(currentSamplingIntervalMillis)
+            val runtime = journeyCoordinator.process(
+                observation,
+                JourneyRuntimeConfigFactory.create(settings),
+                health,
+                oldTier,
+                bootstrap
+            )
+            val normalizedOld = LegacyJourneyNormalizer.normalize(legacyAfter.currentState, homeStable, false)
+            val difference = normalizedOld?.let {
+                JourneyShadowComparator.comparePhase(it, runtime.transition.snapshot.phase)
+            } ?: JourneyDifferenceType.MISSING_OLD
+            app.database.appLogDao().insert(
+                com.example.worktimetracker.data.entity.AppLogEntity(
+                    type = "JOURNEY",
+                    content = buildString {
+                        append("correlationId=").append(UUID.randomUUID())
+                        append(" | inputEventTime=").append(now)
+                        append(" | source=AMBIENT")
+                        append(" | old=").append(legacyAfter.currentState)
+                        append(" | normalizedOld=").append(normalizedOld?.primary?.name ?: "-")
+                        append(" | new=").append(runtime.transition.snapshot.phase.name)
+                        append(" | differenceType=").append(difference.name)
+                        append(" | oldTier=").append(oldTier.name)
+                        append(" | newTier=").append(runtime.sampling.tier.name)
+                        append(" | oldEvents=").append(legacyEvents.joinToString(",") { event ->
+                            "${event.javaClass.simpleName}@${event.occurredAt}/${event.confirmedAt}"
+                        })
+                        append(" | newEvents=").append(runtime.transition.confirmedEvents.joinToString(",") { event ->
+                            "${event.javaClass.simpleName}@${event.occurredAt}/${event.confirmedAt}"
+                        })
+                        append(" | reason=").append(runtime.transition.explanation)
+                    }
+                )
+            )
+        }.onFailure { error ->
+            logEvent("JOURNEY", "环境影子运行失败，正式状态未受影响：${error.message}")
         }
     }
 
