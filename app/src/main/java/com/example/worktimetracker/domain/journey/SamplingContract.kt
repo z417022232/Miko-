@@ -1,5 +1,7 @@
 package com.example.worktimetracker.domain.journey
 
+import com.example.worktimetracker.domain.evidence.FusedDecision
+
 /**
  * 采样契约的**冻结数值表**（阶段 3 §5.3）。
  *
@@ -52,10 +54,16 @@ package com.example.worktimetracker.domain.journey
  *
  * ## 四、策略必须实现的两条硬覆盖（不在本表内，§5.3）
  *
- * 1. `health.locationAvailable == false` → **不进入 CRITICAL**，回落 `fallbackTier`，
- *    并记 [SamplingReason.LOCATION_UNAVAILABLE]（此时高频请求什么都换不来）；
+ * 1. `health.locationAvailable == false` → **不进入 CRITICAL**，回落 `fallbackTier` 并记
+ *    [SamplingReason.LOCATION_UNAVAILABLE]（此时高频请求什么都换不来）；
+ *    ⚠️ 兜底档**即使是 CRITICAL 也要被 [withoutCritical] 压掉** —— 否则调用方传
+ *    `fallbackTier = CRITICAL` 就绕过了整条契约。
  * 2. `health.placeDecision == CONFIRMED`（取得新可靠点）→ **立即退出 CRITICAL**，
- *    回到"当前状态基础档"（不沿用 CRITICAL 档），并记 `lastCriticalEndedAt`。
+ *    档位取 `[withoutCritical](基础档 ⊕ 兜底档)`（**不得再是 CRITICAL**），并写 `lastCriticalEndedAt`。
+ *
+ * ## 五、健康度 → 紧迫度下限（§5.3.2 冻结，[urgencyFloorOf]）
+ *
+ * 见 [urgencyFloorOf] 的表。**健康度只能提高紧迫度，不得压低状态基础值**。
  */
 object SamplingContract {
 
@@ -136,4 +144,79 @@ object SamplingContract {
 
     /** 冷却时长（毫秒）。 */
     fun cooldownMillis(attempt: Int): Long = cooldownMinutes(attempt) * 60_000L
+
+    /**
+     * 「不许 CRITICAL」场合的档位钳制：压到最多 [SamplingTier.TRANSITION]。
+     *
+     * 三个使用点（§5.3 / §5.3.2，缺一个就是绕过契约）：
+     * 1. `locationAvailable == false` 的兜底档（调用方传 `fallbackTier = CRITICAL` 也拦得住）；
+     * 2. CRITICAL 超时退出后的兜底档（刚因为拿不到证据退出，不许立刻回去）；
+     * 3. 冷却期内被挡下的 CRITICAL 请求；
+     * 4. 取得可靠证据退出 CRITICAL 后的档位（`基础档 ⊕ 兜底档` 再过一遍本钳制）。
+     */
+    fun withoutCritical(tier: SamplingTier): SamplingTier =
+        tier.coerceAtMost(SamplingTier.TRANSITION)
+
+    /**
+     * 健康度对紧迫度的**下限**及其原因码（§5.3.2 冻结表，一次算完）。
+     *
+     * 把原因码和数值放在同一张表里算，是为了让策略**不再自己解释健康字段** ——
+     * 数值在 [urgencyFloorOf]、原因码在策略里各写一遍，两处迟早说两件事。
+     */
+    data class UrgencyFloor(
+        /** 适用规则中的最大下限；0.0 = 健康度不提高紧迫度。 */
+        val value: Double,
+        /** 命中的规则对应的原因码（诊断页"为什么这一分钟加密了"就靠它）。 */
+        val reasons: Set<SamplingReason>
+    )
+
+    /**
+     * 健康度 → 紧迫度下限（§5.3.2 冻结）。多条命中时**取最大值**，原因码合并。
+     *
+     * | 健康情况 | urgency 下限 | 原因码 |
+     * |---|---|---|
+     * | `freshness == STALE`（任意定位超连续性窗口未更新） | 0.8 | [SamplingReason.STALE_WINDOW] |
+     * | `freshness == AGING`（可靠定位超 5 分钟未更新） | 0.4 | [SamplingReason.AGING_EVIDENCE] |
+     * | `placeDecision == MAINTAINED` | 0.4 | [SamplingReason.WEAK_EVIDENCE] |
+     * | `placeDecision == UNKNOWN` | 0.8 | [SamplingReason.UNRESOLVED_PLACE] |
+     * | `providerFailureStreak >= 3` | 0.8 | [SamplingReason.PROVIDER_FAILURES] |
+     * | `providerFailureStreak >= 1` | 0.4 | [SamplingReason.PROVIDER_FAILURES] |
+     * | `confidence < 0.4` | 0.6 | [SamplingReason.LOW_CONFIDENCE] |
+     * | `confidence < 0.7` | 0.4 | [SamplingReason.LOW_CONFIDENCE] |
+     * | `CONFIRMED` 且 `FRESH` 且无失败且置信 ≥ 0.7 | 不提高 | — |
+     *
+     * ⚠️ `confidence` 为 `NaN` 时本表**不给任何下限**（`NaN` 比较恒 false）——
+     * 无效拍由策略在进本表之前整拍回落兜底，不许被这里静默吞掉。
+     * `locationAvailable` 也不在本表：它是硬覆盖（策略侧 + [withoutCritical]），不是下限。
+     */
+    fun urgencyFloorOf(health: EvidenceHealth): UrgencyFloor {
+        var floor = 0.0
+        val reasons = LinkedHashSet<SamplingReason>()
+
+        fun raise(value: Double, reason: SamplingReason) {
+            if (value > floor) floor = value
+            reasons += reason
+        }
+
+        when (health.freshness) {
+            EvidenceFreshness.STALE -> raise(0.8, SamplingReason.STALE_WINDOW)
+            EvidenceFreshness.AGING -> raise(0.4, SamplingReason.AGING_EVIDENCE)
+            EvidenceFreshness.FRESH -> Unit
+        }
+        when (health.placeDecision) {
+            FusedDecision.CONFIRMED -> Unit
+            FusedDecision.MAINTAINED -> raise(0.4, SamplingReason.WEAK_EVIDENCE)
+            FusedDecision.UNKNOWN -> raise(0.8, SamplingReason.UNRESOLVED_PLACE)
+        }
+        when {
+            health.providerFailureStreak >= 3 -> raise(0.8, SamplingReason.PROVIDER_FAILURES)
+            health.providerFailureStreak >= 1 -> raise(0.4, SamplingReason.PROVIDER_FAILURES)
+        }
+        when {
+            health.confidence < 0.4 -> raise(0.6, SamplingReason.LOW_CONFIDENCE)
+            health.confidence < 0.7 -> raise(0.4, SamplingReason.LOW_CONFIDENCE)
+        }
+
+        return UrgencyFloor(floor, reasons)
+    }
 }

@@ -24,8 +24,19 @@ package com.example.worktimetracker.domain.journey
  * "单次 CRITICAL 最长 10 分钟"这条契约会静默失效（既不报错，日志里也看不出来）。
  * 起点必须有自己的字段：它不是"我们试过没有"，而是"这一轮从什么时候开始算账"。
  *
- * ⚠️ 本类**不含算法**：如何按 [attempt] 退避、何时进冷却、冷却多久，
- * 由 `AdaptiveSamplingPolicy` 按 [SamplingContract] 的冻结公式计算（阶段 3 第 4 步），此处只是数据。
+ * ## CRITICAL 轮的**三种**退出（§5.3.2 冻结；实现曾漏写第三种，导致轮次消失却没有结束记录）
+ *
+ * | 退出原因 | 字段结果 | attempt |
+ * |---|---|---|
+ * | 取得可靠证据（`CONFIRMED`） | `currentCriticalStartedAt = null`、`lastCriticalEndedAt = now` | **清 0**（成功） |
+ * | 达到 10 分钟上限 | `currentCriticalStartedAt = null`、`lastCriticalEndedAt = now` | **+1**（退避指数） |
+ * | 定位不可用（权限被撤 / 开关关闭） | `currentCriticalStartedAt = null`、`lastCriticalEndedAt = now` | **不变**（前置条件不满足 ≠ 提供器尝试失败，不污染退避指数） |
+ *
+ * 三种退出都**必须写** `lastCriticalEndedAt`（冷却起点）——
+ * "轮次消失了但没有结束记录"会让冷却无从起算。
+ *
+ * ⚠️ 本类**不含算法**：何时进入/退出轮次是策略的判定；
+ * 下面这组纯数据变换只是把上表的字段结果固化成代码，策略不许绕开它们自己 `copy`。
  */
 data class RetryState(
     /** 连续失败次数（0 = 无失败）。指数退避的指数。 */
@@ -51,4 +62,38 @@ data class RetryState(
 ) {
     /** 当前是否处于 CRITICAL 轮次内（起点存在即在内）。 */
     val inCritical: Boolean get() = currentCriticalStartedAt != null
+
+    /** 进入 CRITICAL 轮：起点与最近尝试都置 [now]；[attempt] 保留（退避指数只在退出时改）。 */
+    fun enterCritical(now: Long): RetryState =
+        copy(lastAttemptAt = now, currentCriticalStartedAt = now)
+
+    /**
+     * CRITICAL 内部重试：**只**更新 [lastAttemptAt]。
+     * 绝不触碰 [currentCriticalStartedAt] —— 刷新起点 = 重新获得 10 分钟 = 上限静默失效。
+     */
+    fun noteAttempt(now: Long): RetryState = copy(lastAttemptAt = now)
+
+    /** 退出方式一：取得可靠证据。清起点、写结束时刻、清失败数（成功）。 */
+    fun exitCriticalOnSuccess(now: Long): RetryState = copy(
+        attempt = 0,
+        currentCriticalStartedAt = null,
+        lastCriticalEndedAt = now
+    )
+
+    /** 退出方式二：达到时长上限。清起点、写结束时刻、失败数 +1（封顶防溢出）。 */
+    fun exitCriticalOnTimeout(now: Long): RetryState = copy(
+        attempt = if (attempt == Int.MAX_VALUE) attempt else attempt + 1,
+        currentCriticalStartedAt = null,
+        lastCriticalEndedAt = now
+    )
+
+    /**
+     * 退出方式三：定位不可用（权限被撤 / 系统开关关闭）。
+     * 清起点、写结束时刻；**失败数不变** —— 前置条件不满足不是提供器尝试失败，
+     * 把它计入退避指数会让真正的失败被稀释。
+     */
+    fun exitCriticalOnUnavailable(now: Long): RetryState = copy(
+        currentCriticalStartedAt = null,
+        lastCriticalEndedAt = now
+    )
 }

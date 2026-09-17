@@ -1,8 +1,12 @@
 package com.example.worktimetracker
 
+import com.example.worktimetracker.domain.evidence.FusedDecision
+import com.example.worktimetracker.domain.journey.EvidenceFreshness
+import com.example.worktimetracker.domain.journey.EvidenceHealth
 import com.example.worktimetracker.domain.journey.JourneyPhase
 import com.example.worktimetracker.domain.journey.RetryState
 import com.example.worktimetracker.domain.journey.SamplingContract
+import com.example.worktimetracker.domain.journey.SamplingReason
 import com.example.worktimetracker.domain.journey.SamplingTier
 import com.example.worktimetracker.location.service.SamplingTuning
 import org.junit.Assert.assertEquals
@@ -186,26 +190,138 @@ class SamplingContractTest {
     }
 
     @Test
-    fun leavingCriticalClearsTheStartAndWritesTheEndForBothOutcomes() {
+    fun leavingCriticalClearsTheStartAndWritesTheEndForAllThreeExits() {
         val inCritical = RetryState(attempt = 0, lastAttemptAt = NOW, currentCriticalStartedAt = NOW - 60_000L)
 
-        // 超时退出：起点清掉、结束时刻写上、失败次数 +1
-        val timedOut = inCritical.copy(
-            currentCriticalStartedAt = null,
-            lastCriticalEndedAt = NOW,
-            attempt = inCritical.attempt + 1
-        )
-        assertNull(timedOut.currentCriticalStartedAt)
-        assertFalse(timedOut.inCritical)
-        assertEquals(NOW, timedOut.lastCriticalEndedAt)
-        assertEquals(1, timedOut.attempt)
-
-        // 成功退出：起点清掉、结束时刻同样要写（"成功了"不等于"不用冷却"），失败次数清零
-        val succeeded = inCritical.copy(currentCriticalStartedAt = null, lastCriticalEndedAt = NOW, attempt = 0)
+        // 退出方式一：取得可靠证据 —— 起点清掉、结束时刻写上、失败次数清零
+        val succeeded = inCritical.exitCriticalOnSuccess(NOW)
         assertNull(succeeded.currentCriticalStartedAt)
+        assertFalse(succeeded.inCritical)
         assertEquals(NOW, succeeded.lastCriticalEndedAt)
         assertEquals(0, succeeded.attempt)
+
+        // 退出方式二：达到时长上限 —— 起点清掉、结束时刻写上、失败次数 +1
+        val fromTwoFailures = inCritical.copy(attempt = 2)
+        val timedOut = fromTwoFailures.exitCriticalOnTimeout(NOW)
+        assertNull(timedOut.currentCriticalStartedAt)
+        assertEquals(NOW, timedOut.lastCriticalEndedAt)
+        assertEquals(3, timedOut.attempt)
+
+        // 退出方式三：定位不可用 —— 起点清掉、结束时刻**同样要写**，失败数不变
+        val unavailable = fromTwoFailures.exitCriticalOnUnavailable(NOW)
+        assertNull(unavailable.currentCriticalStartedAt)
+        assertEquals("不可用退出不写结束时刻 = 轮次消失却无冷却起点", NOW, unavailable.lastCriticalEndedAt)
+        assertEquals("前置条件不满足 ≠ 提供器失败，不污染退避指数", 2, unavailable.attempt)
     }
+
+    @Test
+    fun enterCriticalAndNoteAttemptKeepTheStartStable() {
+        val idle = RetryState(attempt = 2, lastCriticalEndedAt = NOW - 1)
+        val entered = idle.enterCritical(NOW)
+        assertEquals(NOW, entered.currentCriticalStartedAt)
+        assertEquals(NOW, entered.lastAttemptAt)
+        assertEquals("进入不清退避指数（只在退出时改）", 2, entered.attempt)
+
+        val retried = entered.noteAttempt(NOW + 60_000L)
+        assertEquals("内部重试只动 lastAttemptAt", NOW, retried.currentCriticalStartedAt)
+        assertEquals(NOW + 60_000L, retried.lastAttemptAt)
+    }
+
+    // ---------------------------------------------------------------- 五、健康度 → 紧迫度下限（§5.3.2）
+
+    @Test
+    fun freshnessDerivationUsesInjectedThresholds() {
+        val staleAfter = 20 * 60L
+        val reliableAging = 5 * 60L
+        // 边界：恰好等于阈值不算越界（>），超过才算
+        assertEquals(EvidenceFreshness.FRESH, EvidenceHealth.freshnessOf(0, 0, staleAfter, reliableAging))
+        assertEquals(EvidenceFreshness.FRESH, EvidenceHealth.freshnessOf(staleAfter, reliableAging, staleAfter, reliableAging))
+        assertEquals(EvidenceFreshness.STALE, EvidenceHealth.freshnessOf(staleAfter + 1, 0, staleAfter, reliableAging))
+        assertEquals(EvidenceFreshness.AGING, EvidenceHealth.freshnessOf(0, reliableAging + 1, staleAfter, reliableAging))
+        // STALE 优先于 AGING（任意定位断了比可靠定位变旧更严重）
+        assertEquals(
+            EvidenceFreshness.STALE,
+            EvidenceHealth.freshnessOf(staleAfter + 1, reliableAging + 1, staleAfter, reliableAging)
+        )
+        // 负数秒数按 0：无效输入不凭空制造"断流"
+        assertEquals(EvidenceFreshness.FRESH, EvidenceHealth.freshnessOf(-5, -5, staleAfter, reliableAging))
+    }
+
+    @Test
+    fun healthFloorLeavesFreshConfirmedEvidenceAlone() {
+        val floor = SamplingContract.urgencyFloorOf(health())
+        assertEquals("全新鲜 + CONFIRMED + 无失败 + 高置信：不提高", 0.0, floor.value, 0.0)
+        assertTrue(floor.reasons.isEmpty())
+    }
+
+    @Test
+    fun healthFloorTableAppliesEachRule() {
+        assertEquals(0.8, SamplingContract.urgencyFloorOf(health(freshness = EvidenceFreshness.STALE)).value, 0.0)
+        assertEquals(0.4, SamplingContract.urgencyFloorOf(health(freshness = EvidenceFreshness.AGING)).value, 0.0)
+        assertEquals(0.4, SamplingContract.urgencyFloorOf(health(decision = FusedDecision.MAINTAINED)).value, 0.0)
+        assertEquals(0.8, SamplingContract.urgencyFloorOf(health(decision = FusedDecision.UNKNOWN)).value, 0.0)
+        assertEquals(0.4, SamplingContract.urgencyFloorOf(health(failures = 1)).value, 0.0)
+        assertEquals(0.8, SamplingContract.urgencyFloorOf(health(failures = 3)).value, 0.0)
+        assertEquals(0.4, SamplingContract.urgencyFloorOf(health(confidence = 0.69)).value, 0.0)
+        assertEquals(0.6, SamplingContract.urgencyFloorOf(health(confidence = 0.39)).value, 0.0)
+        // 边界：恰好 0.7 / 0.4 不触发更高档
+        assertEquals(0.0, SamplingContract.urgencyFloorOf(health(confidence = 0.7)).value, 0.0)
+        assertEquals(0.4, SamplingContract.urgencyFloorOf(health(confidence = 0.4)).value, 0.0)
+    }
+
+    @Test
+    fun healthFloorTakesTheMaximumAndMergesReasons() {
+        val floor = SamplingContract.urgencyFloorOf(
+            health(
+                decision = FusedDecision.MAINTAINED,
+                confidence = 0.3,
+                failures = 3,
+                freshness = EvidenceFreshness.AGING
+            )
+        )
+        assertEquals("多条命中取最大（0.8），不是求和也不是平均", 0.8, floor.value, 0.0)
+        assertTrue(floor.reasons.containsAll(
+            setOf(
+                SamplingReason.WEAK_EVIDENCE,
+                SamplingReason.LOW_CONFIDENCE,
+                SamplingReason.PROVIDER_FAILURES,
+                SamplingReason.AGING_EVIDENCE
+            )
+        ))
+    }
+
+    @Test
+    fun nanConfidenceGivesNoFloorButPolicyMustFallbackEarlier() {
+        // NaN 与任何数比较都是 false ⇒ 本表不给下限；无效拍必须由策略在进表之前整拍兜底。
+        // 这条测试钉的是"表不会替调用方兜住 NaN"——谁消费 confidence 谁先验 NaN。
+        val floor = SamplingContract.urgencyFloorOf(health(confidence = Double.NaN))
+        assertEquals(0.0, floor.value, 0.0)
+        assertTrue(floor.reasons.isEmpty())
+    }
+
+    @Test
+    fun withoutCriticalClampsOnlyCritical() {
+        assertEquals(SamplingTier.TRANSITION, SamplingContract.withoutCritical(SamplingTier.CRITICAL))
+        assertEquals(SamplingTier.TRANSITION, SamplingContract.withoutCritical(SamplingTier.TRANSITION))
+        assertEquals(SamplingTier.WATCH, SamplingContract.withoutCritical(SamplingTier.WATCH))
+        assertEquals(SamplingTier.NORMAL, SamplingContract.withoutCritical(SamplingTier.NORMAL))
+        assertEquals(SamplingTier.STABLE, SamplingContract.withoutCritical(SamplingTier.STABLE))
+    }
+
+    private fun health(
+        decision: FusedDecision = FusedDecision.CONFIRMED,
+        confidence: Double = 0.9,
+        failures: Int = 0,
+        freshness: EvidenceFreshness = EvidenceFreshness.FRESH
+    ) = EvidenceHealth(
+        secondsSinceFix = 0L,
+        secondsSinceReliableFix = 0L,
+        confidence = confidence,
+        placeDecision = decision,
+        locationAvailable = true,
+        providerFailureStreak = failures,
+        freshness = freshness
+    )
 
     private companion object {
         const val NOW: Long = 1_784_000_000_000L

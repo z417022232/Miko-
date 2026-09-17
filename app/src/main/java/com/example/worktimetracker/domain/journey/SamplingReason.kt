@@ -41,5 +41,17 @@ enum class SamplingReason {
     LOCATION_UNAVAILABLE,
 
     /** 状态机未能给出结论，回落到 `SamplingTuning` 兜底。 */
-    FALLBACK_ENGINE_FAILED
+    FALLBACK_ENGINE_FAILED,
+
+    /** 可靠定位超过老化线（约 5 分钟）未更新 —— 证据在变旧（§5.3.2 健康度下限表）。 */
+    AGING_EVIDENCE,
+
+    /** 证据只够维持上一地点（MAINTAINED）—— 不许推进状态，但值得加密观察。 */
+    WEAK_EVIDENCE,
+
+    /** 地点判不出来（UNKNOWN）—— 与"没有证据"分开：证据在、但互相矛盾/不够。 */
+    UNRESOLVED_PLACE,
+
+    /** 提供器连续失败（1 次起 WATCH，3 次起 CRITICAL，§5.3.2 健康度下限表）。 */
+    PROVIDER_FAILURES
 }
