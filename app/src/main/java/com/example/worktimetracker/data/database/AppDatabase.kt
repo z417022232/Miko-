@@ -5,6 +5,7 @@ import androidx.room.RoomDatabase
 import com.example.worktimetracker.data.dao.AppLogDao
 import com.example.worktimetracker.data.dao.EnvironmentEvidenceDao
 import com.example.worktimetracker.data.dao.HolidayDao
+import com.example.worktimetracker.data.dao.JourneyShadowStateDao
 import com.example.worktimetracker.data.dao.LearningModelDao
 import com.example.worktimetracker.data.dao.LocationLogDao
 import com.example.worktimetracker.data.dao.ManualOverrideDao
@@ -20,6 +21,7 @@ import com.example.worktimetracker.data.entity.AppLogEntity
 import com.example.worktimetracker.data.entity.EnvironmentFingerprintEntity
 import com.example.worktimetracker.data.entity.EvidenceObservationEntity
 import com.example.worktimetracker.data.entity.HolidayEntity
+import com.example.worktimetracker.data.entity.JourneyShadowStateEntity
 import com.example.worktimetracker.data.entity.LearnedPlaceModelEntity
 import com.example.worktimetracker.data.entity.LearningModelMetaEntity
 import com.example.worktimetracker.data.entity.LocationHealthEntity
@@ -62,9 +64,10 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         LearningModelMetaEntity::class,
         LearnedPlaceModelEntity::class,
         PlaceAnchorCandidateEntity::class,
-        PlaceLearningPreferenceEntity::class
+        PlaceLearningPreferenceEntity::class,
+        JourneyShadowStateEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -82,4 +85,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun payrollDao(): PayrollDao
     abstract fun salarySlipDao(): SalarySlipDao
     abstract fun learningModelDao(): LearningModelDao
+    abstract fun journeyShadowStateDao(): JourneyShadowStateDao
 }

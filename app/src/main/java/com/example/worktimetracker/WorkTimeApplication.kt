@@ -46,7 +46,7 @@ class WorkTimeApplication : Application() {
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                 MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
                 MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
-                MIGRATION_15_16
+                MIGRATION_15_16, MIGRATION_16_17
             )
             .build()
     }
@@ -395,6 +395,35 @@ class WorkTimeApplication : Application() {
             }
         }
 
+        /** DB v17：阶段 3 新行程状态机的独立影子快照，不灌种子、不触碰正式 work_state。 */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `journey_shadow_state` (" +
+                        "`id` INTEGER NOT NULL, " +
+                        "`phase` TEXT NOT NULL, " +
+                        "`candidatePhase` TEXT, " +
+                        "`firstObservedAt` INTEGER, " +
+                        "`lastSupportedAt` INTEGER, " +
+                        "`candidateLastUnsupportedAt` INTEGER, " +
+                        "`supportCount` INTEGER NOT NULL, " +
+                        "`accumulatedStableMillis` INTEGER NOT NULL, " +
+                        "`candidateEvidenceSources` TEXT, " +
+                        "`candidateStrongestDecision` TEXT, " +
+                        "`candidateConfidence` REAL, " +
+                        "`lastConfirmedPhase` TEXT, " +
+                        "`lastTransitionAt` INTEGER NOT NULL, " +
+                        "`samplingAttempt` INTEGER NOT NULL, " +
+                        "`samplingLastAttemptAt` INTEGER, " +
+                        "`samplingCriticalStartedAt` INTEGER, " +
+                        "`samplingLastCriticalEndedAt` INTEGER, " +
+                        "`modelVersion` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
         val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -503,4 +532,3 @@ class WorkTimeApplication : Application() {
         }
     }
 }
-

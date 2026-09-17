@@ -861,6 +861,7 @@ data class JourneyShadowStateEntity(
     val candidatePhase: String?,               // JourneyCandidate.targetPhase.name
     val firstObservedAt: Long?,
     val lastSupportedAt: Long?,
+    val candidateLastUnsupportedAt: Long?,        // 支持链中断标记，防重启后把空窗累计进稳定时长
     val supportCount: Int,
     val accumulatedStableMillis: Long,
     val candidateEvidenceSources: String?,     // ⭐ 二轮P0-2：按稳定顺序序列化（如 "GNSS,WIFI,CELL"）
@@ -868,6 +869,10 @@ data class JourneyShadowStateEntity(
     val candidateConfidence: Double?,          // ⭐ 二轮P0-2：候选最强置信
     val lastConfirmedPhase: String?,           // ⭐ 二轮P0-2：STALE 恢复/时间回拨要接回的字段，必须持久化
     val lastTransitionAt: Long,
+    val samplingAttempt: Int,                     // CRITICAL 退避状态也必须跨重启保持
+    val samplingLastAttemptAt: Long?,
+    val samplingCriticalStartedAt: Long?,
+    val samplingLastCriticalEndedAt: Long?,
     val modelVersion: Long,                     // 状态机结构版本（枚举/字段变更时 +1）
     val updatedAt: Long
     // ⚠️ 二轮P0-1：activeWorkSession 不持久化 —— 它是外部事实（Observation），不是状态机记忆
