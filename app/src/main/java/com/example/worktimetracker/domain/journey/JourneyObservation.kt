@@ -1,5 +1,6 @@
 package com.example.worktimetracker.domain.journey
 
+import com.example.worktimetracker.domain.evidence.EvidenceSource
 import com.example.worktimetracker.domain.evidence.FusedDecision
 import com.example.worktimetracker.domain.evidence.ResolvedPlace
 
@@ -37,6 +38,16 @@ data class JourneyObservation(
 
     /** 融合层原始置信（0..1）—— 用分值不用 UI 档位，档位线改了不该影响状态机。 */
     val confidence: Double,
+
+    /**
+     * 本拍判定所依据的证据来源（GNSS / WIFI / CELL / BLUETOOTH …）。
+     *
+     * 它是 [JourneyCandidate.evidenceSources] 的**唯一数据来源** ——
+     * 引擎不做任何推断：融合层说这一拍靠哪些源定的，状态机就记哪些源。
+     * 没有它，候选的来源字段永远为空（"解释"就是假的），
+     * 且 §5.6 要求持久化的三字段里有一个无从填写。
+     */
+    val evidenceSources: Set<EvidenceSource>,
 
     /** 运动形态（第一版只有 STATIONARY / MOVING / UNKNOWN）。 */
     val motion: MotionPhase,

@@ -38,6 +38,21 @@ enum class JourneyReason {
     /** 候选支持链命中门槛，确认事件。 */
     CANDIDATE_CONFIRMED,
 
+    /** 候选被反向证据取消（回到上一个已确认状态，不产生事件）。 */
+    CANDIDATE_REVERSED,
+
+    /**
+     * 观测时刻早于状态机已知的最后时刻（设备时间回拨 / 换机恢复备份）。
+     * 落点固定为：丢弃候选、保留 `lastConfirmedPhase`、状态置 UNKNOWN（§5.6 规则 2）。
+     */
+    CLOCK_ROLLED_BACK,
+
+    /**
+     * 观测值越界或不可解释（负秒数 / NaN 或越界置信 / 负距离）。
+     * 一律按**保守侧**清洗（负秒数按 0、坏置信按 0），绝不猜一个"看起来合理"的值。
+     */
+    INVALID_INPUT,
+
     /** 迟滞生效：阈值附近本可翻转，但被迟滞按住。 */
     HYSTERESIS_HELD,
 

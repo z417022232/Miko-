@@ -48,6 +48,7 @@ class JourneyTypesContractTest {
             place = ResolvedPlace.COMPANY,
             placeDecision = FusedDecision.CONFIRMED,
             confidence = 0.82,
+            evidenceSources = setOf(EvidenceSource.GNSS, EvidenceSource.WIFI),
             motion = MotionPhase.STATIONARY,
             motionObservedAt = NOW - 30_000L,
             secondsSinceFix = 12L,
@@ -123,10 +124,18 @@ class JourneyTypesContractTest {
         assertEquals(2, transition.confirmedEvents.size)
     }
 
-    // ---------- 契约 4：候选八字段齐全 ----------
+    // ---------- 契约 4：候选字段齐全 ----------
 
+    /**
+     * ⚠️ 这里原本钉的是「正好八个字段」。第 2 步实现 `JourneyEngine` 时发现
+     * **八字段在数学上区分不出「连续两拍支持」与「中间断过一拍又支持」** ——
+     * 两者的 firstObservedAt / lastSupportedAt / supportCount 可以完全相同，
+     * 于是空窗会被当成稳定时长累计（一次断流就能把候选泡到门槛）。
+     * 与一轮 P0-1 是同一类问题：**缺的不是阈值，是能表达"链断过"的状态位**。
+     * 因此补第九字段 `lastUnsupportedAt`，此处的期望同步改为 9。
+     */
     @Test
-    fun candidateCarriesAllEightFields() {
+    fun candidateCarriesAllNineFields() {
         // 只数实例字段：companion object / const 会带出静态字段，别把它们算进"候选有几个字段"
         val fields = JourneyCandidate::class.java.declaredFields
             .filter { !it.isSynthetic && !java.lang.reflect.Modifier.isStatic(it.modifiers) }
@@ -140,9 +149,47 @@ class JourneyTypesContractTest {
             "accumulatedStableMillis",
             "evidenceSources",
             "strongestDecision",
-            "confidence"
+            "confidence",
+            "lastUnsupportedAt"
         ).forEach { assertTrue("候选缺字段 $it", fields.contains(it)) }
-        assertEquals("候选字段必须正好八个", 8, fields.size)
+        assertEquals("候选字段必须正好九个", 9, fields.size)
+    }
+
+    @Test
+    fun candidateChainBreakMarkerDefaultsToContinuous() {
+        val candidate = JourneyCandidate(
+            targetPhase = JourneyPhase.AT_WORK,
+            firstObservedAt = NOW,
+            lastSupportedAt = NOW,
+            supportCount = 1,
+            accumulatedStableMillis = 0L,
+            evidenceSources = setOf(EvidenceSource.GNSS),
+            strongestDecision = FusedDecision.CONFIRMED,
+            confidence = 0.9
+        )
+        assertNull("新建候选默认支持链连续（null = 未中断）", candidate.lastUnsupportedAt)
+    }
+
+    @Test
+    fun observationCarriesEvidenceSources() {
+        val observation = JourneyObservation(
+            now = NOW,
+            place = ResolvedPlace.COMPANY,
+            placeDecision = FusedDecision.CONFIRMED,
+            confidence = 0.82,
+            evidenceSources = setOf(EvidenceSource.GNSS, EvidenceSource.WIFI),
+            motion = MotionPhase.STATIONARY,
+            motionObservedAt = NOW - 30_000L,
+            secondsSinceFix = 12L,
+            hasActiveWorkSession = true,
+            distanceToHomeMeters = 4200.0,
+            distanceToWorkMeters = 7.0
+        )
+        assertEquals(
+            "候选的证据来源只能来自观测，观测不携带就没得记",
+            setOf(EvidenceSource.GNSS, EvidenceSource.WIFI),
+            observation.evidenceSources
+        )
     }
 
     // ---------- 契约 5：MotionPhase 只有三档 ----------

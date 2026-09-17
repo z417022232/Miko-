@@ -594,6 +594,18 @@ data class JourneyCandidate(
 拍数只进诊断文案与影子对比。只用拍数会随采样档漂移：CRITICAL 档下三拍 = 90 秒，
 STABLE 档下三拍 = 30 分钟，同一个门槛横跨两个数量级。
 
+**v3.1 实现补记（第 2 步写 `JourneyEngine` 时发现，三处契约补丁）**：
+
+| # | 缺口 | 补法 |
+|---|---|---|
+| 1 | 八字段**区分不出**「连续两拍支持」与「中间断过一拍又支持」—— 两者的 `firstObservedAt` / `lastSupportedAt` / `supportCount` 可以完全相同，于是空窗时长会被当成稳定时长累计（一次断流就能把候选泡到门槛） | 候选补第九字段 **`lastUnsupportedAt: Long?`**（null = 支持链连续；非 null = 最近一次支持中断的时刻）。过期判定仍看 `lastSupportedAt`，所以「保留最早证据」与「空窗不计入稳定时长」可同时成立。⚠️ 第 5 步 DB v17 必须加列 `candidateLastUnsupportedAt`，否则重启后第一拍会把空窗当稳定时长 |
+| 2 | `JourneyCandidate.evidenceSources` **没有数据来源**：观测不带来源，候选的来源字段只能永远为空（"解释"是假的），§5.6 要求持久化的三字段里有一个无从填写 | `JourneyObservation` 补 **`evidenceSources: Set<EvidenceSource>`**（融合层说这一拍靠哪些源定的，状态机就记哪些源，**不做推断**） |
+| 3 | `TempLeaveStart` 的发出时刻未定：§5.2.4 的图把「重新回公司」整条路径标成 `TempLeaveStart + TempLeaveEnd`，字面上会读成两个事件都在回司那一拍发出 | 明确为：**进入 `TEMP_LEAVE` 那一拍发 `TempLeaveStart`**（`occurredAt` = 离岗候选 `firstObservedAt`），**回司确认那一拍发 `TempLeaveEnd`**（`occurredAt` = 回归候选 `firstObservedAt`）。理由：`TEMP_LEAVE` 的语义是「**已确认**的临时离岗」，进入它却没有事件 = 状态与事件对不上；且分开发能保证 `occurredAt` 升序 |
+
+配套新增三个原因码（`JourneyReason`）：`CANDIDATE_REVERSED`（候选被反向证据取消）、
+`CLOCK_ROLLED_BACK`（时间回拨，落点=丢弃候选 + 保留 `lastConfirmedPhase` + 置 UNKNOWN）、
+`INVALID_INPUT`（观测值越界，一律按保守侧清洗：负秒数按 0、坏置信按 0）。
+
 ### 5.3 自适应采样（v2：补 CRITICAL 限时 / 冷却 / 退避契约）
 
 `urgency` 分数（0..1）由状态驱动 → 映射到 `SamplingTier`：
