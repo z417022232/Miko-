@@ -3,6 +3,9 @@ package com.example.worktimetracker.domain.journey
 /**
  * 采样档位（§5.3）。由 [SamplingDecision] 承载，**不由 `JourneyTransition` 携带**
  * （一轮 P0-2：产物必须拆开，否则引擎要么调采样策略、要么自己算档，都违反三层分离）。
+ *
+ * 枚举顺序 = 由省到密，`ordinal` 递增即"更密"（`urgency` 单调不减的测试依赖这一点）。
+ * **档位边界不在这里**：[SamplingContract.tierFor] 持有等距五档的冻结边界。
  */
 enum class SamplingTier {
     /** 长时间在宅/在岗、置信高 —— 拉到最省。 */

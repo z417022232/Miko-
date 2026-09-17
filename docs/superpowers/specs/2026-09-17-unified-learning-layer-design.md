@@ -318,6 +318,20 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 > 判定地点的正确类型是融合层的 `ResolvedPlace`）；`MotionState` 则**在仓库中不存在**
 > （运动与地点证据已解耦、归采集层，v2 新建 `MotionPhase`）。冻结稿引用错位/不存在的类型，
 > 契约从第一行就落不了地。
+>
+> **第三轮（2026-09-17 晚，v3 → v3.2）**：第 3 步（`AdaptiveSamplingPolicy`）**开工预检**
+> 报回三处"规格给了要求、没给数值/接口"的缺口。三处都**不补就没法写对**，
+> 补法与全部冻结数值见 §5.3.1：
+>
+> | 级 | 问题 | 不补会怎样 |
+> |---|---|---|
+> | 阻塞 1 | `RetryState` 只有一个 `lastAttemptAt`，却被要求实现"单次 CRITICAL 最长 10 分钟" | 每次重试刷新起点 ⇒ **永远到不了上限**；不报错、日志里也看不出来（静默失效） |
+> | 阻塞 2 | `SamplingDecision` 只回一个 `retryAttempt: Int` | 调用方要自己拼 `currentCriticalStartedAt`/`lastAttemptAt`/`lastCriticalEndedAt` ⇒ 重试业务逻辑漏进编排层（违反 §5.1.1） |
+> | 阻塞 3 | 只说"urgency 0..1 映射五档""1/2/4 分钟…"，**没有数值、没有封顶** | 实现者只能现场造魔数；逐档断言无从下手；`1 shl attempt` 还会在 attempt≥31 时溢出成负数 |
+>
+> 补丁内容：`RetryState` 增 `currentCriticalStartedAt`；`SamplingDecision.retryAttempt` 换成
+> `nextRetryState: RetryState`（不留冗余平行字段）；五档等距边界 + 状态基础紧迫度 +
+> 冷却封顶 16 分钟全部冻结进 `SamplingContract` 并由 `SamplingContractTest` 逐条钉住。
 
 ### 5.1 边界：**只做这三件，不多做**
 
@@ -623,27 +637,107 @@ STABLE 档下三拍 = 30 分钟，同一个门槛横跨两个数量级。
 降级为兜底：状态机给不出结论时回落到它（"学习失败不许带崩主链路"的同一原则）。
 
 ```kotlin
-// domain/journey/SamplingDecision.kt —— AdaptiveSamplingPolicy 的唯一产物（v2 扩展）
+// domain/journey/SamplingDecision.kt —— AdaptiveSamplingPolicy 的唯一产物（v3.2 扩展）
 data class SamplingDecision(
     val tier: SamplingTier,
-    val urgency: Double,
+    val urgency: Double,               // 清洗后的值（NaN 由策略回落到兜底档，不会出现在这里）
     val reasonCodes: Set<SamplingReason>,
     val expiresAt: Long?,              // ⭐ 该档位的失效时刻（到期回落一档，防「卡在高档」）
-    val cooldownUntil: Long?,          // ⭐ P1-3：冷却截止（CRITICAL 达到时长上限后进入）
-    val retryAttempt: Int,             // ⭐ P1-3：连续失败次数（指数退避的指数）
+    val cooldownUntil: Long?,          // ⭐ P1-3：冷却截止（CRITICAL 结束后进入）
+    val nextRetryState: RetryState,    // ⭐ v3.2：**下一拍的完整重试状态**（取代原 retryAttempt）
     val fallbackApplied: Boolean       // 是否兜底（状态机失败回落 SamplingTuning 时为 true）
 )
 ```
 
+#### 5.3.1 v3.2 冻结：三个「实现前必须定死」的数值与语义
+
+开工 `AdaptiveSamplingPolicy` 前的预检发现三处**规格给了要求、却没给数值/接口**的缺口。
+缺口不补就实现，实现者只能现场造魔数 —— 那正是"虚假的统计精度"。冻结如下。
+
+**① `RetryState` 必须有自己的 CRITICAL 起点**（原缺口：只有一个 `lastAttemptAt`）
+
+```kotlin
+data class RetryState(
+    val attempt: Int = 0,
+    val lastAttemptAt: Long? = null,              // 最近一次尝试（无论成败）—— 每次重试都刷新
+    val currentCriticalStartedAt: Long? = null,   // ⭐ 本轮 CRITICAL 起点 —— 内部重试不得刷新
+    val lastCriticalEndedAt: Long? = null         // 上一轮 CRITICAL 结束时刻（冷却起点）
+)
+```
+
+| 动作 | 写什么 | 不写什么 |
+|---|---|---|
+| 进入 CRITICAL | `currentCriticalStartedAt = now` | — |
+| CRITICAL 内部重试 | 只写 `lastAttemptAt` | ❌ **不得刷新 `currentCriticalStartedAt`** |
+| 取得 `CONFIRMED`（即时退出） | `currentCriticalStartedAt = null`、`lastCriticalEndedAt = now`、`attempt = 0` | — |
+| 达到 10 分钟上限 | `currentCriticalStartedAt = null`、`lastCriticalEndedAt = now`、`attempt += 1` | — → 进冷却 |
+
+用 `lastAttemptAt` 兼作起点会让**每次重试都重新获得 10 分钟**：上限永远到不了，
+且不报错、日志里也看不出来（静默失效）。
+
+**② `SamplingDecision` 返回完整的 `nextRetryState`**（原缺口：只回一个 `retryAttempt`）
+
+进入/退出 CRITICAL、累加失败次数、起算冷却、成功清零，**全是策略的职责**（下面四条契约）。
+只回失败次数的话，调用方得自己拼出 `currentCriticalStartedAt`/`lastAttemptAt`/`lastCriticalEndedAt`
+—— 等于把重试语义搬进编排层，违反 §5.1.1。
+**刻意不保留冗余的 `retryAttempt` 展示字段**：失败次数只有一处真相 `nextRetryState.attempt`；
+"两个字段说同一件事"必然有一天不一致。
+
+**③ `urgency → tier` 五档等距边界**（原缺口：只说"0..1 映射五档"，没有实际数值）
+
+| urgency | tier |
+|---|---|
+| `0.0 ≤ u < 0.2` | `STABLE` |
+| `0.2 ≤ u < 0.4` | `NORMAL` |
+| `0.4 ≤ u < 0.6` | `WATCH` |
+| `0.6 ≤ u < 0.8` | `TRANSITION` |
+| `0.8 ≤ u ≤ 1.0` | `CRITICAL`（最高档上边界闭区间） |
+
+非法输入一律取保守侧：`NaN → null`（**回落兜底档**；不许当 0 或 1 ——
+`NaN` 与任何数比较都是 false，直接套分段写法会掉进最后一个 `else` = CRITICAL，
+把"算不出来"静默翻译成"最高频采样"）、负数 → 0、大于 1 → 1。
+
+**状态基础紧迫度**（`SamplingContract.baseUrgencyOf`）：
+
+| 状态 | 基础 urgency |
+|---|---|
+| `AT_HOME` / `AT_WORK` | 0.1 |
+| `AWAY` | 0.3 |
+| `LEAVING_*` / `ARRIVING_*` | 0.5 |
+| `TEMP_LEAVE` / `OTHER_STOP` | 0.5 |
+| `COMMUTING_*` | 0.7 |
+| `UNKNOWN` / `STALE` | 0.9 |
+
+`EvidenceHealth` **只能提高**紧迫度，**不得压低**状态基础值。
+
+**冷却退避封顶 16 分钟**：`cooldownMinutes(attempt) = 1 shl clamp(attempt, 0, 4)`
+→ `1 / 2 / 4 / 8 / 16`，超过 4 次一律 16 分钟。
+⚠️ **绝不直接 `1 shl attempt`**：`attempt` 只增不减，`1 shl 31` 溢出成负数，
+冷却期被算成"过去"—— 不但不冷却，还会立刻再进 CRITICAL。
+
+以上数值与查表集中在 `domain/journey/SamplingContract.kt`（**只有查表与清洗，没有策略**），
+由 `SamplingContractTest` 逐档钉住（含 §5.4 第 7 条要求的"每档上下边界各一条"）。
+⚠️ `CRITICAL_MAX_MINUTES = 10` 与 `SamplingTuning.HARD_BURST_CAP_MINUTES` 同源，
+但 domain **不许反向 import** `location/service`，所以同源只能靠护栏测试守
+（`criticalCapStaysInSyncWithSamplingTuning`）。
+
+**两条硬覆盖（策略里实现，不在查表内）**：
+
+1. `health.locationAvailable == false` → **不进入 CRITICAL**，回落 `fallbackTier` 并记
+   `LOCATION_UNAVAILABLE`（此时高频请求什么都换不来）；
+2. `health.placeDecision == CONFIRMED`（取得新可靠点）→ **立即退出 CRITICAL**，
+   回到当前状态的基础档，并写 `lastCriticalEndedAt`。
+
 **CRITICAL 的四条硬契约（P1-3 的落点，一个都不许缺）**：
 
-1. **限时**：单次 CRITICAL 最长 **10 分钟** —— 常量**复用 `SamplingTuning.HARD_BURST_CAP_MINUTES = 10`**，
-   不另建一套相同魔数（同源原则：Burst 已硬封 10 分钟，CRITICAL 与它同上限）；
+1. **限时**：单次 CRITICAL 最长 **10 分钟**（`SamplingContract.CRITICAL_MAX_MINUTES`，
+   同源于 `SamplingTuning.HARD_BURST_CAP_MINUTES`），起点取 `RetryState.currentCriticalStartedAt`；
 2. **即时退出**：成功取得**可靠证据**（`placeDecision == CONFIRMED`）后立即退出 CRITICAL；
-3. **冷却 + 指数退避**：达到时长上限仍未取得 → 进冷却；连续失败按 `retryAttempt` 指数退避
-   （如 1min / 2min / 4min…封顶后维持）；冷却期内**不得**再次进入 CRITICAL；
+3. **冷却 + 指数退避**：达到时长上限仍未取得 → 进冷却；连续失败按
+   `SamplingContract.cooldownMinutes(attempt)`（1/2/4/8/16 分钟，封顶 16）；
+   冷却期内**不得**再次进入 CRITICAL；
 4. **权限/开关关闭不强制**：定位权限被撤或系统定位开关关闭时，**不重复强制请求**，
-   直接回落兜底档并记 `SamplingReason`—— 此时高频请求只是白耗电，什么都换不来。
+   直接回落兜底档并记 `SamplingReason` —— 此时高频请求只是白耗电，什么都换不来。
 
 **反证它能失败**（§7 第 7 条的纪律）：什么输入能让 CRITICAL 被拦下？
 答：`now < cooldownUntil` 时的 CRITICAL 触发条件 —— 必须被冷却挡住、给出
@@ -654,7 +748,8 @@ data class SamplingDecision(
 阶段 3 只有**全部**满足才算完成：
 
 1. `JourneyObservation` / `JourneySnapshot` / `JourneyConfig` / `JourneyTransition` /
-   `JourneyEvent` / `JourneyCandidate` / `SamplingDecision` / `SamplingTier` 均为
+   `JourneyEvent` / `JourneyCandidate` / `RetryState` / `SamplingDecision` / `SamplingTier` /
+   `SamplingContract` 均为
    `domain/journey/` 下的**纯 Kotlin**，零 Android 依赖，引用的类型全部真实存在；
 2. `JourneyEngine` 是**纯 Reducer**（同（快照,观察,配置）同输出），可脱离 Room / Context 单测；
    三层职责边界按 §5.1.1 —— 编排层**不得包含业务判定**（地点/状态转换/候选确认/采样档位），

@@ -16,6 +16,7 @@ import com.example.worktimetracker.domain.journey.JourneySnapshot
 import com.example.worktimetracker.domain.journey.JourneyTransition
 import com.example.worktimetracker.domain.journey.MotionPhase
 import com.example.worktimetracker.domain.journey.RetryState
+import com.example.worktimetracker.domain.journey.SamplingContract
 import com.example.worktimetracker.domain.journey.SamplingDecision
 import com.example.worktimetracker.domain.journey.SamplingTier
 import java.time.LocalDate
@@ -288,27 +289,64 @@ class JourneyTypesContractTest {
         assertTrue(JourneyEventOrder.violations(events).isEmpty())
     }
 
-    // ---------- 契约 8：采样决策含限时、冷却、重试、兜底 ----------
+    // ---------- 契约 8：采样决策含限时、冷却、下一重试状态、兜底 ----------
 
     @Test
-    fun samplingDecisionCarriesLimitCooldownRetryAndFallback() {
+    fun samplingDecisionCarriesLimitCooldownNextRetryStateAndFallback() {
         val decision = SamplingDecision(
             tier = SamplingTier.CRITICAL,
             urgency = 0.9,
             reasonCodes = setOf(com.example.worktimetracker.domain.journey.SamplingReason.STALE_WINDOW),
             expiresAt = NOW + 600_000L,
             cooldownUntil = NOW + 1_200_000L,
-            retryAttempt = 2,
+            nextRetryState = RetryState(
+                attempt = 2,
+                lastAttemptAt = NOW,
+                currentCriticalStartedAt = NOW - 300_000L,
+                lastCriticalEndedAt = NOW - 900_000L
+            ),
             fallbackApplied = false
         )
         assertEquals(NOW + 600_000L, decision.expiresAt)
         assertEquals(NOW + 1_200_000L, decision.cooldownUntil)
-        assertEquals(2, decision.retryAttempt)
+        // 失败次数只有一处真相：nextRetryState.attempt（不再有平行的 retryAttempt 字段）
+        assertEquals(2, decision.nextRetryState.attempt)
+        assertEquals(NOW - 300_000L, decision.nextRetryState.currentCriticalStartedAt)
         assertFalse(decision.fallbackApplied)
 
-        val fields = SamplingDecision::class.java.declaredFields.map { it.name }.toSet()
-        listOf("tier", "urgency", "reasonCodes", "expiresAt", "cooldownUntil", "retryAttempt", "fallbackApplied")
+        val fields = SamplingDecision::class.java.declaredFields
+            .filter { !it.isSynthetic && !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+            .map { it.name }
+            .toSet()
+        listOf("tier", "urgency", "reasonCodes", "expiresAt", "cooldownUntil", "nextRetryState", "fallbackApplied")
             .forEach { assertTrue("采样决策缺字段 $it", fields.contains(it)) }
+        assertFalse(
+            "不许保留与 nextRetryState.attempt 平行的展示字段：两个字段说同一件事必然会漂移",
+            fields.contains("retryAttempt")
+        )
+        assertEquals("采样决策必须正好七个字段", 7, fields.size)
+    }
+
+    @Test
+    fun retryStateSeparatesCriticalStartFromLastAttempt() {
+        val fields = RetryState::class.java.declaredFields
+            .filter { !it.isSynthetic && !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+            .map { it.name }
+            .toSet()
+        listOf("attempt", "lastAttemptAt", "currentCriticalStartedAt", "lastCriticalEndedAt")
+            .forEach { assertTrue("重试状态缺字段 $it", fields.contains(it)) }
+
+        val idle = RetryState()
+        assertEquals(0, idle.attempt)
+        assertNull(idle.currentCriticalStartedAt)
+        assertFalse("没有起点就不在 CRITICAL 轮次内", idle.inCritical)
+
+        // 关键分工：CRITICAL 内部重试只动 lastAttemptAt，起点必须保持原值 ——
+        // 否则每重试一次就重新获得 10 分钟，"单次 CRITICAL ≤ 10 分钟"永远不成立
+        val started = idle.copy(currentCriticalStartedAt = NOW)
+        val retriedInsideCritical = started.copy(lastAttemptAt = NOW + 60_000L)
+        assertEquals("重试不得刷新 CRITICAL 起点", NOW, retriedInsideCritical.currentCriticalStartedAt)
+        assertTrue(retriedInsideCritical.inCritical)
     }
 
     // ---------- 契约 9：无 Android / Room / Context 依赖 ----------
@@ -328,6 +366,7 @@ class JourneyTypesContractTest {
             SamplingDecision::class,
             EvidenceHealth::class,
             RetryState::class,
+            SamplingContract::class,
             JourneyRuntimeDecision::class
         ).forEach { assertNoPlatformDependency(it) }
     }
