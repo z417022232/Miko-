@@ -54,6 +54,7 @@ object FusedStatusFormatter {
         reason.startsWith("CONFIRMED_NETWORK_LOCATION") -> "网络定位确认"
         reason.startsWith("CONFIRMED_AMBIENT") -> "Wi-Fi/蓝牙/基站环境证据确认"
         reason.startsWith("MAINTAIN_WEAK_EVIDENCE") -> "当前只有单一环境来源，等待更多证据"
+        reason.startsWith("MAINTAIN_HELD_PREVIOUS") -> "新地点的迹象还不足以推翻上一个判断，暂不改动"
         reason.startsWith("MAINTAIN_CONTINUITY") -> "上一判断的证据仍在有效期内，维持当前判断"
         reason.startsWith("UNKNOWN_CONFLICT") -> "公司和家庭的环境证据发生冲突，正在等待下一轮定位确认"
         reason.startsWith("UNKNOWN_STALE") -> "最近的有效位置证据已经过期，自动记录不会因此修改工时"

@@ -47,6 +47,14 @@ class FusedStatusFormatterTest {
             FusedStatusFormatter.reasonLabel("MAINTAIN_CONTINUITY"))
     }
 
+    @Test fun heldPreviousReasonSaysItDidNotFlip() {
+        // 切换余量拦住的翻转（v8.1）：必须讲清「没换地方」，不能显示原始原因码
+        val text = FusedStatusFormatter.reasonLabel("MAINTAIN_HELD_PREVIOUS")
+        assertTrue(text.contains("不足以推翻"))
+        assertTrue(text.contains("暂不改动"))
+        assertTrue(!text.contains("MAINTAIN_"))
+    }
+
     @Test fun unknownConflictExplainsBothSides() {
         val s = snapshot(ResolvedPlace.UNKNOWN, FusedDecision.UNKNOWN,
             "UNKNOWN_CONFLICT:home=1.55 company=1.58 gap<0.15")
