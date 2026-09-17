@@ -4,11 +4,11 @@
 > **影子验证强化已落地**（v9.1 / code 29 / DB v15）；
 > **阶段 2 收口已落地**（v9.2 / code 30 / DB v16）：NULL 语义修正、10 米边界等号统一、
 > 迁移校验器入库（`tools/verify_room_migration.py`）、学习状态展示 + 粘性回退入口。
-> 阶段 3~7 **未做**。阶段 3 规格**v1 冻结后经复查发现 4 个 P0 / 4 个 P1 / 1 个 P2 契约矛盾**
-> （纯函数与迟滞/候选/重启恢复不可兼得、产物归属冲突、缺临时离岗、缺决策等级……见 §5 修订记录），
-> 已于同日修订为 **v2 并重新冻结**（§5.1 边界、§5.1.1 三层职责、§5.2 Reducer 接口、
-> §5.3 采样、§5.4 完成标准、§5.5 影子对照、§5.6 持久化、§5.7 功耗验收）——
-> **修订发生在写代码之前，零返工成本；开工时照 v2 实现，不边写边改契约**。
+> 阶段 3~7 **未做**。阶段 3 规格**v1 冻结后经两轮复查**（第一轮 4 P0 / 4 P1 / 1 P2，
+> 第二轮 4 P0 / 2 P1，见 §5 修订记录）**已修订为 v3 并重新冻结**
+> （§5.1 边界、§5.1.1 三层职责、§5.2 Reducer 接口、§5.3 采样、§5.4 完成标准、
+> §5.5 影子对照、§5.6 持久化、§5.7 功耗验收、§5.8 实现顺序）——
+> **修订全部发生在写代码之前，零返工成本；开工时照 v3 实现，不再做第三轮整体架构评审**。
 > 本文是该路线在仓库里的**唯一源头** —— 之前只存在于对话里。
 > 契约细节见 `.workbuddy/memory/CONTRACTS.md`；操作流程见 skill `android-worktracker-delivery`。
 
@@ -281,10 +281,12 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 两个锚点重合时那种猜法会错，而且错得看不出来 —— 直到某天两者不相等才以
 "界面说 A、实际用 B"的形式爆掉。为此把 `effectiveAnchor` 的两个重载都收敛到 `resolve` 一份实现。
 
-## 5. 阶段 3：行程状态机 + 候选事件 + 自适应采样（**规格 v2 已重冻**，实现未做）
+## 5. 阶段 3：行程状态机 + 候选事件 + 自适应采样（**规格 v3 已重冻**，实现未做）
 
-> **修订记录（2026-09-17，v1 → v2）**：v1 于同日上午冻结，未写一行阶段 3 代码即复查，
-> 发现以下契约矛盾，全部在本版修正后**重新冻结**。修订发生在开工前，零返工成本。
+> **修订记录**：
+>
+> **第一轮（2026-09-17 上午，v1 → v2）**：v1 冻结后未写一行阶段 3 代码即复查，
+> 发现以下契约矛盾，全部修正后重新冻结。修订发生在开工前，零返工成本。
 >
 > | 级 | 问题 | v1 的错误 | v2 的修正 |
 > |---|---|---|---|
@@ -298,7 +300,19 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 > | P1-4 | 影子对比缺映射 | 新旧两套枚举非一一对应，逐字段直比会产生大量无意义差异 | 冻结**新旧状态映射表** + 影子日志必含 **`correlationId`**（§5.5） |
 > | P2 | 功耗验收不可证 | 「不高于 v9.2」只靠电量百分比，受网络/屏幕/其他 App 干扰 | 改为 **9 项可计数指标 + 3 条判据**，电量仅辅助（§5.7） |
 >
-> 附带修正（v1 稿自身笔误，复查时实测核对仓库发现）：
+> **第二轮（2026-09-17 下午，v2 → v3）**：v2 仍不可开工 —— 两个会丢真机状态
+>（P0-1/P0-2）、一个会漏记事件（P0-3）、一个缺真实数据来源（P0-4）。全部修正：
+>
+> | 级 | 问题 | v2 的错误 | v3 的修正 |
+> |---|---|---|---|
+> | P0-1 | `activeWorkSession` 放错层 | 作为**外部事实**却放在状态机自己的记忆 `JourneySnapshot` 里。影子期正式会话由旧机维护，新机快照里的该字段不会自动跟随旧机 —— Coordinator 每拍强行改 Snapshot 又违反「不修改纯单元产物」；切正式机后还会形成循环（状态机靠它判下班，它又等状态机确认下班才结束） | 移入 **`JourneyObservation.hasActiveWorkSession`**（Coordinator 每拍从权威工作会话读取再构造观察）；**从 Snapshot 删除**。Observation=外部事实、Snapshot=内部记忆，职责才完整（§5.2.1） |
+> | P0-2 | DB v17 字段不完整 | 实体缺 `lastConfirmedPhase` 列 —— 恢复规则要求 STALE 恢复/时间回拨接回该字段，库里却存不下；候选的解释字段（evidenceSources/strongestDecision/confidence）不持久化，恢复时**伪造** `MAINTAINED`+空集 —— 违反「不把未知伪装成确定值」，重启前后同一候选的解释会变 | 实体补 **`lastConfirmedPhase`** + **完整持久化候选解释三字段**（evidenceSources 按稳定顺序序列化如 `GNSS,WIFI,CELL`，数据量极小，不为省三列牺牲恢复一致性）（§5.6） |
+> | P0-3 | 单 `confirmedEvent` 丢事件 | 旧机**同一拍可产多个事件**（实测 `updateTemporaryLeave`：确认下班时同拍先 `CompanyDeparture` 后 `HomeArrival`；断流后「公司在→家」一拍也是两事件）。单可空字段只能留一个 = 回归 | 改为 **`confirmedEvents: List<JourneyEvent>`** + 排序硬约束（`occurredAt` 不倒序、同类型不重复、后件不早于前件）；影子对比从「事件是否非空」升级为**事件序列逐项比**（§5.2.3/§5.5） |
+> | P0-4 | `MotionPhase` 无真实数据来源 | v2 定义「静止/步行/车载」，但采集层实测只有 SignificantMotion 触发 + 加速度阈值（`MotionEvidenceController`），只能证明「发生了明显运动」，**分不出步行/车载**；且回调时间是 `SystemClock.elapsedRealtime()`（单调钟），不是业务 epoch | 第一版收敛为 **`STATIONARY / MOVING / UNKNOWN`**；输入增 **`motionObservedAt: Long?`** 并冻结时钟域规则（业务时间一律 epoch millis，elapsedRealtime 只做进程内超时，**两钟不许互转互比**）（§5.2.1）。将来要步/车再单建运动分类器（Activity Recognition / 定位速度 / 多源联合），**没有分类器前枚举不得表达超出证据能力的事实** |
+> | P1-1 | TEMP_LEAVE 规则循环 | v2 用 `activeWorkSession 已结束 → COMMUTING_HOME` 判正式下班，但正式会话正**等待** `CompanyDeparture` 事件才结束 —— 前置条件依赖尚未发生的产物 | 正式下班改由**路径 + 时长 + 到家证据共同确认**（持续远离 / 到家 / 超 `tempLeaveMaxMillis` → 确认 `CompanyDeparture` → 会话结束 → `COMMUTING_HOME`/`ARRIVING_HOME`）；`hasActiveWorkSession` 只用于区分 `AWAY`（休息日外出）与 `OTHER_STOP`（工作期间外出），**不单独决定 TEMP_LEAVE vs 正式下班**（§5.2.4） |
+> | P1-2 | Coordinator 约束表述过严 | 「不许出现任何 `if`」字面遵守会把普通 IO 分支（row 为 null 取初始快照 / 版本不符重置 / 异常回落）伪装成难懂的表达式 | 改为「**不得包含地点、状态转换、候选确认、采样档位等业务判定；允许数据存在性、版本、错误恢复和 IO 分支**」（§5.1.1） |
+>
+> 附带修正（v1 稿自身笔误，第一轮复查时实测核对仓库发现）：
 > v1 的 `place: PlaceType?` 引用了**语义错位**的类型（`PlaceType` 真实存在于
 > `domain/location/PlaceModel.kt`，但它是 `WORK/NON_WORK` 的**站点类型**，不是判定地点 ——
 > 判定地点的正确类型是融合层的 `ResolvedPlace`）；`MotionState` 则**在仓库中不存在**
@@ -318,9 +332,12 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 把状态机拉向"应该已经到了"。**两类错误必须能分开定位**，否则真机出问题时无法归因。
 阶段 4 单独做班次画像，通过 `ShiftProfile` 注入，**状态机不读它**。
 
-⚠️ **边界澄清（v2）**：状态机**可以读「是否存在活动工作会话」**（当天已确认到岗、
-未确认下班 —— `WorkdayClock.ONGOING_STATES` 的口径）。这是**当前事实**，不是学习先验；
-它是区分「临时离岗 / 正式下班」的必要输入（§5.2.4），不读它就无法达成完成标准。
+⚠️ **边界澄清（v3）**：状态机**可以读「是否存在活动工作会话」**（当天已确认到岗、
+未确认下班 —— `WorkdayClock.ONGOING_STATES` 的口径），作为**观察事实**
+（`JourneyObservation.hasActiveWorkSession`，二轮 P0-1）。它不是学习先验，
+但注意它的用途边界（§5.2.4）：**只用于区分「休息日外出 vs 工作期间外出」**
+（`AWAY` vs `OTHER_STOP`），**不单独决定临时离岗 vs 正式下班** ——
+正式下班由路径、时长、到家证据共同确认，拿会话结束当前置条件会成循环依赖。
 读事实 ≠ 读画像：画像回答"**应该**几点"，事实回答"**已经**发生了什么"。
 
 ### 5.1.1 三层分离：谁算什么（冻结的职责边界）
@@ -331,7 +348,7 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 |---|---|---|---|
 | `JourneyEngine` | `domain/journey/` | **纯 Reducer**：`reduce(previous: JourneySnapshot, observation: JourneyObservation, config: JourneyConfig): JourneyTransition` | 纯函数、无 Room/Context/时间源；同输入同输出 |
 | `AdaptiveSamplingPolicy` | `domain/journey/` | **纯映射**：`decide(nextSnapshot: JourneySnapshot, health: EvidenceHealth, now: Long, retry: RetryState, fallbackTier: SamplingTier): SamplingDecision` | 只做 `状态+健康+重试 → 档位` 的查表/分段，**不含状态判断** |
-| `JourneyCoordinator` | `location/service/` | **编排**：读库恢复快照、喂观察给引擎、喂快照给采样策略、把两个产物**组合**成 `JourneyRuntimeDecision`、持久化影子快照、写对比日志 | 只做 IO 与转发，**不许在里面写判定 `if`**；**不许修改两个纯单元的产物内容**，只能组合 |
+| `JourneyCoordinator` | `location/service/` | **编排**：读库恢复快照、喂观察给引擎、喂快照给采样策略、把两个产物**组合**成 `JourneyRuntimeDecision`、持久化影子快照、写对比日志 | 只做 IO 与转发；**不得包含地点、状态转换、候选确认、采样档位等业务判定**；允许数据存在性、版本、错误恢复和 IO 分支（`row == null` 取初始快照、`modelVersion != CURRENT` 重置、异常回落兜底都是合法 IO 分支，不许为了字面遵守契约把它们伪装成难懂的表达式）；**不许修改两个纯单元的产物内容**，只能组合 |
 
 v1 的 `JourneyDecision`（内含 `samplingTier`）已废弃 —— 它迫使三选一：
 要么引擎调采样（违反互不调用）、要么引擎自己算档（违反职责）、要么 Coordinator 改产物（违反只组合）。
@@ -351,32 +368,59 @@ data class JourneyRuntimeDecision(
 两个错误互相掩盖。拆开后可以单独回答"这一分钟为什么加密采样"，
 且 `SamplingTier` 的档位边界能逐档断言（§5.4 第 7 条）。
 
-### 5.2 接口契约（v2）
+### 5.2 接口契约（v3）
 
 #### 5.2.1 输入三件套：观察 / 快照 / 配置
 
 ```kotlin
-// domain/journey/JourneyObservation.kt —— 一拍的**纯观测**，只描述事实，不含状态、不含阈值
+// domain/journey/JourneyObservation.kt —— 一拍的**纯观测**，只描述外部事实，不含状态、不含阈值
 data class JourneyObservation(
     val now: Long,
     val place: ResolvedPlace,            // 融合层判定地点（HOME/COMPANY/OTHER/MOVING/UNKNOWN）
-    val placeDecision: FusedDecision,    // ⭐ P0-4：CONFIRMED / MAINTAINED / UNKNOWN，不许省
+    val placeDecision: FusedDecision,    // ⭐ 一轮P0-4：CONFIRMED / MAINTAINED / UNKNOWN，不许省
     val confidence: Double,              // 融合层原始置信分值（0..1）
-    val motion: MotionPhase,             // ⭐ 阶段3新建（见下注），来自采集层运动判定
+    val motion: MotionPhase,             // ⭐ 二轮P0-4：STATIONARY / MOVING / UNKNOWN（见下注）
+    val motionObservedAt: Long?,         // ⭐ 二轮P0-4：最近运动判定的 epoch 时刻（时钟域见下注）
     val secondsSinceFix: Long,           // 距最近一次有效定位的秒数（断流检测）
+    val hasActiveWorkSession: Boolean,   // ⭐ 二轮P0-1：当天已确认到岗且未确认下班 —— 外部事实，归观察
     val distanceToHomeMeters: Double?,   // 与旧 Fix.homeDistanceMeters 同源
     val distanceToWorkMeters: Double?    // 与旧 Fix.companyDistanceMeters 同源
 )
 ```
 
 - `ResolvedPlace` / `FusedDecision` 是 `domain/evidence/EvidenceModels.kt` 的**既有类型**，直接复用。
-- `MotionPhase`（静止 / 步行 / 车载）为**阶段 3 新建的 domain 枚举**：运动已与地点证据解耦
-  （采集层负责唤醒取证），行程状态机需要它区分「停在别处」与「持续移动」；
-  编排层把采集层运动判定输出映射进来，**引擎不碰传感器**。
 - `confidence` 用**原始分值**而非 UI 档位（`ConfidenceLevel` 是呈现层从同一分值派生的，
   引擎门槛要精确值，不依赖 UI 枚举 —— 档位线改了不该影响状态机）。
 
-**`placeDecision` 的推进规则（P0-4 的落点，硬约束）**：
+**`hasActiveWorkSession` 为什么在 Observation 而不在 Snapshot（二轮 P0-1 的落点）**：
+它是「当天已确认到岗且未确认下班」的**当前事实**，权威在旧机/工作会话一侧。
+放进 Snapshot（状态机自己的记忆）会产生两个真实故障：
+影子期正式会话由旧机维护，新机快照里的该字段**不会自动跟随旧机**，Coordinator
+每拍强行改 Snapshot 又违反「不修改纯单元产物」；切换正式机后还会形成**循环依赖** ——
+状态机靠它判「正式下班」，它又等状态机确认 `CompanyDeparture` 才结束。
+正确分工：**Observation = 外部事实（Coordinator 每拍从权威工作会话读取后构造），
+Snapshot = 新状态机自己的内部记忆**。
+
+**`MotionPhase` 的证据边界（二轮 P0-4 的落点，硬约束）**：
+
+```kotlin
+enum class MotionPhase { STATIONARY, MOVING, UNKNOWN }
+```
+
+采集层实测只有 **SignificantMotion 触发 + 加速度阈值**（`MotionEvidenceController`），
+它们只能证明「发生了明显运动」，**分不出步行和车载**。在补上真正的运动分类器
+（Activity Recognition / 定位速度 + 稳定时长 / 多源联合）之前，
+**枚举不得表达超出证据能力的事实** —— 第一版只有三档，将来确有分类器再扩。
+`UNKNOWN` = 尚无运动判定或判定已过期（`motionObservedAt` 距 `now` 超时）。
+
+**时钟域规则（硬约束）**：
+- 状态机业务时间**一律 epoch millis**（`JourneyObservation.now` / 所有事件时刻 / 持久化列）；
+- `SystemClock.elapsedRealtime()`（单调钟，采集层回调现用）**只用于进程内超时计算**；
+- **两种时钟不许互相比较、不许换算成同一事件时间**。编排层负责在构造 Observation 前
+  把运动判定换算到 epoch 域（如 `System.currentTimeMillis() - (elapsedNow - elapsedAt)` 的
+  现场换算，误差毫秒级、只影响「运动判定是否过期」的判断，不进事件时刻）。
+
+**`placeDecision` 的推进规则（一轮 P0-4 的落点，硬约束）**：
 
 | 决策 | 允许 | 禁止 |
 |---|---|---|
@@ -388,13 +432,13 @@ data class JourneyObservation(
 新状态机不另立证据规则，只是把等级显式带进输入。
 
 ```kotlin
-// domain/journey/JourneySnapshot.kt —— 状态机的全部记忆，可整体持久化/恢复（§5.6）
+// domain/journey/JourneySnapshot.kt —— 状态机的全部记忆（纯内部状态），可整体持久化/恢复（§5.6）
 data class JourneySnapshot(
     val phase: JourneyPhase,             // 当前状态
     val candidate: JourneyCandidate?,    // 进行中的候选（含累计，见 §5.2.5）
-    val lastConfirmedPhase: JourneyPhase?, // 上一个**已确认**的状态（STALE 恢复后接回这里）
-    val lastTransitionAt: Long,          // 上次状态变迁时刻（迟滞用）
-    val activeWorkSession: Boolean       // ⭐ 事实：当天已确认到岗且未确认下班（非班次先验）
+    val lastConfirmedPhase: JourneyPhase?, // 上一个**已确认**的状态（STALE 恢复后接回这里；二轮P0-2：必须持久化）
+    val lastTransitionAt: Long           // 上次状态变迁时刻（迟滞用）
+    // ⚠️ 二轮P0-1：activeWorkSession 已移入 JourneyObservation —— 外部事实不进内部记忆
 )
 ```
 
@@ -405,7 +449,8 @@ data class JourneyConfig(
     val arrivalRequiredMillis: Long,      // 到岗候选确认所需累计稳定**时长**（不是拍数，见 §5.2.5）
     val departureRequiredMillis: Long,    // 离岗候选确认所需累计稳定时长
     val candidateExpiryMillis: Long,      // 候选过期（对齐旧 CANDIDATE_EXPIRE_MILLIS）
-    val tempLeaveMaxMillis: Long          // TEMP_LEAVE 超时上限：仍未归则视为正式下班，转 COMMUTING_HOME
+    val tempLeaveMaxMillis: Long,         // TEMP_LEAVE 超时上限：仍未归则视为正式下班（见 §5.2.4）
+    val motionExpirySeconds: Long         // ⭐ 二轮P0-4：运动判定过期门槛（超过即 MotionPhase=UNKNOWN）
 )
 ```
 
@@ -430,11 +475,24 @@ fun reduce(
 // domain/journey/JourneyTransition.kt —— JourneyEngine 的唯一产物（冻结）
 data class JourneyTransition(
     val snapshot: JourneySnapshot,            // 下一拍快照（含更新后的候选累计）
-    val confirmedEvent: JourneyEvent?,        // null = 这一拍只更新状态，不确认任何事件
+    val confirmedEvents: List<JourneyEvent>,  // ⭐ 二轮P0-3：事件列表；空 = 这一拍只更新状态，不确认任何事件
     val reasonCodes: Set<JourneyReason>,      // 机器可断言的原因码（测试与影子对比用）
     val explanation: String                   // 人话原因（方案 §一 原则 6：每次判定必须能解释依据）
 )
 ```
+
+**为什么必须是列表（二轮 P0-3 的落点）**：旧机**同一拍可产多个事件** ——
+实测 `TrajectoryAnchorEngine.updateTemporaryLeave` 在确认下班的那一拍同时发出
+`CompanyDeparture` + `HomeArrival`（在公司后定位断流、下一条可靠定位直接在家时，
+一拍需要把「离岗」和「到家」一起补记）；「离家后长断流、下一拍直接到公司」同理。
+单可空字段只能留一个 = **事件漏记**，是对旧机的回归。
+
+**事件列表的三条排序硬约束（测试逐条钉住）**：
+
+1. 列表内事件按 `occurredAt` **升序**，后一个事件的 `occurredAt` **不得早于**前一个；
+2. **同类型事件不得在同一拍重复**（同一拍两个 `HomeArrival` 是 bug）；
+3. `HomeArrival.occurredAt >= CompanyDeparture.occurredAt` 这类**顺序规则**由引擎保证
+   （与旧机「到家时刻不得早于离岗时刻，否则拒绝该到家事件」同口径）。
 
 ```kotlin
 // domain/journey/JourneyEvent.kt —— 与旧机 4 事件对齐 + 临时离岗 2 个新事件
@@ -462,7 +520,7 @@ sealed class JourneyEvent(
 为什么不用确认时刻当事件时刻：候选会因断流、重启而推迟确认，
 用确认时刻会让"到岗 08:40"记成"到岗 09:12"，**误差直接进工资计算**。
 
-`confirmedEvent == null` 而 `snapshot.phase` 变了是**合法且常见**的：候选期内的中间态
+`confirmedEvents` 为空而 `snapshot.phase` 变了是**合法且常见**的：候选期内的中间态
 （`LEAVING_*` / `ARRIVING_*`）就是这种形态 —— 状态已经变了，但还没到"确认事件"的那一刻。
 
 #### 5.2.4 十三个状态（v2：11 → 13，补 `TEMP_LEAVE` / `OTHER_STOP`）
@@ -475,31 +533,37 @@ sealed class JourneyEvent(
 | 中间 | `TEMP_LEAVE` / `OTHER_STOP` | **确认的临时离岗（会回来）** / 活动会话期间在别处停留 |
 | 其他 | `AWAY` / `UNKNOWN` / `STALE` | 在别处 / 无法判定 / 断流（有明确原因，不是兜底） |
 
-**为什么必须加 `TEMP_LEAVE`（P0-3）**：旧机 `TrajectoryAnchorEngine` 本就有 `"TEMP_LEAVE"`
+**为什么必须加 `TEMP_LEAVE`（一轮 P0-3）**：旧机 `TrajectoryAnchorEngine` 本就有 `"TEMP_LEAVE"`
 状态，但它实际是**下班确认的候选期** —— 回公司→`WORKING`、离够久/到家→`FINISHED`，
 「临时离开」和「正式下班」**共用同一个状态的两个出口，从未真正区分**。v1 的 11 状态把
-它整个丢了，是回归。v2 把这条糊涂账拆开：
+它整个丢了，是回归。v3 把这条糊涂账拆开：
 
 ```
-临时离岗：AT_WORK → LEAVING_WORK → TEMP_LEAVE → ARRIVING_WORK → AT_WORK
-正式下班：AT_WORK → LEAVING_WORK → COMMUTING_HOME → ARRIVING_HOME → AT_HOME
+离开公司 → LEAVING_WORK（离岗候选期）
+  ├─ 短期在外停留、尚未到家 ────────────→ TEMP_LEAVE（临时离岗，会话未结束）
+  │     ├─ 重新回公司：TempLeaveStart + TempLeaveEnd 闭环 → ARRIVING_WORK → AT_WORK（会话继续）
+  │     └─ 持续远离 / 到家 / 超 tempLeaveMaxMillis ↓（与右侧汇合）
+  └─ 持续远离公司 / 到达家庭 / 超 tempLeaveMaxMillis
+        → 确认 CompanyDeparture → 工作会话结束 → COMMUTING_HOME → ARRIVING_HOME → AT_HOME
 ```
 
-**区分判据（全部来自事实输入，零班次先验）**：
+**判定规则（二轮 P1-1 的落点，硬约束）**：
 
-| 判据 | TEMP_LEAVE | COMMUTING_HOME |
-|---|---|---|
-| `activeWorkSession` | 仍在（已到岗未下班） | 已结束，**或**离开时长超 `tempLeaveMaxMillis` |
-| 运动形态 | 短暂停留（`OTHER_STOP` 附近）/ 往返 | 持续移动且远离公司 |
-| 到家证据 | 无（**到家永远优先判 `ARRIVING_HOME`**，回家吃饭不算离岗） | `homeStable` → `ARRIVING_HOME` |
-| 回公司 | `companyStable` → `ARRIVING_WORK` | 回司则按新通勤处理 |
-
-⚠️ **家不与 TEMP_LEAVE 竞争**：只要出现合格到家证据就进 `ARRIVING_HOME`，
-与工作会话是否结束无关（回家吃饭 = 到家 + 之后 `LEAVING_HOME` → `COMMUTING_TO_WORK`）。
-`TEMP_LEAVE` 只描述「离了公司、既没到家也没回司」的中间态。
+1. **正式下班由「路径 + 时长 + 到家证据」共同确认**（持续远离公司 / 合格到家证据 /
+   离开时长超 `tempLeaveMaxMillis`，任一成立 → 确认 `CompanyDeparture`），
+   **不是**由 `hasActiveWorkSession` 是否结束来前置判断 ——
+   工作会话正**等待** `CompanyDeparture` 才结束，拿它当离岗判据是
+   「会话结束依赖事件、事件又依赖会话结束」的**循环**；
+2. `hasActiveWorkSession` 的**唯一用途**是区分休息日外出与工作期间外出：
+   无会话的在别处 = `AWAY`，有会话的在别处停留 = `OTHER_STOP`；
+3. 短期在外、既未到家也未持续远离 = `TEMP_LEAVE`；重新回公司 → `TempLeaveStart` +
+   `TempLeaveEnd` 闭环（`occurredAt` 分别取离岗候选的 `firstObservedAt` 与回归候选的
+   `firstObservedAt`），工作会话**继续**；
+4. **到家永远优先判 `ARRIVING_HOME`**，与 `TEMP_LEAVE` 不竞争（回家吃饭 = 到家 +
+   之后 `LEAVING_HOME` → `COMMUTING_TO_WORK`，不算临时离岗）。
 
 `OTHER_STOP` 与 `AWAY` 的分工：前者 = **活动会话期间**在别处停留（去银行/送货，预期回）；
-后者 = 无活动会话时的在别处（休息日外出）。判定唯一差别就是 `activeWorkSession`。
+后者 = 无活动会话时的在别处（休息日外出）。判定唯一差别就是 `hasActiveWorkSession`（观察事实）。
 
 `UNKNOWN` 与 `STALE` 必须分开：前者是"证据矛盾、判不出来"，后者是"压根没有证据"。
 混成一个的话，诊断页上看不出是数据缺失还是算法失灵。
@@ -573,7 +637,7 @@ data class SamplingDecision(
 答：`now < cooldownUntil` 时的 CRITICAL 触发条件 —— 必须被冷却挡住、给出
 `reasonCodes` 含 COOLDOWN 的 `NORMAL`/兜底档。写不出这条测试 = 契约没落地。
 
-### 5.4 完成标准（v2：十五条，全部可逐条验收）
+### 5.4 完成标准（v3：十七条，全部可逐条验收）
 
 阶段 3 只有**全部**满足才算完成：
 
@@ -581,24 +645,33 @@ data class SamplingDecision(
    `JourneyEvent` / `JourneyCandidate` / `SamplingDecision` / `SamplingTier` 均为
    `domain/journey/` 下的**纯 Kotlin**，零 Android 依赖，引用的类型全部真实存在；
 2. `JourneyEngine` 是**纯 Reducer**（同（快照,观察,配置）同输出），可脱离 Room / Context 单测；
-   三层职责边界按 §5.1.1，编排层里**不得出现判定 `if`**，也不得修改纯单元产物内容；
+   三层职责边界按 §5.1.1 —— 编排层**不得包含业务判定**（地点/状态转换/候选确认/采样档位），
+   允许数据存在性/版本/错误恢复/IO 分支，也不得修改纯单元产物内容；
 3. 状态变迁必须带**迟滞**，不允许在阈值附近抖动；
 4. 事件正式时刻取 `occurredAt`（= 候选 `firstObservedAt`），**不是** `confirmedAt`；`confirmedAt` 只进诊断；
 5. `UNKNOWN` 与 `STALE` 分开，且各自有可解释的原因；断流期间状态**不许凭空跳变**
    （只能进 `STALE`），恢复后接回 `lastConfirmedPhase`；
-6. `placeDecision` 推进规则有测试钉死：`MAINTAINED` **不允许**推进任何转换（P0-4）；
+6. `placeDecision` 推进规则有测试钉死：`MAINTAINED` **不允许**推进任何转换（一轮 P0-4）；
 7. `SamplingTier` 的 `urgency → tier` 映射有测试，且**边界值逐档断言**（每个档的上下边界各一条）；
 8. `urgency` 只增不减（相对兜底下限），有测试钉住；
 9. CRITICAL 四条契约（限时/即时退出/冷却退避/权限关闭不强制）各有独立测试（§5.3）；
 10. **确认门槛用 `accumulatedStableMillis`**，不是拍数；`supportCount` 只出现在诊断与对比日志（§5.2.5）；
-11. 状态机**不读** `ShiftProfile` / 学习表（依赖方向单向）；但**必须**正确消费 `activeWorkSession` 事实；
+11. 状态机**不读** `ShiftProfile` / 学习表（依赖方向单向）；但**必须**正确消费
+    `hasActiveWorkSession` 观察事实（二轮 P0-1：它在 Observation，不在 Snapshot），
+    且**不单独用它决定 TEMP_LEAVE vs 正式下班**（§5.2.4 判定规则）；
 12. **临时离岗与正式下班可区分**：`TempLeaveStart` / `TempLeaveEnd` 事件在「离开又回司」场景触发，
     「离开到家」场景触发 `CompanyDeparture` / `HomeArrival` —— 两条路径各有真机影子日志佐证；
-13. 采样档位变化必须落**诊断日志**（`LEARNING`/`JOURNEY` 类型），可在诊断页看到"为什么这一分钟采样加密了"；
-14. 状态机**失败不影响定位主链路**（吞异常 + 回落 `SamplingTuning`，`fallbackApplied = true`）；
-    **重启后候选不重置、不推迟**（§5.6 的持久化与恢复有测试：杀进程 → 恢复 → 候选累计原样）；
-15. 真机跑满一个完整工作日，状态变迁序列可解释、无误跳变，**并通过 §5.5 的影子对照**
-    （含映射归一，`correlationId` 可配对），且**满足 §5.7 的功耗量化判据**。
+13. **同拍多事件不丢**（二轮 P0-3）：「公司在→断流→下一拍在家」一拍产出
+    `CompanyDeparture` + `HomeArrival` 两个事件，事件列表三条排序硬约束
+    （升序 / 同类型不重复 / 到家不早于离岗）各有测试；
+14. `MotionPhase` 第一版只有 `STATIONARY / MOVING / UNKNOWN`，**不出现步行/车载**
+    （二轮 P0-4：采集层分不出来）；时钟域规则（epoch vs elapsedRealtime 不互转互比）有测试钉住；
+15. 采样档位变化必须落**诊断日志**（`LEARNING`/`JOURNEY` 类型），可在诊断页看到"为什么这一分钟采样加密了"；
+16. 状态机**失败不影响定位主链路**（吞异常 + 回落 `SamplingTuning`，`fallbackApplied = true`）；
+    **重启后候选不重置、不推迟、解释字段不伪造**（§5.6 的持久化与恢复有测试：杀进程 → 恢复 →
+    候选累计**与解释字段**原样，`lastConfirmedPhase` 可恢复，二轮 P0-2）；
+17. 真机跑满一个完整工作日，状态变迁序列可解释、无误跳变，**并通过 §5.5 的影子对照**
+    （事件序列逐项比、含映射归一，`correlationId` 可配对），且**满足 §5.7 的功耗量化判据**。
 
 ### 5.5 影子对照：新旧状态机**逐事件**比对（阶段 3 的验收手段）
 
@@ -612,7 +685,7 @@ data class SamplingDecision(
 | # | 比对项 | 不一致时必须能回答 |
 |---|---|---|
 | 1 | 状态/阶段（**按 §5.5.1 映射归一后比**） | 新状态是更早还是更晚？差在哪条证据上？ |
-| 2 | 事件是否确认（`confirmedEvent` 是否非空） | 是新机确认了旧机没确认，还是反过来？ |
+| 2 | **事件序列**（`confirmedEvents` 的类型、数量、各自 `occurredAt`/`confirmedAt` 逐项比，二轮 P0-3） | 是新机确认了旧机没确认，还是反过来？同拍多事件是否两边都齐？ |
 | 3 | 事件**正式时刻**（`occurredAt`） | 差几秒/几分？是不是旧机用了确认时刻？ |
 | 4 | 采样档（`SamplingTier` vs 旧 `SamplingTuning` 档位） | 新档更密还是更省？会不会丢证据？ |
 | 5 | 断流判定（是否进 `STALE`） | `secondsSinceFix` 门槛是否一致？ |
@@ -666,7 +739,7 @@ differenceType       // NONE / EXPECTED_SPLIT（预期分化）/ TIMING / TIER /
 - 影子期长度：至少覆盖 **2 个完整工作日 + 1 个休息日**
   （休息日专门验证"不该出勤"这条不会因为状态机改动而误报）。
 
-### 5.6 影子状态持久化与重启恢复（P1-2：DB v17）
+### 5.6 影子状态持久化与重启恢复（一轮 P1-2 + 二轮 P0-2：DB v17）
 
 完成标准要求「重启后候选不被重置或推迟」，这**必须**有持久化契约支撑，否则纯靠进程内存，
 重启即归零。**影子阶段绝不复用 `work_state` 表** —— 新状态机虽然不写工时，
@@ -683,19 +756,29 @@ data class JourneyShadowStateEntity(
     val lastSupportedAt: Long?,
     val supportCount: Int,
     val accumulatedStableMillis: Long,
+    val candidateEvidenceSources: String?,     // ⭐ 二轮P0-2：按稳定顺序序列化（如 "GNSS,WIFI,CELL"）
+    val candidateStrongestDecision: String?,   // ⭐ 二轮P0-2：FusedDecision.name
+    val candidateConfidence: Double?,          // ⭐ 二轮P0-2：候选最强置信
+    val lastConfirmedPhase: String?,           // ⭐ 二轮P0-2：STALE 恢复/时间回拨要接回的字段，必须持久化
     val lastTransitionAt: Long,
-    val activeWorkSession: Boolean,
     val modelVersion: Long,                     // 状态机结构版本（枚举/字段变更时 +1）
     val updatedAt: Long
+    // ⚠️ 二轮P0-1：activeWorkSession 不持久化 —— 它是外部事实（Observation），不是状态机记忆
 )
 ```
 
+**为什么完整持久化候选解释字段（二轮 P0-2 的落点）**：v2 曾打算不存
+`evidenceSources` / `strongestDecision` / `confidence`，恢复时按保守档伪造
+（`MAINTAINED` + 空集）—— 这违反「**不把未知伪装成确定值**」：
+重启前后对同一候选的解释会变，影子对比日志也随之漂移。
+`evidenceSources` 按稳定顺序序列化（枚举 ordinal 或固定字典序），数据量极小，
+**不为省三列牺牲恢复一致性**。同理 `lastConfirmedPhase` 不持久化的话，
+恢复规则里的「STALE 恢复后接回」根本无从执行。
+
 恢复与重置规则（每条都有测试）：
 
-1. **正常恢复**：启动时读单行 → 重建 `JourneySnapshot`（含候选累计）→ 喂给引擎继续。
-   候选的 `evidenceSources` / `strongestDecision` / `confidence` 不持久化 ——
-   它们是解释性字段，恢复时按保守档重建（`strongestDecision = MAINTAINED`、空来源集），
-   **门槛判定只依赖持久化了的时长/拍数，恢复不改变确认进度**；
+1. **正常恢复**：启动时读单行 → 重建**完整** `JourneySnapshot`（含候选累计与全部解释字段，
+   原值原样、零伪造）→ 喂给引擎继续。恢复后对同一候选的解释与重启前一致；
 2. **时间回拨 / 重置**：`updatedAt > now`（设备时间回拨或换机恢复备份）→ **丢弃候选、
    保留 `lastConfirmedPhase`、状态置 `UNKNOWN` 重新观察**（保守方向，绝不拿未来数据继续推）；
 3. **版本不匹配**：`modelVersion` 与当前代码不符 → 整行重置为初始快照
@@ -735,6 +818,25 @@ DB v17 迁移照 §7.1 流程：`tools/verify_room_migration.py --old-schema ...
 **基线怎么取**：影子期第一天**新旧同时跑但采样仍由旧机驱动**（新机只记录它*会*请求什么，
 不真请求），此后按 §5.5 正常并行。这样能同时拿到「旧机实测基线」与「新机虚拟请求量」，
 切换前就能预判功耗差异。
+
+### 5.8 实现顺序（固定，不按此序 = 自找返工）
+
+```
+① 纯 domain 类型（Observation/Snapshot/Config/Transition/Event/Candidate/SamplingDecision）
+② JourneyEngine reducer
+③ 引擎单元测试（§5.4 第 2~6、10~11、13~14 条全在这一步钉死）
+④ AdaptiveSamplingPolicy（含 §5.3 CRITICAL 四契约测试）
+⑤ DB v17 影子快照（entity + migration + verify_room_migration.py 本地证死）
+⑥ JourneyCoordinator（IO 编排 + 快照持久化/恢复 + 兜底回落）
+⑦ 新旧状态映射 + 影子对比日志（correlationId 配对，EXPECTED_SPLIT 单列）
+⑧ 功耗计数器（§5.7 九项指标落库）
+⑨ 全量单测回归（837 基线上一把过）
+⑩ 真机影子运行（≥ 2 个完整工作日 + 1 个休息日，首日新机只记录不请求）
+```
+
+**为什么事件列表（②③）和快照持久化（⑤⑥）排最前且不许后补**：这两项如果实现后再改，
+会再次触发数据库迁移和大面积测试重写 —— 二轮 P0-2/P0-3 专门修的就是它们，
+v3 冻结的意义就是让它们一次成型。
 
 ## 6. 阶段 4~7（未做）
 
