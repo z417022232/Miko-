@@ -18,7 +18,6 @@ import com.example.worktimetracker.domain.location.AnchorUpdatePolicy
 import com.example.worktimetracker.domain.location.GeoPoint
 import com.example.worktimetracker.domain.location.ShadowObservation
 import com.example.worktimetracker.domain.location.ShadowValidator
-import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -51,6 +50,9 @@ import java.time.ZoneId
  * ## 四条纪律（违反即回归）
  *  1. **只写三张学习表**。`sites` 的坐标一个字都不改 —— 用户配置锚点永久权威，
  *     学习锚点的优先级由**取用顺序**（[com.example.worktimetracker.domain.location.PlaceModelResolver]）体现；
+ *     自 DB v16 起**还要再让开** `place_learning_preferences`：用户停用后学习照常跑，
+ *     但这个方法**绝不读写那张表** —— 粘性停用是取用层的事，
+ *     学习层一旦也去参考它，就会出现「停用期间模型停止演化」这种把两层搅在一起的行为；
  *  2. **判定不读候选表**。影子验证的语义就靠这条保证；
  *  3. **学习不许把主链路带崩**。所有异常吞掉并记 `LEARNING` 日志 ——
  *     学习是增强层，定位服务才是主链路（异常只能「记日志 / 模型降级 / 回落既有算法」）；
@@ -274,7 +276,9 @@ class AnchorLearningService(
     /**
      * 把窗口内的候选行还原成「一天一条」的影子观测，再把**本轮**的读数覆盖进去。
      *
-     * 同一天可能有多行（历史数据或状态变化时插入的），取当天最后一条；
+     * 重建规则（同一天取最后一条）由 [ShadowWindow] 唯一持有 —— 展示侧用的是同一份实现，
+     * 所以页面上看到的「前向验证 N 天」与这里判定的天数不可能不一致。
+     *
      * 本轮的读数一定比库里的新，所以按「同一天去重 + 追加今天」处理。
      */
     private fun buildObservations(
@@ -283,19 +287,8 @@ class AnchorLearningService(
         candidate: AnchorLearner.Candidate,
         ambientSources: Int
     ): List<ShadowObservation> {
-        val fromDb = windowRows
-            .groupBy { dayOf(it.lastSeenAt) }
-            .map { (day, rows) -> day to rows.maxBy { it.lastSeenAt } }
-            .filter { (day, _) -> day != today }
-            .map { (day, row) ->
-                ShadowObservation(
-                    day = day,
-                    center = GeoPoint(row.centerLat, row.centerLng),
-                    ambientSources = row.ambientSourceCount,
-                    spreadP90Meters = row.spreadP90Meters
-                )
-            }
-            .sortedBy { it.day }
+        val fromDb = ShadowWindow.observations(windowRows, zone)
+            .filter { it.day != today }
         val current = ShadowObservation(
             day = today,
             center = candidate.center,
@@ -306,18 +299,12 @@ class AnchorLearningService(
     }
 
     /**
-     * 影子窗口内的**指纹冲突**次数：同一个环境标识同时被两个地点支持。
-     *
-     * 这是「没有出现家庭/公司指纹冲突」条件的判据。只看窗口内仍在活跃的指纹
-     * （`lastObservedAt` 落在窗口内），否则历史脏数据会把新窗口一票否决。
+     * 影子窗口内的**指纹冲突**次数（判据说明见 [ShadowWindow.conflicts]）。
      */
     private fun fingerprintConflicts(
         fingerprints: List<EnvironmentFingerprintEntity>,
         windowStart: Long
-    ): Int = fingerprints
-        .filter { it.lastObservedAt >= windowStart }
-        .groupBy { it.identifierHash }
-        .count { (_, rows) -> rows.map { it.place }.distinct().size > 1 }
+    ): Int = ShadowWindow.conflicts(fingerprints, windowStart)
 
     /**
      * 开一个新版本并把旧版本退役（**不删行**）。
@@ -372,7 +359,7 @@ class AnchorLearningService(
     private fun LearnedPlaceModelEntity.learnedAnchor(): GeoPoint? =
         if (hasLearned) GeoPoint(learnedLat!!, learnedLng!!) else null
 
-    private fun dayOf(millis: Long): LocalDate = Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+    private fun dayOf(millis: Long): LocalDate = ShadowWindow.dayOf(millis, zone)
 
     private fun log(message: String) = AppLogEntity(type = LOG_TYPE, content = message)
 

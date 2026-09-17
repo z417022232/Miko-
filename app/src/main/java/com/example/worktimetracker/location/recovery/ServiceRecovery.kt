@@ -22,6 +22,15 @@ object ServiceRecovery {
     private const val SYSTEM_LOCATION_RECOVERED_AT = "system_location_recovered_at"
     private const val NOTIFY_PREFIX = "health_notified_"
 
+    /**
+     * 判定「定位服务还活着」的心跳窗口。
+     *
+     * 服务每 5 分钟喂一次心跳（`ForegroundLocationService.serviceHeartbeat`），
+     * 这里留到 12 分钟：既容得下一次丢拍，又不会把「早就被杀掉的服务」当成在运行 ——
+     * 误判成「在运行」的代价是把定位服务重新拉起来（见 [invalidateSiteCache]）。
+     */
+    private const val SERVICE_ALIVE_WINDOW_MILLIS = 12 * 60_000L
+
     fun start(context: Context, trigger: ServiceRecoveryPolicy.RecoveryTrigger): Boolean {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val coarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -55,8 +64,32 @@ object ServiceRecovery {
         }.getOrDefault(false)
     }
 
-    fun schedule(context: Context): Boolean = runCatching {
-        // 精确闹钟看门狗：与 WorkManager 健康巡检同时布防，
+    /**
+     * 用户改了**学习校准开关**（DB v16）：让正在运行的定位服务丢掉生效地点缓存。
+     *
+     * 与 [startRefresh] 的两处刻意差异：
+     *  1. **只在服务已在运行时下发**。`startForegroundService` 会把定位服务整个拉起来
+     *     （含持续定位与传感器订阅）。用户只是点了一个「停用学习校准」复选框，
+     *     绝不能因此把定位打开 —— 那是比缓存过期严重得多的副作用。
+     *     判据用服务自己的心跳（每 5 分钟一次，见 `ForegroundLocationService.serviceHeartbeat`）；
+     *  2. **不采样**，只失效缓存。
+     *
+     * 失败是安全的：缓存本身 60 秒自然过期，最坏就是「停用」晚 60 秒在判定侧生效。
+     * 返回值只用于日志，调用方不必据此提示用户。
+     */
+    fun invalidateSiteCache(context: Context, now: Long = System.currentTimeMillis()): Boolean {
+        if (heartbeatAge(context, now) > SERVICE_ALIVE_WINDOW_MILLIS) return false
+        return runCatching {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ForegroundLocationService::class.java)
+                    .setAction(ForegroundLocationService.ACTION_INVALIDATE_SITE_CACHE)
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    fun schedule(context: Context): Boolean = runCatching {        // 精确闹钟看门狗：与 WorkManager 健康巡检同时布防，
         // 闹钟触发时应用处于临时白名单窗口，可直接拉起前台服务
         AlarmWatchdog.scheduleNext(context)
         val request = PeriodicWorkRequestBuilder<LocationHealthWorker>(

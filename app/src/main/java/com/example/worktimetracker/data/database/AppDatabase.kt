@@ -29,6 +29,7 @@ import com.example.worktimetracker.data.entity.MonthlySalaryEntity
 import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
 import com.example.worktimetracker.data.entity.PayRateSegmentEntity
 import com.example.worktimetracker.data.entity.PlaceAnchorCandidateEntity
+import com.example.worktimetracker.data.entity.PlaceLearningPreferenceEntity
 import com.example.worktimetracker.data.entity.SalarySlipEntity
 import com.example.worktimetracker.data.entity.SalarySlipItemEntity
 import com.example.worktimetracker.data.entity.SiteEntity
@@ -60,9 +61,10 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         SalarySlipItemEntity::class,
         LearningModelMetaEntity::class,
         LearnedPlaceModelEntity::class,
-        PlaceAnchorCandidateEntity::class
+        PlaceAnchorCandidateEntity::class,
+        PlaceLearningPreferenceEntity::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

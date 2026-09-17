@@ -47,6 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.data.entity.SiteEntity
 import com.example.worktimetracker.data.entity.SiteEvidenceSourceEntity
+import com.example.worktimetracker.domain.location.PlaceLearningStatus
 import com.example.worktimetracker.location.evidence.ScannedWifi
 import com.example.worktimetracker.ui.app.SiteDraft
 import com.example.worktimetracker.ui.app.SiteRowUi
@@ -131,11 +132,14 @@ private fun SiteListPage(
     val lastLocationText by vm.lastKnownLocationText.collectAsState()
     val health by vm.sourceHealth.collectAsState()
     val refresh by vm.evidenceRefresh.collectAsState()
+    val learning by vm.learningStatuses.collectAsState()
     var here by remember { mutableStateOf<Pair<Double, Double>?>(null) }
 
     LaunchedEffect(Unit) {
         vm.refreshLastKnownLocation()
         vm.reloadSourceHealth()
+        // 学习状态只读、随时可跑；进来取一次，切开关后再取（见 setLearningAutoApply）
+        vm.reloadLearningStatuses()
         vm.loadCurrentLocation { lat, lng -> if (lat != null && lng != null) here = lat to lng }
     }
 
@@ -223,13 +227,24 @@ private fun SiteListPage(
                                     it.sourceType == SiteEvidenceSourceEntity.TYPE_BLUETOOTH
                             }
                         ),
+                        // 只对**带坐标**的地点显示学习状态：没有坐标的地点不参与锚点学习，
+                        // 给它显示「尚未开始学习」等于暗示它将来会开始 —— 那是假信息。
+                        learningStatus = if (row.site.hasGps) learning[row.site.id] else null,
                         onEdit = { onEdit(row.site.id) },
-                        onToggle = { vm.setSiteEnabled(row.site.id, it) }
+                        onToggle = { vm.setSiteEnabled(row.site.id, it) },
+                        onSetLearning = { vm.setLearningAutoApply(row.site.id, it) }
                     )
                 }
             }
         }
         Spacer(Modifier.height(14.dp))
+
+        // 学习校准的说明只在**真的有地点可能进入学习**时出现：
+        // 一个带坐标的地点都没有时讲「停用会保留数据」只会让人困惑。
+        if (rows.any { it.site.hasGps }) {
+            SettingsGroup { LearningDisableNotice() }
+            Spacer(Modifier.height(14.dp))
+        }
 
         SettingsGroup {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -273,48 +288,67 @@ private fun SiteListPage(
 private fun SiteListRow(
     row: SiteRowUi,
     sourceSummary: String,
+    learningStatus: PlaceLearningStatus?,
     onEdit: () -> Unit,
-    onToggle: (Boolean) -> Unit
+    onToggle: (Boolean) -> Unit,
+    onSetLearning: (Boolean) -> Unit
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onEdit)
-            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    row.site.name,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (row.site.enabled) AppTheme.colors.textPrimary else AppTheme.colors.muted
-                )
-                if (row.site.isPrimary) {
-                    Spacer(Modifier.size(8.dp))
-                    StatusPill("主", AppTheme.colors.blue)
+    // 外层从 Row 改成 Column：学习小节要占满整行宽度，
+    // 挤在「地点信息 + 开关」那一行里会被压成窄条，明细数字全部换行。
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onEdit)
+                .padding(
+                    start = 16.dp,
+                    end = 8.dp,
+                    top = 12.dp,
+                    // 有学习小节时下边距留给它，避免「距当前位置」那一行贴着分隔线
+                    bottom = if (learningStatus == null) 12.dp else 2.dp
+                ),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        row.site.name,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (row.site.enabled) AppTheme.colors.textPrimary else AppTheme.colors.muted
+                    )
+                    if (row.site.isPrimary) {
+                        Spacer(Modifier.size(8.dp))
+                        StatusPill("主", AppTheme.colors.blue)
+                    }
+                    if (row.site.siteType == SiteEntity.TYPE_NON_WORK) {
+                        Spacer(Modifier.size(8.dp))
+                        StatusPill("不计工时", AppTheme.colors.muted)
+                    }
+                    if (row.site.migrated) {
+                        Spacer(Modifier.size(8.dp))
+                        StatusPill("来自旧设置", AppTheme.colors.orange)
+                    }
                 }
-                if (row.site.siteType == SiteEntity.TYPE_NON_WORK) {
-                    Spacer(Modifier.size(8.dp))
-                    StatusPill("不计工时", AppTheme.colors.muted)
-                }
-                if (row.site.migrated) {
-                    Spacer(Modifier.size(8.dp))
-                    StatusPill("来自旧设置", AppTheme.colors.orange)
+                Spacer(Modifier.height(3.dp))
+                Text(sourceSummary, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+                row.distanceMeters?.let { distance ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "距当前位置约 ${metersText(distance)}",
+                        color = AppTheme.colors.muted,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
-            Spacer(Modifier.height(3.dp))
-            Text(sourceSummary, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
-            row.distanceMeters?.let { distance ->
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "距当前位置约 ${metersText(distance)}",
-                    color = AppTheme.colors.muted,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            Switch(checked = row.site.enabled, onCheckedChange = onToggle)
         }
-        Switch(checked = row.site.enabled, onCheckedChange = onToggle)
+        if (learningStatus != null) {
+            SiteLearningSection(
+                status = learningStatus,
+                onSetEnabled = onSetLearning,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
+            )
+        }
     }
 }
 

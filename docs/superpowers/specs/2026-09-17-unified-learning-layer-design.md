@@ -1,10 +1,13 @@
 # 算法层重构：统一学习层与七阶段路线
 
 > 状态：**阶段 1（收尾）+ 学习层地基 + 阶段 2（位置闭环）已落地**（v9.0 / code 28 / DB v14，commit `0152639`）；
-> **影子验证强化已落地**（v9.1 / code 29 / DB v15）。
-> 阶段 3~7 **未做**，但阶段 3 的**边界与接口已冻结**（见 §5.1）。
+> **影子验证强化已落地**（v9.1 / code 29 / DB v15）；
+> **阶段 2 收口已落地**（v9.2 / code 30 / DB v16）：NULL 语义修正、10 米边界等号统一、
+> 迁移校验器入库（`tools/verify_room_migration.py`）、学习状态展示 + 粘性回退入口。
+> 阶段 3~7 **未做**，但阶段 3 的**规格已完整冻结**（边界 §5.1、三层职责 §5.1.1、接口 §5.2、
+> 采样 §5.3、完成标准 §5.4、**影子对照 §5.5**）—— 开工时照此实现，不边写边改契约。
 > 本文是该路线在仓库里的**唯一源头** —— 之前只存在于对话里。
-> 契约细节见 `.workbuddy/memory/CONTRACTS.md`「v9.0 / v9.1」一节；操作流程见 skill `android-worktracker-delivery`。
+> 契约细节见 `.workbuddy/memory/CONTRACTS.md`；操作流程见 skill `android-worktracker-delivery`。
 
 ## 0. 为什么重构
 
@@ -60,6 +63,48 @@
 
 `ShadowValidator` 遇到 `latestP90 == null` 直接判**不通过**（`"缺少离散度读数，无法确认是否恶化"`），
 宁可让老库多观察一轮，也不拿未知当合格。
+
+### 2.1.2 DB v16 追加（v9.2）：用户偏好独立成表
+
+| 表 / 改动 | 主键 | 作用 |
+|---|---|---|
+| `place_learning_preferences`（新表） | `placeId`(= `sites.id`) | 用户是否允许学习锚点参与自动校准 |
+
+**只建表、不写任何数据。** 因为「**缺行 = 允许**」（`PlaceLearningPreference.DEFAULT_AUTO_APPLY_ENABLED`），
+老库升上来天然是全启用，零回归是**结构上**成立的 —— 迁移跑完表是空的，
+`withLearnedAnchors` 拿到的偏好列表为空，取锚点逻辑与 v15 逐字节相同。
+
+刻意不写「给每个已有地点补一行 `autoApplyEnabled = 1`」：那会在迁移里制造一批
+**用户从未表过态**的记录，之后无法区分「用户明确开过」和「迁移顺手写的」。
+
+**为什么必须独立成表（本阶段最容易写歪的一处）。** 三件语义完全不同的事：
+
+| 层 | 存在哪 | 回答的问题 | 谁改它 |
+|---|---|---|---|
+| 模型是否有效 | `learning_model_meta.status` | 这个版本被作废了吗 | **算法**（`RETIRED` / `INVALID`） |
+| 算法是否通过 | `learned_place_models.autoApplied` | 影子验证通过了吗 | **算法**（每轮学习重算） |
+| 用户是否允许用 | `place_learning_preferences.autoApplyEnabled` | 我愿意让它自动校准吗 | **只有用户** |
+
+混层的后果是**谎话**：用户按了暂停，模型却被标成 `RETIRED`。
+之后无法区分「模型坏了」与「用户关了」，而这两件事该做的处理完全不同
+（前者要重训，后者只需等用户开回来）。
+
+由此推出两条**刻意不对称**的规则（见 `PlaceLearningPreferencePolicy`）：
+
+- **停用只写偏好**：`modelAutoAppliedAfter = null`（不动模型），`reopenShadowWindow = false`。
+  用户偏好没有资格改写「算法是否通过」这个事实；停用表现在**取用时**
+  （`PlaceModelResolver.resolve` 第 0 步直接回落配置锚点）。学习照常观察、照常落候选、照常升版本。
+- **重新开启要求重新验证**：吊销 `autoApplied`（`false`）**并且**重开前向影子窗口。
+  两条缺一不可 —— 只吊销 `autoApplied` 时，窗口里已攒够 7 天，下一轮学习立刻重新判通过；
+  只重开窗口时，模型带着旧的 `autoApplied = true` 直接生效。
+  `PlaceLearningPreferencePolicyTest.theTwoRevocationStepsAreBothRequiredAndNeitherIsRedundant`
+  就是钉这一条的。
+
+**粘性停用 + 立刻生效**：用户停用后判定必须**马上**回到用户设置。检测路径的生效地点集合有
+60 秒缓存，所以 UI 改开关时通过 `ServiceRecovery.invalidateSiteCache()`
+（`ACTION_INVALIDATE_SITE_CACHE`）显式失效缓存 —— 且**只在服务已在运行**时下发
+（判据是 12 分钟心跳窗口）。否则 `startForegroundService` 会把整个定位服务拉起来：
+「点了一个复选框 → 定位被打开」是比缓存过期严重得多的副作用。
 
 ### 2.2 后续阶段预计需要的表（设计中，尚未建）
 
@@ -210,7 +255,35 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 3. **老数据不猜来源**：`finalMinutesSource` 保持 `NULL` = 未知；
 4. **学习失败不许带崩定位主链路**：异常只能「记日志 / 模型降级 / 回落既有算法」。
 
-## 5. 阶段 3：行程状态机 + 候选事件 + 自适应采样（边界已冻结，实现未做）
+### 4.5 阶段 2 收口（v9.2 / code 30 / DB v16）
+
+这一轮**没有新算法**，全部是"把已有的东西写准"。四处修正 + 一处补齐：
+
+| # | 问题 | 处理 |
+|---|---|---|
+| ① | `ShadowValidation.latestSpreadP90Meters` 是对外快照，仍被 `?: 0.0` 压成"零米完美集中" | 改回 `Double?`；空窗口/无读数 = `null`（未知）。判定本来就对，泄漏的是**输出层语义** |
+| ② | 10 米漂移门槛写成 `>=`：9.999m 通过、10.0m 失败，与常量名和文案（"≤10 允许"）相反 | 改为 `> 失败`、`<= 允许`，抽出纯函数 `ShadowValidator.driftExceedsLimit` 作为**唯一边界执行点**；连带 `AnchorLearningService` 的同候选比较由 `<` 改 `<=` |
+| ③ | 迁移校验脚本只在 `diagnostics/`（gitignore）里，换机器即失传 | 通用化为 `tools/verify_room_migration.py` 并入仓库，支持 `--old-schema/--new-schema/--migration-source/--from/--to` 与多跳链 |
+| ④ | 学习在跑，但用户看不到、也关不掉 | 地点管理页补**最小学习状态**（阶段/训练样本/前向验证进度/候选偏移/中心漂移/环境来源/离散度 + "当前判定使用你设置的位置"）与 `[停用学习校准] / [重新开启自动校准]` |
+| ⑤ | 用户开关需要一个**粘性**落点 | 新增 `place_learning_preferences`（DB v16），见 §2.1.2 |
+
+**④ 的一个必须说清的取舍**：界面上多出一个 `PENDING_APPLY`（"验证已通过，尚未生效"）阶段。
+原因是"算法的动作"与"实际取用"**可能不一致**：`AnchorUpdatePolicy` 说可以自动平滑，
+而 `PlaceModelResolver` 还要再看一眼置信度（≥0.70）——观察满 8 天、环境 2 类但样本不多时
+置信度只有 0.64，此时算法动作是 `AUTO_SMOOTH` 而锚点其实没被取用。
+不显式表达这一格，界面就会照着算法动作显示"已启用"而判定没变 —— 正是"界面说的和做的不一样"。
+
+**"当前用的是哪个锚点"的真值来源**：`PlaceModelResolver.resolve(...)` 返回 `EffectiveAnchor(point, source)`，
+展示层直接读 `source`，**不许**拿取到的点和 `learnedAnchor` 比较。
+两个锚点重合时那种猜法会错，而且错得看不出来 —— 直到某天两者不相等才以
+"界面说 A、实际用 B"的形式爆掉。为此把 `effectiveAnchor` 的两个重载都收敛到 `resolve` 一份实现。
+
+## 5. 阶段 3：行程状态机 + 候选事件 + 自适应采样（**规格已冻结**，实现未做）
+
+> **冻结声明（v9.2 / 2026-09-17）**：本节的接口、状态数、门槛方向、完成标准已冻结。
+> 阶段 3 开工时**照此实现**，不得边写边改契约 —— 契约改了，影子对照（§5.5）的
+> 「新旧逐事件比对」就没有基线可对，等于把唯一的验收手段废掉。
+> 要改契约，先改本节 + 对应的影子对照口径，再动代码。
 
 ### 5.1 边界：**只做这三件，不多做**
 
@@ -224,6 +297,22 @@ location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdat
 两种错误会互相污染 —— 状态机误判"还没出发"会让班次先验偏移，班次先验偏移又会反过来
 把状态机拉向"应该已经到了"。**两类错误必须能分开定位**，否则真机出问题时无法归因。
 阶段 4 单独做班次画像，通过 `ShiftProfile` 注入，**状态机不读它**。
+
+### 5.1.1 三层分离：谁算什么（冻结的职责边界）
+
+阶段 3 落成**三个各自可单测的单元**，不允许合并、也不允许互相调用：
+
+| 单元 | 位置 | 职责 | 硬约束 |
+|---|---|---|---|
+| `JourneyEngine` | `domain/journey/` | **纯算法**：`JourneyInput` → `JourneyDecision` | 纯函数、无 Room/Context/时间源；同输入同输出 |
+| `AdaptiveSamplingPolicy` | `domain/journey/` | **纯映射**：`JourneyPhase` + 证据健康 → `SamplingTier` | 只做 `urgency → tier` 的查表/分段，不含状态判断 |
+| `JourneyCoordinator` | `location/service/` | **编排**：读库/读状态机产物、调 `JourneyEngine`、落 `SamplingTier`、写诊断日志 | 只做 IO 与转发，**不许在里面写判定 `if`** |
+
+为什么把采样单独拆出来而不是塞进状态机：
+**"判定"与"为了判定而多花多少电"是两个可以分别出错的东西**。
+合在一起时，一次"状态判错了"会顺带把采样档也带错，而采样档错了会反过来让状态更难判对 ——
+两个错误互相掩盖。拆开后可以单独回答"这一分钟为什么加密采样"，
+且 `SamplingTier` 的档位边界能逐档断言（§5.4 第 6 条）。
 
 ### 5.2 接口契约
 
@@ -254,20 +343,38 @@ data class JourneyCandidate(
     /** 最近一条仍支持该状态的证据的时刻 —— 只用于判断"支持是否已经消失" */
     val lastSupportedAt: Long
 )
+
+// domain/journey/JourneyDecision.kt —— JourneyEngine 的唯一产物（冻结）
+data class JourneyDecision(
+    /** 当前状态（含候选期的中间态） */
+    val phase: JourneyPhase,
+    /** 是否有在此刻**确认**的事件（null = 这一拍只更新状态，不确认任何事件） */
+    val confirmedPhase: JourneyPhase?,
+    /** 事件正式时刻 = 候选的 firstObservedAt（**不是**确认时刻） */
+    val occurredAt: Long?,
+    /** 确认时刻 = 支持链命中门槛的那一拍的 now。**只用于计时/诊断，绝不进工资** */
+    val confirmedAt: Long?,
+    /** 采样档（由 AdaptiveSamplingPolicy 依据 phase + 证据健康映射，不由引擎自己算） */
+    val samplingTier: SamplingTier,
+    /** 人话原因（方案 §一 原则 6：每次判定必须能解释依据） */
+    val reason: String
+)
 ```
 
-**两个时刻的分工是硬约束**：
+**`occurredAt` 与 `confirmedAt` 的分工是硬约束**：
 
 | 字段 | 语义 | 用途 |
 |---|---|---|
-| `firstObservedAt` | **最早**支持该状态的证据时刻 | 确认后**事件正式时刻取它**（不是确认时刻） |
-| `lastSupportedAt` | **最近**仍支持该状态的证据时刻 | 判断支持链是否还在延续 |
+| `occurredAt` | 候选的 `firstObservedAt`：**最早**支持该状态的证据时刻 | **事件正式时刻取它**；与 `work_records.firstObservedAt` 同口径 |
+| `confirmedAt` | 支持链命中门槛的那一拍 `now` | **只用于诊断/延迟统计**（"这次迟到几拍才确认"） |
 
-为什么不用"确认时刻"当事件时刻：候选会因断流、重启而推迟确认，
+为什么不用确认时刻当事件时刻：候选会因断流、重启而推迟确认，
 用确认时刻会让"到岗 08:40"记成"到岗 09:12"，**误差直接进工资计算**。
-所以候选一旦被确认，正式时刻回填到 `firstObservedAt`（与 `work_records.firstObservedAt` 同一口径）。
 
-**11 个状态**（提案，阶段 3 开工时冻结）：
+`confirmedPhase == null` 而 `phase` 变了是**合法且常见**的：候选期内的中间态
+（`LEAVING_*` / `ARRIVING_*`）就是这种形态 —— 状态已经变了，但还没到"确认事件"的那一刻。
+
+**11 个状态**（**已冻结**，自阶段 3 开工生效）：
 
 | 组 | 状态 | 说明 |
 |---|---|---|
@@ -278,6 +385,10 @@ data class JourneyCandidate(
 
 `UNKNOWN` 与 `STALE` 必须分开：前者是"证据矛盾、判不出来"，后者是"压根没有证据"。
 混成一个的话，诊断页上看不出是数据缺失还是算法失灵。
+
+三个候选期（`LEAVING_*` / `ARRIVING_*`）**不是**"过渡态"这种含糊说法，
+它们各自有明确语义：**已观察到离开该地点的证据，但支持链尚未达到确认门槛**。
+确认门槛与迟滞一并由 `JourneyEngine` 持有，`JourneyDecision.reason` 必须能说出"还差几拍"。
 
 ### 5.3 自适应采样
 
@@ -299,18 +410,51 @@ data class JourneyCandidate(
 
 阶段 3 只有**全部**满足才算完成：
 
-1. `JourneyInput` / `JourneyPhase` / `JourneyCandidate` / `SamplingTier` 均为 `domain/` 下的**纯 Kotlin**，零 Android 依赖；
-2. 状态机是**纯函数**（同输入同输出），可脱离 Room / Context 单测；
+1. `JourneyInput` / `JourneyPhase` / `JourneyCandidate` / `JourneyDecision` / `SamplingTier` 均为 `domain/` 下的**纯 Kotlin**，零 Android 依赖；
+2. `JourneyEngine` 是**纯函数**（同输入同输出），可脱离 Room / Context 单测；三层职责边界按 §5.1.1，编排层里**不得出现判定 `if`**；
 3. 状态变迁必须带**迟滞**，不允许在阈值附近抖动；
-4. 事件正式时刻取 `firstObservedAt`，**不是**确认时刻；
+4. 事件正式时刻取 `occurredAt`（= 候选 `firstObservedAt`），**不是** `confirmedAt`；`confirmedAt` 只进诊断；
 5. `UNKNOWN` 与 `STALE` 分开，且各自有可解释的原因；
-6. `SamplingTier` 的 `urgency → tier` 映射有测试，且**边界值逐档断言**；
+6. `SamplingTier` 的 `urgency → tier` 映射有测试，且**边界值逐档断言**（每个档的上下边界各一条）；
 7. `urgency` 只增不减（相对兜底下限），有测试钉住；
 8. 状态机**不读** `ShiftProfile` / 学习表（依赖方向单向）；
 9. 断流期间状态**不许凭空跳变**（只能进 `STALE`），恢复后能接回原状态；
 10. 采样档位变化必须落**诊断日志**（`LEARNING`/`JOURNEY` 类型），可在诊断页看到"为什么这一分钟采样加密了"；
 11. 状态机**失败不影响定位主链路**（吞异常 + 回落 `SamplingTuning`）；
-12. 真机跑满一个完整工作日，状态变迁序列可解释、无误跳变，且**功耗不高于 v9.1**。
+12. 真机跑满一个完整工作日，状态变迁序列可解释、无误跳变，**并通过 §5.5 的影子对照**，
+    且功耗不高于 v9.2。
+
+### 5.5 影子对照：新旧状态机**逐事件**比对（阶段 3 的验收手段）
+
+阶段 3 改了"状态怎么判"，所以唯一的验收方式是**让新旧两套并行跑、逐事件比对**。
+沿用阶段 2 影子验证的纪律：**新状态机先只写日志，不影响任何判定**，
+等比对结果全部解释得通，再切换。
+
+**做法**：每一个 `JourneyInput` 拍子同时喂给旧路径（`TrajectoryAnchorEngine` + `SamplingTuning`）
+与新 `JourneyEngine`，把两者的产物按同一拍子配对，逐条比对下面 **9 项**。
+
+| # | 比对项 | 不一致时必须能回答 |
+|---|---|---|
+| 1 | 状态/阶段 | 新状态是更早还是更晚？差在哪条证据上？ |
+| 2 | 事件是否确认（`confirmedPhase` 是否非空） | 是新机确认了旧机没确认，还是反过来？ |
+| 3 | 事件**正式时刻**（`occurredAt`） | 差几秒/几分？是不是旧机用了确认时刻？ |
+| 4 | 采样档（`SamplingTier`） | 新档更密还是更省？会不会丢证据？ |
+| 5 | 断流判定（是否进 `STALE`） | `secondsSinceFix` 门槛是否一致？ |
+| 6 | `UNKNOWN` vs `STALE` 的归因 | 是"判不出来"还是"没证据"？ |
+| 7 | 迟滞是否生效（阈值附近有无抖动） | 同一输入连续拍的状态是否稳定？ |
+| 8 | 候选期长度（`LEAVING_*` / `ARRIVING_*` 停留拍数） | 确认门槛是否过松/过紧？ |
+| 9 | 理由文案（`reason`） | 能否独立解释这条不一致？答不上来就是缺证据记录 |
+
+**比对纪律**：
+
+- 一次不一致**不算问题**，**无解释的不一致**才算问题。允许"新机更晚确认"（更保守），
+  不允许"新机凭空确认"（旧机没有任何支持证据而新机确认了）。
+- 方向性判据：新机允许**更保守**，不允许**更激进** —— 与阶段 2「宁可多走影子」同一条原则。
+  唯一例外是 `occurredAt`：新机取 `firstObservedAt`，天然**更早**于旧机的确认时刻，
+  这属于预期修正，比对时要按"是否更接近真实到离岗"来判断，而不是按先后。
+- 比对结论必须**逐条落到设计稿或 issue**，不允许"看下来差不多"。
+- 影子期长度：至少覆盖 **2 个完整工作日 + 1 个休息日**
+  （休息日专门验证"不该出勤"这条不会因为状态机改动而误报）。
 
 ## 6. 阶段 4~7（未做）
 
@@ -328,10 +472,20 @@ data class JourneyCandidate(
 
 1. **改 DB 版本** → 先在本地跑迁移链校验脚本做结构比对，**别上真机试**；新导出的
    `app/schemas/*.json` 要一起提交。
-   ⚠️ 校验脚本在 `diagnostics/tools/` 下（`_mig14.py` / `_mig15.py`），而 **`diagnostics/` 被 `.gitignore` 排除**，
-   所以它在仓库里**不存在**，换机器要重写。做法见 §7.1。
+   ✅ 校验器**已入库**：`tools/verify_room_migration.py`（v9.2 起）。
+   ```bash
+   python tools/verify_room_migration.py \
+     --old-schema app/schemas/com.example.worktimetracker.data.database.AppDatabase/15.json \
+     --new-schema app/schemas/com.example.worktimetracker.data.database.AppDatabase/16.json \
+     --migration-source app/src/main/java/com/example/worktimetracker/WorkTimeApplication.kt \
+     --from 15 --to 16
+   ```
+   退出码 `0` 通过 / `1` 失败 / `2` 用法错误。`--from/--to` 可以**跨多跳**（如 14→16），
+   链条会连着跑。`diagnostics/` 仍被 gitignore，但**通用校验器在 `tools/` 下，不在忽略范围内**。
 2. **动门槛** → 先看 `CONTRACTS.md` 的冻结项，确认它不属于「算法冻结项（勿改）」。
 3. **新增取用/优先级逻辑** → 必须落在 `PlaceModelResolver`，不要在服务里另写 `if`。
+   要「显示当前用的是哪个锚点」时用 `PlaceModelResolver.resolve(...)` 的
+   `EffectiveAnchorSource`，**不要**拿取到的点和 `learnedAnchor` 比 —— 两个锚点重合时那种猜法会给出错误答案。
 4. **新增准入判定** → 必须引 `AnchorLearner.MAX_ACCURACY_METERS` 这类**已有常量**，不要重写数字。
 5. **枚举语义方向**（"取较保守/较小"）→ 必须写测试，且**正反两序都断言** ——
    `Confidence.conservative` 当初就是这么写反的，不报错、只静默放松门槛。
@@ -342,26 +496,65 @@ data class JourneyCandidate(
    只能靠**问一句"什么输入能让它失败"**。答不上来就是没门槛。
 8. **`NULL` 不等于零值** → `spreadP90Meters` / `finalMinutesSource` 这类可空列，
    读的时候必须区分"未知"与"明确为零"，且**未知一律按保守方向处理**。
-9. **常量同源** → 同一个数字只允许有一个定义处（如 `MIN_ELAPSED_DAYS = AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS`、
+   ⚠️ 光判对不够：**输出快照也要保留 `null`**。v9.1 收口时 `ShadowValidation.latestSpreadP90Meters`
+   判定是对的（null 不满足门槛 → 失败），但对外快照被 `?: 0.0` 压成了"零米完美集中" ——
+   判定正确不能成为输出层丢语义的理由。
+9. **上限类门槛的等号归"允许"侧** → `≤ 30`、`≤ 10`、`≤ 100`、`≥ 2` 一律
+   上限含等号。且边界必须抽成**可精确断言的纯函数**（如 `ShadowValidator.driftExceedsLimit`），
+   不要写成一个带浮点几何夹具的比较 —— `distanceMeters` 的往返误差会让"正好 10 米"
+   落在 `10.0±1e-13`，等号归哪侧在测试里既不可控也不可断言。
+10. **常量同源** → 同一个数字只允许有一个定义处（如 `MIN_ELAPSED_DAYS = AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS`、
    `CANDIDATE_DEDUP_METERS = ShadowValidator.MAX_CENTER_DRIFT_METERS`），
    并且同值关系要**写成测试**，不能只写在注释里。
+11. **用户偏好 / 算法事实 / 模型状态三层不许混** → 用户的开关只写
+   `place_learning_preferences`。**停用一律不动 `autoApplied` / `status`**：
+   用户按了暂停却把模型标成 `RETIRED`，等于把"用户关了"记成"模型坏了"，
+   之后无法归因（见 §2.1.2）。
+12. **用户改了会影响判定的开关** → 必须同时**让检测路径立刻看到**。
+   生效地点集合有 60 秒缓存，别让界面说"已停用"而判定还在用学习锚点；
+   失效缓存走 `ServiceRecovery.invalidateSiteCache()`，且**只在服务已在运行时下发**
+   （不能因为改一个复选框而把定位服务拉起来）。
 
 ### 7.1 迁移怎么在本地证死（不需要 instrumentation）
 
-`diagnostics/` 被 gitignore，脚本不入库，所以把**做法**记在这里：
+**校验器已入库：`tools/verify_room_migration.py`**（v9.2 起；此前散在 `diagnostics/tools/` 下，
+而 `diagnostics/` 被 gitignore，换机器就得重写 —— 所以搬进仓库并通用化）。
+`diagnostics/` 仍然忽略，但**通用校验器不在忽略范围内**。
+
+它做的事（也就是"证死"的定义）：
 
 1. 用 `app/schemas/.../<旧版本>.json` 里的 `createSql`（把 `${TABLE_NAME}` 替换成 `tableName`，
    索引同样处理）在**内存 SQLite** 里搭出旧版本的真实结构；
-2. 用正则从 `WorkTimeApplication.kt` 里把目标 `MIGRATION_x_y` 块的 `db.execSQL(...)` 字符串参数
+2. 用正则从 `WorkTimeApplication.kt` 里把整条 `MIGRATION_*` 链的 `db.execSQL(...)` 字符串参数
    抠出来、拼回完整语句，**按版本顺序**执行（一条链要连着跑，别只跑最后一条）；
-3. 与 KSP 新导出的 `<新版本>.json` **全表**比对列名 / 类型 affinity / NOT NULL / 默认值 /
-   主键顺序 / AUTOINCREMENT / 索引。
+   同时校验链的**连续性**：断裂、重复、越界都直接报错并退出 `2`；
+3. 与 KSP 新导出的 `<新版本>.json` **全表**比对列名 / 列序 / 类型 affinity / NOT NULL / 默认值 /
+   主键顺序 / AUTOINCREMENT / 索引名+唯一性+列序；
+4. 每张旧表**埋一行探针**，迁移后逐列比对，证明旧数据原样保留（不只看"建表成功"）；
+5. 模拟 Android 升级后的 `PRAGMA user_version` 写入，确认它是 `--to`。
 
-坑（踩过两次）：
+**它必须能失败**（这是它存在的意义，已自证）：断链 → 退出 `2`；schema 版本不自洽 → `FAIL`；
+篡改结构（改列/删索引/改主键）→ 逐项被抓；删行 / 改数据 / 删表 → 逐项被抓；干净库 → 不误报。
+
+坑（踩过三次）：
 
 - Room 的主键在 JSON 里是 `entity.primaryKey.columnNames`，**不是**逐字段的 `primaryKeyPosition`；
 - `PRAGMA table_info` 的 `pk` 列是**位次不是布尔**，要按它排序才是声明顺序；
-- 索引在 `indices[].columnNames`；
+- 索引在 `indices[].columnNames`，但复合主键 / UNIQUE 会产生 `sqlite_autoindex_*` **隐式索引**，
+  必须按前缀过滤掉，否则每张复合主键表都会报一条假的不一致（v9.2 首次运行就这样误报了 9 条）；
 - `CREATE TABLE IF NOT EXISTS` 会让「表已存在」静默通过 —— 所以第 3 步一定要比对**列集合**，不能只看建表成功。
 
+真机侧只需验证 `PRAGMA user_version` 从旧值跳到新值、表数 +1（v16 时 21 → 22）、老表行数一行不差。
+
+### 7.2 本地 shell 的一个坑（Windows）
+
+本机 Bash shim 的 `PATH` 会缺 coreutils（`dirname` / `ls` / `tail` / `uname` / `xargs` 全部找不到），
+表现是 `./gradlew` 直接死在 `uname: command not found`。
+解决办法是在命令前补一行：
+
+```bash
+export PATH="/c/Users/Administrator/.workbuddy/binaries/PortableGit/versions/1.2.0/usr/bin:$PATH"
+```
+
+不要用 `python -c` 去绕 `mkdir`/`shutil` —— 补 `PATH` 之后常规工具都能用，别在脚本里绕。
 真机侧只需验证 `PRAGMA user_version` 从旧值跳到新值、老表行数一行不差。

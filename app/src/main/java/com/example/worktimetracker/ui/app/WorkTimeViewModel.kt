@@ -43,6 +43,9 @@ import com.example.worktimetracker.location.evidence.ScannedWifi
 import com.example.worktimetracker.location.evidence.SiteWifiScanner
 import com.example.worktimetracker.location.evidence.WifiScanOutcome
 import com.example.worktimetracker.location.service.toSitePoint
+import com.example.worktimetracker.location.service.PlaceLearningPreferenceService
+import com.example.worktimetracker.location.service.PlaceLearningReport
+import com.example.worktimetracker.domain.location.PlaceLearningStatus
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
 import com.example.worktimetracker.domain.evidence.SourceHealthJudge
@@ -1398,6 +1401,18 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val siteEvidenceSources: StateFlow<List<SiteEvidenceSourceEntity>> = _siteEvidenceSources
 
     /**
+     * 每个地点的学习状态（DB v16）；单条渲染信息量较大，所以按 placeId 索引。
+     *
+     * 空 map = 还没取过 / 没有带坐标的地点。**不许**用「阶段默认值」占位：
+     * 那会让列表先显示一排「尚未开始学习」，再跳成真实状态，看起来像状态在乱跳。
+     */
+    private val _learningStatuses = MutableStateFlow<Map<Long, PlaceLearningStatus>>(emptyMap())
+    val learningStatuses: StateFlow<Map<Long, PlaceLearningStatus>> = _learningStatuses
+
+    private val learningReport by lazy { PlaceLearningReport(db) }
+    private val learningPreferences by lazy { PlaceLearningPreferenceService(db) }
+
+    /**
      * 四个来源（GPS / Wi-Fi / 蓝牙 / 基站）的可用性。
      *
      * 键恒定存在：没有健康记录时是 [SourceStatus.UNKNOWN]，不会凭空显示「正常」。
@@ -1420,6 +1435,38 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             _sites.value = runCatching { db.siteDao().all() }.getOrDefault(emptyList())
             _siteEvidenceSources.value = runCatching { db.siteDao().allSources() }.getOrDefault(emptyList())
+        }
+    }
+
+    /**
+     * 重新读一遍学习状态（地点页打开时、切换开关后调用）。
+     *
+     * 只读、不改任何算法行为：`PlaceLearningReport` 是把候选行重新投影一遍算出来的，
+     * 所以它随时可跑，不需要考虑时序。
+     */
+    fun reloadLearningStatuses() {
+        viewModelScope.launch {
+            val statuses = runCatching { learningReport.statuses() }.getOrDefault(emptyList())
+            _learningStatuses.value = statuses.associateBy { it.placeId }
+        }
+    }
+
+    /**
+     * 停用 / 重新开启某地点的学习校准（粘性，DB v16）。
+     *
+     * 三件事的顺序都不能省：
+     *  1. 写偏好 + 按规则调整模型/窗口（[PlaceLearningPreferenceService]）；
+     *  2. 让定位服务**立刻**丢掉生效地点缓存 —— 否则「停用」最多晚 60 秒
+     *     才在判定侧生效，而界面已经说「已停用」，那就是界面在说谎；
+     *  3. 重读状态，让页面显示与实际一致。
+     *
+     * 重新开启时后台会重新走 7 天前向验证 —— 这是刻意的，不是「没生效」的 bug。
+     */
+    fun setLearningAutoApply(placeId: Long, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { learningPreferences.setAutoApplyEnabled(placeId, enabled) }
+            runCatching { ServiceRecovery.invalidateSiteCache(getApplication()) }
+            reloadLearningStatuses()
         }
     }
 

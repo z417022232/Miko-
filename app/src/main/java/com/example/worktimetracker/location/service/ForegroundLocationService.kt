@@ -287,7 +287,25 @@ class ForegroundLocationService : Service(), LocationListener {
         if (intent?.action == ACTION_REFRESH_NOW) {
             requestImmediateRefresh()
         }
+        // 用户改了「学习校准开关」：丢掉生效地点缓存，让下一次融合立刻按新偏好取锚点。
+        // 不走 ACTION_REFRESH_NOW 是因为那会顺带重取一次定位（多耗一次电），
+        // 而这里只是「让缓存失效」，不做任何采样。
+        if (intent?.action == ACTION_INVALIDATE_SITE_CACHE) {
+            invalidateSiteCache()
+        }
         return START_STICKY
+    }
+
+    /**
+     * 丢掉生效地点缓存。
+     *
+     * 缓存本身是 60 秒的省电优化（见 [effectiveSites]），但用户按「停用学习校准」
+     * 时若还要等最多 60 秒才真正停用，界面就会说一套、判定做另一套 ——
+     * 这正是本项目最不能出现的一类问题，所以给一条显式的失效通道。
+     */
+    private fun invalidateSiteCache() {
+        cachedSitePointsAt = 0L
+        logEvent("LEARNING", "收到学习校准开关变更：已丢弃生效地点缓存")
     }
 
     override fun onDestroy() {
@@ -521,6 +539,9 @@ class ForegroundLocationService : Service(), LocationListener {
      *
      * 兜底来自 [com.example.worktimetracker.location.service.effectiveSites]：
      * 站点表里某一类型没有带坐标的地点时，用 user_settings 的 companyLat/homeLat 合成一条。
+     *
+     * [withLearnedAnchors] 自 DB v16 起还要吃「用户是否停用学习校准」这一行 ——
+     * 缺行 = 允许，所以老库升上来行为不变。
      */
     private suspend fun effectiveSites(
         app: WorkTimeApplication,
@@ -529,8 +550,12 @@ class ForegroundLocationService : Service(), LocationListener {
         val now = System.currentTimeMillis()
         if (cachedSitePointsAt > 0L && now - cachedSitePointsAt < SITES_CACHE_MILLIS) return cachedSitePoints
         cachedSitePoints = runCatching {
+            val learningDao = app.database.learningModelDao()
             settings.effectiveSites(app.database.siteDao().all())
-                .withLearnedAnchors(app.database.learningModelDao().allPlaces())
+                .withLearnedAnchors(
+                    models = learningDao.allPlaces(),
+                    preferences = learningDao.allPreferences()
+                )
         }.getOrDefault(emptyList())
         cachedSitePointsAt = now
         return cachedSitePoints
@@ -1246,6 +1271,15 @@ class ForegroundLocationService : Service(), LocationListener {
          * 拿到回调后立即恢复常规采样档，避免把高频定位一直挂着。
          */
         const val ACTION_REFRESH_NOW = "com.example.worktimetracker.action.REFRESH_NOW"
+
+        /**
+         * 「丢掉生效地点缓存」：用户在界面改了**学习校准开关**（DB v16）后由 UI 触发。
+         *
+         * 只失效缓存、不采样 —— 与 [ACTION_REFRESH_NOW] 的区别就在这里：
+         * 改一个开关不该顺带多打一次 GPS。
+         */
+        const val ACTION_INVALIDATE_SITE_CACHE =
+            "com.example.worktimetracker.action.INVALIDATE_SITE_CACHE"
 
         /** 一次性刷新的兜底时限：这么久还没回调就直接恢复常规档（低精度/室内可能拿不到） */
         private const val ONE_SHOT_REFRESH_TIMEOUT_MILLIS = 8_000L

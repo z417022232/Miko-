@@ -45,7 +45,8 @@ class WorkTimeApplication : Application() {
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                 MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
-                MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15
+                MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
+                MIGRATION_15_16
             )
             .build()
     }
@@ -352,6 +353,45 @@ class WorkTimeApplication : Application() {
         val MIGRATION_14_15 = object : Migration(14, 15) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE place_anchor_candidates ADD COLUMN spreadP90Meters REAL")
+            }
+        }
+
+        /**
+         * DB v16「学习校准的用户偏好」（v9.2）。
+         *
+         * **只建一张表，不写任何数据。**
+         *
+         * 表 `place_learning_preferences(placeId PK, autoApplyEnabled, updatedAt)` 存的是
+         * **用户是否允许学习锚点参与自动校准**。它与另外两层严格分开：
+         * - `learning_model_meta.status` = 模型版本是否作废（算法定）；
+         * - `learned_place_models.autoApplied` = 影子验证是否通过（算法定）；
+         * - 本表 = 用户是否允许用（只有用户定）。
+         *
+         * ## 为什么不回填
+         *
+         * **缺行 = 允许**（`PlaceLearningPreference.DEFAULT_AUTO_APPLY_ENABLED`），
+         * 所以老库升级上来天生就是「全部允许」，零回归是**结构上**成立的：
+         * 迁移跑完表是空的 → `withLearnedAnchors` 拿到的偏好列表为空
+         * → 取锚点逻辑与 v15 逐字节相同。
+         *
+         * 刻意不写「给每个已有地点插一行 autoApplyEnabled = 1」：
+         * 那会在迁移里制造一批**用户从未表过态**的记录，
+         * 之后无法区分「用户明确开过」和「迁移顺手写的」——
+         * 而这个区别正是「缺行 = 允许」要保住的东西。
+         *
+         * ## `DEFAULT 1` 与「缺行 = 允许」同向
+         *
+         * 两条路径都指向「默认允许」，不会出现「有行但默认 0」这种与缺行语义相反的角落。
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `place_learning_preferences` (" +
+                        "`placeId` INTEGER NOT NULL, " +
+                        "`autoApplyEnabled` INTEGER NOT NULL DEFAULT 1, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`placeId`))"
+                )
             }
         }
 
