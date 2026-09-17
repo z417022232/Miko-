@@ -329,7 +329,7 @@ data class JourneyCandidate(
 1. **改 DB 版本** → 先在本地跑迁移链校验脚本做结构比对，**别上真机试**；新导出的
    `app/schemas/*.json` 要一起提交。
    ⚠️ 校验脚本在 `diagnostics/tools/` 下（`_mig14.py` / `_mig15.py`），而 **`diagnostics/` 被 `.gitignore` 排除**，
-   所以它在仓库里**不存在**，换机器要重写。做法见 §6.1。
+   所以它在仓库里**不存在**，换机器要重写。做法见 §7.1。
 2. **动门槛** → 先看 `CONTRACTS.md` 的冻结项，确认它不属于「算法冻结项（勿改）」。
 3. **新增取用/优先级逻辑** → 必须落在 `PlaceModelResolver`，不要在服务里另写 `if`。
 4. **新增准入判定** → 必须引 `AnchorLearner.MAX_ACCURACY_METERS` 这类**已有常量**，不要重写数字。
@@ -346,7 +346,7 @@ data class JourneyCandidate(
    `CANDIDATE_DEDUP_METERS = ShadowValidator.MAX_CENTER_DRIFT_METERS`），
    并且同值关系要**写成测试**，不能只写在注释里。
 
-### 6.1 迁移怎么在本地证死（不需要 instrumentation）
+### 7.1 迁移怎么在本地证死（不需要 instrumentation）
 
 `diagnostics/` 被 gitignore，脚本不入库，所以把**做法**记在这里：
 
