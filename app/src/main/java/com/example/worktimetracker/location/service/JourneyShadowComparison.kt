@@ -1,6 +1,7 @@
 package com.example.worktimetracker.location.service
 
 import com.example.worktimetracker.domain.journey.JourneyPhase
+import com.example.worktimetracker.domain.journey.SamplingTier
 
 /** 影子对照的差异分类；EXPECTED_SPLIT不计入错误。 */
 enum class JourneyDifferenceType { NONE, EXPECTED_SPLIT, STATE, TIMING, TIER, MISSING_OLD, MISSING_NEW }
@@ -42,5 +43,15 @@ object JourneyShadowComparator {
         new == old.primary -> JourneyDifferenceType.NONE
         new in old.expectedAlternatives -> JourneyDifferenceType.EXPECTED_SPLIT
         else -> JourneyDifferenceType.STATE
+    }
+}
+
+/** 将旧机实际毫秒间隔归一成新机档位；旧机没有 CRITICAL 档，绝不凭空映射出来。 */
+object LegacySamplingTierMapper {
+    fun fromInterval(intervalMillis: Long): SamplingTier = when {
+        intervalMillis <= LocationSamplingPolicy.FAST_INTERVAL_MILLIS -> SamplingTier.TRANSITION
+        intervalMillis <= LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS -> SamplingTier.WATCH
+        intervalMillis <= LocationSamplingPolicy.DEFAULT_INTERVAL_MILLIS -> SamplingTier.NORMAL
+        else -> SamplingTier.STABLE
     }
 }

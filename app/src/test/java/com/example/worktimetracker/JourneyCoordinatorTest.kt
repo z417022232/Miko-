@@ -59,6 +59,25 @@ class JourneyCoordinatorTest {
         assertTrue(logs.single().contains("boom"))
     }
 
+    @Test
+    fun emptyShadowStoreCanBootstrapFromTheLegacyConfirmedState() = runTest {
+        val dao = FakeDao()
+        val bootstrap = JourneySnapshot(JourneyPhase.AT_WORK, null, JourneyPhase.AT_WORK, now - 500)
+        var reducerInput: JourneySnapshot? = null
+        val coordinator = JourneyCoordinator(
+            dao = dao,
+            reducer = { previous, _, _ ->
+                reducerInput = previous
+                JourneyTransition(previous, emptyList(), setOf(JourneyReason.NO_CHANGE), "保持")
+            }
+        )
+
+        coordinator.process(observation(), config, health(), SamplingTier.NORMAL, bootstrap)
+
+        assertEquals(bootstrap, reducerInput)
+        assertEquals(JourneyPhase.AT_WORK.name, dao.row?.phase)
+    }
+
     private fun observation() = JourneyObservation(
         now, ResolvedPlace.HOME, FusedDecision.CONFIRMED, 0.9, emptySet(),
         MotionPhase.STATIONARY, now, 0, false, 1.0, 100.0

@@ -1,9 +1,11 @@
 package com.example.worktimetracker
 
 import com.example.worktimetracker.domain.journey.JourneyPhase
+import com.example.worktimetracker.domain.journey.SamplingTier
 import com.example.worktimetracker.location.service.JourneyDifferenceType
 import com.example.worktimetracker.location.service.JourneyShadowComparator
 import com.example.worktimetracker.location.service.LegacyJourneyNormalizer
+import com.example.worktimetracker.location.service.LegacySamplingTierMapper
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -35,5 +37,12 @@ class JourneyShadowComparisonTest {
 
     @Test fun unknownLegacyStateIsNotGuessed() {
         assertNull(LegacyJourneyNormalizer.normalize("FUTURE_STATE", false, false))
+    }
+
+    @Test fun mapsLegacyIntervalsWithoutInventingCritical() {
+        assertEquals(SamplingTier.TRANSITION, LegacySamplingTierMapper.fromInterval(60_000L))
+        assertEquals(SamplingTier.WATCH, LegacySamplingTierMapper.fromInterval(5 * 60_000L))
+        assertEquals(SamplingTier.NORMAL, LegacySamplingTierMapper.fromInterval(10 * 60_000L))
+        assertEquals(SamplingTier.STABLE, LegacySamplingTierMapper.fromInterval(30 * 60_000L))
     }
 }

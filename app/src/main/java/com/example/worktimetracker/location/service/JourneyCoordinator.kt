@@ -19,10 +19,11 @@ class JourneyCoordinator(
         observation: JourneyObservation,
         config: JourneyConfig,
         health: EvidenceHealth,
-        fallbackTier: SamplingTier
+        fallbackTier: SamplingTier,
+        bootstrapSnapshot: JourneySnapshot? = null
     ): JourneyRuntimeDecision {
         val restored = dao.get()?.let { JourneyShadowStateCodec.decode(it, observation.now) }
-        val previousSnapshot = restored?.snapshot ?: JourneySnapshot.initial(observation.now)
+        val previousSnapshot = restored?.snapshot ?: bootstrapSnapshot ?: JourneySnapshot.initial(observation.now)
         val previousRetry = restored?.retry ?: RetryState()
 
         return try {
