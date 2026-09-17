@@ -11,8 +11,8 @@ package com.example.worktimetracker.domain.journey
  * - [staleAfterSeconds]：对齐 `EvidenceContinuityPolicy.DEFAULT_MAX_GAP_MILLIS`（20 分钟）
  *   与 `EvidenceCoordinator.CONTINUITY_WINDOW_MILLIS`（20 分钟）；
  * - [candidateExpiryMillis]：对齐 `TrajectoryAnchorEngine.CANDIDATE_EXPIRE_MILLIS`（2 小时）；
- * - [arrivalRequiredMillis] / [departureRequiredMillis]：对齐旧机的拍数门槛换算成时长
- *   （旧机环境证据到岗需连续 2 次稳定读数 —— **新机改按累计时长计**，见 [JourneyCandidate] 注释）；
+ * - 强绝对定位与环境证据的门槛分开：旧机对融合层已确认的 GNSS/网络定位允许单拍确认，
+ *   环境证据仍需持续观察；合并成一个门槛会让强证据路径产生回归；
  * - [tempLeaveMaxMillis]：对齐旧 `TrajectoryAnchorEngine.Config.leaveConfirmMinutes`
  *   （弱证据下确认下班所需的等待时长）；
  * - [motionExpirySeconds]：新增 —— 运动判定保鲜期，超过即按 `MotionPhase.UNKNOWN` 处理。
@@ -21,11 +21,17 @@ data class JourneyConfig(
     /** 断流门槛：距最近有效定位超过它进 `JourneyPhase.STALE`。 */
     val staleAfterSeconds: Long,
 
-    /** 到岗候选确认所需的**累计稳定时长**（毫秒，不是拍数）。 */
-    val arrivalRequiredMillis: Long,
+    /** 已由融合层确认的 GNSS/网络定位，到岗/到家候选所需时长；0 = 单拍确认。 */
+    val strongArrivalRequiredMillis: Long,
 
-    /** 离岗候选确认所需的**累计稳定时长**（毫秒，不是拍数）。 */
-    val departureRequiredMillis: Long,
+    /** 环境证据到岗/到家候选确认所需的累计稳定时长。 */
+    val ambientArrivalRequiredMillis: Long,
+
+    /** 已由融合层确认的 GNSS/网络定位，离家/离岗候选所需时长；0 = 单拍确认。 */
+    val strongDepartureRequiredMillis: Long,
+
+    /** 环境证据离家/离岗候选确认所需的累计稳定时长。 */
+    val ambientDepartureRequiredMillis: Long,
 
     /** 候选保鲜期：支持链中断超过它则候选作废。 */
     val candidateExpiryMillis: Long,

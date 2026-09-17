@@ -460,8 +460,10 @@ data class JourneySnapshot(
 // domain/journey/JourneyConfig.kt —— 全部阈值集中在此，引擎内部零魔数
 data class JourneyConfig(
     val staleAfterSeconds: Long,          // 断流进 STALE 的门槛（对齐旧 EvidenceContinuityPolicy 窗口）
-    val arrivalRequiredMillis: Long,      // 到岗候选确认所需累计稳定**时长**（不是拍数，见 §5.2.5）
-    val departureRequiredMillis: Long,    // 离岗候选确认所需累计稳定时长
+    val strongArrivalRequiredMillis: Long,  // 已确认GNSS/网络定位；0保持旧机单拍确认
+    val ambientArrivalRequiredMillis: Long, // 环境证据到岗/到家所需累计稳定时长
+    val strongDepartureRequiredMillis: Long,// 已确认GNSS/网络定位离开证据门槛
+    val ambientDepartureRequiredMillis: Long,// 环境证据离家/离岗累计稳定时长
     val candidateExpiryMillis: Long,      // 候选过期（对齐旧 CANDIDATE_EXPIRE_MILLIS）
     val tempLeaveMaxMillis: Long,         // TEMP_LEAVE 超时上限：仍未归则视为正式下班（见 §5.2.4）
     val motionExpirySeconds: Long         // ⭐ 二轮P0-4：运动判定过期门槛（超过即 MotionPhase=UNKNOWN）

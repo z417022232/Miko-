@@ -437,6 +437,10 @@ object JourneyEngine {
                 // 地点已经指向目标，但只进候选态、不确认事件 —— 这就是迟滞本身
                 reasons += JourneyReason.HYSTERESIS_HELD
                 val required = requiredMillis(target)
+                if (required <= 0L) {
+                    confirm(target, requireNotNull(candidate))
+                    return
+                }
                 notes += "开启「${phaseText(candidatePhase)}」候选（目标 ${phaseText(target)}）：" +
                     "需连续稳定 ${durationText(required)}"
                 return
@@ -647,11 +651,20 @@ object JourneyEngine {
             events += event
         }
 
-        /** 确认门槛：到岗/到家用 [JourneyConfig.arrivalRequiredMillis]，离家/离岗用 departure 那条。 */
-        private fun requiredMillis(target: JourneyPhase): Long = when (target) {
-            JourneyPhase.AT_WORK, JourneyPhase.AT_HOME -> config.arrivalRequiredMillis
-            JourneyPhase.COMMUTING_TO_WORK, JourneyPhase.TEMP_LEAVE -> config.departureRequiredMillis
-            else -> config.arrivalRequiredMillis
+        /** 强绝对定位保持旧机单拍语义；环境证据继续使用累计稳定时长。 */
+        private fun requiredMillis(target: JourneyPhase): Long {
+            val strongAbsolute = obs.placeDecision == FusedDecision.CONFIRMED &&
+                obs.evidenceSources.any {
+                    it == com.example.worktimetracker.domain.evidence.EvidenceSource.GNSS ||
+                        it == com.example.worktimetracker.domain.evidence.EvidenceSource.NETWORK_LOCATION
+                }
+            val arrival = target == JourneyPhase.AT_WORK || target == JourneyPhase.AT_HOME
+            return when {
+                strongAbsolute && arrival -> config.strongArrivalRequiredMillis
+                strongAbsolute -> config.strongDepartureRequiredMillis
+                arrival -> config.ambientArrivalRequiredMillis
+                else -> config.ambientDepartureRequiredMillis
+            }.coerceAtLeast(0L)
         }
 
         private fun noteMotionExpiry() {

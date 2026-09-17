@@ -767,6 +767,40 @@ class JourneyEngineTest {
         }
     }
 
+    @Test
+    fun strongAbsoluteLocationConfirmsArrivalOnTheFirstObservation() {
+        val transition = JourneyEngine.reduce(
+            snap(JourneyPhase.COMMUTING_TO_WORK, lastConfirmed = JourneyPhase.AT_HOME),
+            obs(
+                now = T0,
+                place = ResolvedPlace.COMPANY,
+                sources = setOf(EvidenceSource.GNSS)
+            ),
+            CONFIG
+        )
+
+        assertEquals(JourneyPhase.AT_WORK, transition.snapshot.phase)
+        val arrival = transition.confirmedEvents.single() as JourneyEvent.CompanyArrival
+        assertEquals(T0, arrival.occurredAt)
+        assertEquals(T0, arrival.confirmedAt)
+    }
+
+    @Test
+    fun confirmedAmbientArrivalStillNeedsTheFrozenStableDuration() {
+        val transition = JourneyEngine.reduce(
+            snap(JourneyPhase.COMMUTING_TO_WORK, lastConfirmed = JourneyPhase.AT_HOME),
+            obs(
+                now = T0,
+                place = ResolvedPlace.COMPANY,
+                sources = setOf(EvidenceSource.WIFI, EvidenceSource.CELL)
+            ),
+            CONFIG
+        )
+
+        assertEquals(JourneyPhase.ARRIVING_WORK, transition.snapshot.phase)
+        assertTrue(transition.confirmedEvents.isEmpty())
+    }
+
     // ---------------------------------------------------------------- 辅助
 
     private fun drive(start: JourneySnapshot, vararg observations: JourneyObservation): List<JourneyTransition> {
@@ -822,13 +856,14 @@ class JourneyEngineTest {
         secondsSinceFix: Long = 10L,
         session: Boolean = false,
         distanceHome: Double? = null,
-        distanceWork: Double? = null
+        distanceWork: Double? = null,
+        sources: Set<EvidenceSource> = setOf(EvidenceSource.WIFI, EvidenceSource.CELL)
     ) = JourneyObservation(
         now = now,
         place = place,
         placeDecision = decision,
         confidence = confidence,
-        evidenceSources = setOf(EvidenceSource.GNSS, EvidenceSource.WIFI),
+        evidenceSources = sources,
         motion = motion,
         motionObservedAt = motionObservedAt,
         secondsSinceFix = secondsSinceFix,
@@ -843,8 +878,10 @@ class JourneyEngineTest {
 
         val CONFIG = JourneyConfig(
             staleAfterSeconds = 20 * 60L,
-            arrivalRequiredMillis = 3 * 60_000L,
-            departureRequiredMillis = 5 * 60_000L,
+            strongArrivalRequiredMillis = 0L,
+            ambientArrivalRequiredMillis = 3 * 60_000L,
+            strongDepartureRequiredMillis = 0L,
+            ambientDepartureRequiredMillis = 5 * 60_000L,
             candidateExpiryMillis = 2 * 60 * 60_000L,
             tempLeaveMaxMillis = 45 * 60_000L,
             motionExpirySeconds = 120L

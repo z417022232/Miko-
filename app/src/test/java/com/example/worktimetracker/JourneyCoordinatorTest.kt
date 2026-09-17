@@ -13,7 +13,7 @@ import org.junit.Test
 
 class JourneyCoordinatorTest {
     private val now = 1_800_000_000_000L
-    private val config = JourneyConfig(1_200, 60_000, 60_000, 1_200_000, 3_600_000, 300)
+    private val config = JourneyConfig(1_200, 0, 60_000, 0, 60_000, 1_200_000, 3_600_000, 300)
 
     @Test
     fun combinesPureOutputsAndPersistsCompleteNextState() = runTest {
