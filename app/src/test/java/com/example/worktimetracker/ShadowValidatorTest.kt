@@ -8,6 +8,7 @@ import com.example.worktimetracker.domain.location.ShadowValidator
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -95,21 +96,20 @@ class ShadowValidatorTest {
         assertTrue(result.failures.any { it.contains("没采到有效样本") })
     }
 
-    @Test fun centerDriftAtOrBeyondTheLimitFails() {
-        // 规则方向是 `maxDrift >= 10.0` 即拦下（10 米意味着锚点**位移了**，不是采样误差）。
-        // 「正好 10.0 米」在浮点往返后落在 10.0±1e-13，无法确定性构造，所以这里取一个
-        // 明确越过门槛的值；门槛的**位置**由常量断言 + 下面的 9.9 米用例共同钉住。
+    @Test fun centerDriftBeyondTheLimitFails() {
+        // 口径：**≤10 米允许、>10 米失败**（等号归允许侧，与精度≤30m / 偏移≤30m / ≤100m /
+        // 来源≥2类 一致）。这里取 10.5 —— 明确越过门槛。
         val result = ShadowValidator.evaluate(cleanWindow(driftMeters = 10.5), lastDay, 0)
         assertFalse(result.passed)
         assertTrue(result.failures.any { it.contains("漂移") })
         assertTrue(
             "构造出来的漂移应当确实越过门槛：${result.validation.maxCenterDriftMeters}",
-            result.validation.maxCenterDriftMeters >= ShadowValidator.MAX_CENTER_DRIFT_METERS
+            ShadowValidator.driftExceedsLimit(result.validation.maxCenterDriftMeters)
         )
     }
 
     @Test fun centerDriftJustUnderTheLimitIsTolerated() {
-        // 9.9 米：贴着门槛的**通过**侧。这条 + 上一条把「门槛在 10 米」夹到 0.6 米宽的带里，
+        // 9.9 米：贴着门槛的**通过**侧。这条 + 上一条把门槛位置夹到 0.6 米宽的带里，
         // 门槛被误改成 10.5 或 9.5 都会有一边红。
         val result = ShadowValidator.evaluate(cleanWindow(driftMeters = 9.9), lastDay, 0)
         assertTrue("9.9 米漂移应在容差内，实际未达标项=${result.failures}", result.passed)
@@ -117,6 +117,30 @@ class ShadowValidatorTest {
             "实际漂移应当接近 9.9 米：${result.validation.maxCenterDriftMeters}",
             result.validation.maxCenterDriftMeters in 9.5..10.0
         )
+    }
+
+    @Test fun theLimitItselfIsOnTheAllowedSide() {
+        // ⭐ 这条是「等号归哪一侧」的**唯一确定性断言**。
+        // 几何夹具做不到：`distanceMeters` 的浮点往返会让「正好 10 米」落在 10.0±1e-13，
+        // 于是「10.0 到底算不算超限」在测试里既不可控也不可断言 ——
+        // 之前正是因为这一点，代码写成 `>=` 而文案写「超过」也没人发现。
+        // 把比较抽成吃 Double 的纯函数后，边界就是精确可测的了。
+        assertFalse("正好 10 米必须允许（口径 ≤10 允许）", ShadowValidator.driftExceedsLimit(10.0))
+        assertFalse(ShadowValidator.driftExceedsLimit(9.999999))
+        assertFalse(ShadowValidator.driftExceedsLimit(0.0))
+        assertTrue("刚过 10 米就必须失败", ShadowValidator.driftExceedsLimit(10.000000001))
+        assertTrue(ShadowValidator.driftExceedsLimit(10.1))
+    }
+
+    @Test fun theDriftLimitUsesTheSameEqualSideAsTheOtherThresholds() {
+        // 本项目所有上限都含等号。这条把「不许只有漂移这一条吃不到等号」钉住：
+        // 若有人把实现改回 `>=`，上面那条测试会红，而这条会在注释层面提醒原因。
+        assertEquals(30.0, AnchorLearner.MAX_ACCURACY_METERS.toDouble(), 1e-9)
+        assertEquals(30.0, AnchorUpdatePolicy.AUTO_SMOOTH_MAX_OFFSET_METERS, 1e-9)
+        assertEquals(100.0, AnchorUpdatePolicy.SHADOW_MAX_OFFSET_METERS, 1e-9)
+        assertEquals(10.0, ShadowValidator.MAX_CENTER_DRIFT_METERS, 1e-9)
+        // 下限类门槛则一律含等号（≥2 类来源）
+        assertEquals(2, ShadowValidator.MIN_AMBIENT_SOURCES)
     }
 
     @Test fun ambientSourcesDroppingToZeroClassFailsEvenIfOnlyOnce() {
@@ -187,6 +211,23 @@ class ShadowValidatorTest {
         assertTrue(result.failures.any { it.contains("缺少离散度读数") })
     }
 
+    @Test fun missingSpreadReadingStaysNullInTheSnapshotToo() {
+        // ⭐ 判定失败不能成为**输出层**丢语义的理由。
+        // 快照会被学习成果页 / 日志 / 跨模型诊断读；若这里写成 0.0，
+        // 那些消费者看到的是「0 米，完美集中」—— 与事实**完全相反**。
+        val result = ShadowValidator.evaluate(cleanWindow(p90 = null), lastDay, 0)
+        assertNull(
+            "未知必须原样透出成 null，不许压成 0.0（0 是「完美集中」）",
+            result.validation.latestSpreadP90Meters
+        )
+    }
+
+    @Test fun emptyWindowAlsoReportsUnknownSpreadNotZero() {
+        val result = ShadowValidator.evaluate(emptyList(), lastDay, 0)
+        assertEquals(0, result.validation.observedDays)
+        assertNull("空窗口没有任何离散度读数 = 未知", result.validation.latestSpreadP90Meters)
+    }
+
     @Test fun observationsAreSummarizedNotJustJudged() {
         val result = ShadowValidator.evaluate(cleanWindow(ambient = 2), lastDay, conflictCount = 3)
         val v = result.validation
@@ -194,7 +235,7 @@ class ShadowValidatorTest {
         assertEquals(8, v.observedDays)
         assertEquals(2, v.minimumAmbientSources)
         assertEquals(3, v.conflictCount)
-        assertEquals(20.0, v.latestSpreadP90Meters, 1e-9)
+        assertEquals(20.0, v.latestSpreadP90Meters ?: Double.NaN, 1e-9)
     }
 
     @Test fun thresholdsMatchTheDesignDocument() {
@@ -206,7 +247,7 @@ class ShadowValidatorTest {
     }
 
     @Test fun driftThresholdIsTheSameNumberAsTheWindowResetRadius() {
-        // 「候选移动 ≥10 米」表现为**重开窗口**而不是判失败 —— 靠的就是两者同值。
+        // 「候选移动 >10 米」表现为**重开窗口**而不是判失败 —— 靠的就是两者同值。
         // 改动任一常量都会让漂移条件变成「结构上不可能失败」，所以在这里钉住关系。
         assertEquals(ShadowValidator.MAX_CENTER_DRIFT_METERS, 10.0, 1e-9)
     }
@@ -226,10 +267,10 @@ class ShadowValidatorTest {
     }
 
     @Test fun zeroSpreadIsNotTreatedAsMissing() {
-        // 0 是合法的「完美集中」，与 null（未知）必须区分
+        // 0 是合法的「完美集中」，与 null（未知）必须区分 —— 这条与上面两条 null 用例互为反向
         val result = ShadowValidator.evaluate(cleanWindow(p90 = 0.0), lastDay, 0)
         assertTrue("P90=0 是合法读数，实际未达标项=${result.failures}", result.passed)
-        assertEquals(0.0, result.validation.latestSpreadP90Meters, 1e-9)
+        assertEquals(0.0, result.validation.latestSpreadP90Meters ?: Double.NaN, 1e-9)
     }
 
     @Test fun shadowPeriodCountsNaturalDaysNotFullTwentyFourHourSpans() {

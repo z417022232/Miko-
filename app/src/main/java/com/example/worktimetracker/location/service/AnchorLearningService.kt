@@ -43,7 +43,7 @@ import java.time.ZoneId
  *
  * 候选表自 DB v15 起是「一个影子窗口**每天一行**」：
  * 同日重复学习原地刷新；跨天且候选没变则插入新行并沿用同一个 `firstSeenAt`；
- * 候选移动 ≥[CANDIDATE_DEDUP_METERS] 米或状态变化则 `firstSeenAt = now`（**重开窗口**）。
+ * 候选移动 >[CANDIDATE_DEDUP_METERS] 米或状态变化则 `firstSeenAt = now`（**重开窗口**）。
  *
  * 于是 [ShadowValidator] 的六个条件全部**可以从这组行重建**，
  * 不需要任何额外的累积状态 —— 这是「模型必须能从原始数据全量重建」的落法。
@@ -161,11 +161,13 @@ class AnchorLearningService(
         val latest = dao.latestCandidate(site.id)
         val today = dayOf(now)
 
-        // 「几何上是不是同一个候选」只能用几何判 —— 状态本身依赖影子验证结果，用它判会成环
+        // 「几何上是不是同一个候选」只能用几何判 —— 状态本身依赖影子验证结果，用它判会成环。
+        // 等号归**同候选**侧（`<=`），与漂移门槛「≤10 允许、>10 失败」同口径：
+        // 正好 10 米既不重开窗口、也不判漂移超限，两处不会对同一个输入给出相反结论。
         val sameCandidate = latest != null && analyzer.distanceMeters(
             latest.centerLat, latest.centerLng,
             candidate.center.latitude, candidate.center.longitude
-        ) < CANDIDATE_DEDUP_METERS
+        ) <= CANDIDATE_DEDUP_METERS
 
         // 窗口身份：候选连续 → 沿用窗口；否则开新窗口（firstSeenAt = now）
         val windowStart = if (sameCandidate) latest!!.firstSeenAt else now
@@ -380,9 +382,10 @@ class AnchorLearningService(
 
         /**
          * 「同一个候选」的几何容差（米）。**同时是影子验证的漂移门槛**
-         * （[ShadowValidator.MAX_CENTER_DRIFT_METERS]）：
-         * 所以「候选中心漂移 ≥10 米」表现为**重开影子窗口**而不是判失败 ——
-         * 也就是说候选一旦移动，旧的验证成果作废，必须重新观察 7 天。这比「判失败」更严。
+         * （[ShadowValidator.MAX_CENTER_DRIFT_METERS]），两处等号都归**允许/同候选**侧：
+         * `<=` 同候选且漂移合格、`>` 才重开窗口。所以「候选中心漂移 >10 米」表现为
+         * **重开影子窗口**而不是判失败 —— 候选一旦移动，旧的验证成果作废、必须重新观察 7 天。
+         * 这比「判失败」更严，也刻意更严。
          * **两个值必须一起改**，否则会出现「结构上不可能失败的条件」。
          */
         const val CANDIDATE_DEDUP_METERS = ShadowValidator.MAX_CENTER_DRIFT_METERS

@@ -31,7 +31,13 @@ import java.time.temporal.ChronoUnit
  * - [maxCenterDriftMeters]：窗口内候选中心相对**首个**中心的偏移最大值。
  * - [minimumAmbientSources]：窗口内环境来源类数的**最小值**（不是最后一次的值 —— 中途掉到 1 类就该被发现）。
  * - [conflictCount]：窗口内出现的「同一环境指纹同时支持另一个地点」的次数。
- * - [latestSpreadP90Meters]：最近一次 P90 离散度。
+ * - [latestSpreadP90Meters]：最近一次 P90 离散度；**null = 窗口内没有任何离散度读数（未知）**。
+ *
+ * ⚠️ [latestSpreadP90Meters] 是 `Double?` 而不是 `Double`：v15 之前写入的候选行没有这个读数，
+ * 而 `0.0` 的含义是「完美集中」—— 两者是**完全相反**的两件事。
+ * 不能用 `?: 0.0` 抹平：判定逻辑确实会因 null 而失败（不会误放行），
+ * 但**输出快照**一旦把"未知"写成"0 米"，后续读这个快照的人（学习成果页、日志、
+ * 跨模型诊断）就会得到错误语义。判定正确不能成为输出层丢语义的理由。
  */
 data class ShadowValidation(
     val elapsedDays: Int,
@@ -39,7 +45,7 @@ data class ShadowValidation(
     val maxCenterDriftMeters: Double,
     val minimumAmbientSources: Int,
     val conflictCount: Int,
-    val latestSpreadP90Meters: Double
+    val latestSpreadP90Meters: Double?
 )
 
 /**
@@ -67,7 +73,16 @@ object ShadowValidator {
     /** 最少前向观察自然日数（含起始日与今天，所以 `elapsedDays >= 7` 相当于跨越 8 个自然日）。 */
     const val MIN_ELAPSED_DAYS = AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS
 
-    /** 候选中心最大漂移（米）。超过它说明这个锚点**位移了**，不是校准误差。 */
+    /**
+     * 候选中心漂移门槛（米）。**口径：≤ 该值允许、> 该值失败**（等号归**允许**侧）。
+     *
+     * 为什么等号归允许侧：本项目所有门槛都是「上限含等号」这一套 ——
+     * 精度 ≤ 30m、自动档偏移 ≤ 30m、影子档偏移 ≤ 100m、环境来源 ≥ 2 类。
+     * 只让这一条「到 10 米就失败」，会变成唯一一个上限不含等号的阈值，
+     * 以后改的人无法从其他门槛推断出该写 `>` 还是 `>=`。
+     *
+     * 判定一律走 [driftExceedsLimit]，不要在别处重写这个比较 —— 见该函数的说明。
+     */
     const val MAX_CENTER_DRIFT_METERS = 10.0
 
     /** 环境来源类数下限，与训练门槛同源（≥2 类）。 */
@@ -103,6 +118,21 @@ object ShadowValidator {
     }
 
     /**
+     * 漂移是否**超出**允许范围。
+     *
+     * 单独抽出来的理由：边界（正好等于门槛）没法用几何夹具测 ——
+     * `distanceMeters` 的浮点往返会让「正好 10 米」落在 10.0±1e-13，
+     * 于是「等号归哪一侧」在测试里既不可控也不可断言。
+     * 做成一个吃 `Double` 的纯函数后，`driftExceedsLimit(10.0)` 就是**精确**可测的，
+     * 门槛的等号归属从此由测试钉住，而不是靠读代码时数符号。
+     *
+     * 另一个理由：门槛只允许有一个比较处。散落的 `>=`/`>` 迟早会漂移成两种口径，
+     * 而这种漂移不报错、不崩溃，只会让某一侧静默放宽。
+     */
+    fun driftExceedsLimit(driftMeters: Double): Boolean =
+        driftMeters > MAX_CENTER_DRIFT_METERS
+
+    /**
      * 评估一个影子窗口。
      *
      * @param observations 窗口内按日期升序的一天一条观测；**空列表会直接判定不通过**
@@ -122,7 +152,8 @@ object ShadowValidator {
                     maxCenterDriftMeters = 0.0,
                     minimumAmbientSources = 0,
                     conflictCount = conflictCount,
-                    latestSpreadP90Meters = 0.0
+                    // 空窗口**没有任何离散度读数** —— 是未知，不是「0 米完美集中」
+                    latestSpreadP90Meters = null
                 ),
                 failures = listOf("影子窗口内还没有任何有效观测")
             )
@@ -143,7 +174,8 @@ object ShadowValidator {
             maxCenterDriftMeters = maxDrift,
             minimumAmbientSources = minAmbient,
             conflictCount = conflictCount,
-            latestSpreadP90Meters = latestP90 ?: 0.0
+            // 原样透出可空读数：null（未知）不许在这里被压成 0.0（完美集中）
+            latestSpreadP90Meters = latestP90
         )
 
         val failures = buildList {
@@ -154,7 +186,7 @@ object ShadowValidator {
             if (observedDays < elapsedDays + 1) {
                 add("有 ${elapsedDays + 1 - observedDays} 天没采到有效样本")
             }
-            if (maxDrift >= MAX_CENTER_DRIFT_METERS) {
+            if (driftExceedsLimit(maxDrift)) {
                 add("候选中心漂移 ${maxDrift.toInt()} 米，超过 ${MAX_CENTER_DRIFT_METERS.toInt()} 米")
             }
             if (minAmbient < MIN_AMBIENT_SOURCES) {

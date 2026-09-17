@@ -13,7 +13,7 @@ import androidx.room.PrimaryKey
  * 候选表是这条链路的**落地点**，而且自 v15 起是**「一个影子窗口每天一行」的观测日志**：
  * - 同一自然日重复学习 → **原地更新**该行；
  * - 跨到新的一天且候选没变 → **插入新行**，并沿用同一个 [firstSeenAt]；
- * - 候选移动 ≥10 米或状态变化 → 插入新行且 `firstSeenAt = now`（**重开影子窗口**）。
+ * - 候选移动 >10 米或状态变化 → 插入新行且 `firstSeenAt = now`（**重开影子窗口**）。
  *
  * 于是「影子窗口」= **共享同一个 [firstSeenAt] 的一组行**，而
  * [com.example.worktimetracker.domain.location.ShadowValidator] 的六个条件
