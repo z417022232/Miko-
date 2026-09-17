@@ -12,6 +12,7 @@ import com.example.worktimetracker.data.HistoricalRecordRepair
 import com.example.worktimetracker.data.SalarySlipDraftRepair
 import com.example.worktimetracker.domain.payroll.PayRateSeed
 import com.example.worktimetracker.location.service.AnchorLearningService
+import com.example.worktimetracker.location.service.JourneyHistoryPrelearningService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +31,9 @@ class WorkTimeApplication : Application() {
             // 地点锚点学习（DB v14 / 方案阶段2）：只写三张新表，幂等且吞异常，
             // 跑失败绝不影响定位主链路（见 AnchorLearningService 的纪律说明）。
             AnchorLearningService(database).learnAll()
+            // 阶段3新机预学习：仅当影子表为空时回放最近30天既有定位/工时事实，
+            // 生成起始快照；不改旧记录，也不拿历史数据抵扣未来影子验证。
+            JourneyHistoryPrelearningService(database).runOnce()
             database.userSettingsDao().getSettings()?.let { GeofenceRecovery.register(this@WorkTimeApplication, it) }
         }
     }
