@@ -1,7 +1,5 @@
 package com.example.worktimetracker.domain.location
 
-import java.time.LocalDate
-
 /**
  * 候选锚点的生命周期状态（方案 §三.2 表格的落地形式）。
  *
@@ -58,11 +56,15 @@ object AnchorUpdatePolicy {
      * 判定动作。
      *
      * 顺序不能调：**先看偏移**（超过 100m 的"候选"根本不是校准问题，是搬家），
-     * **再看影子期**（没熬够 7 天一律不许生效，无论偏移多小）。
+     * 再看**影子验证是否通过**（不通过一律不许生效，无论偏移多小）。
+     *
+     * ⚠️ 影子验证自 v9.1 起不是「等够 7 天」而是 [ShadowValidator] 的**六个条件**同时成立。
+     * 原因：只看时间的话，一个已经漂了 200 米的候选熬够 7 天照样会生效 ——
+     * 那影子期就只是等待，不是验证。
      */
-    fun decide(offsetMeters: Double, candidateStableDays: Long): AnchorUpdateAction = when {
+    fun decide(offsetMeters: Double, shadow: ShadowValidator.Result): AnchorUpdateAction = when {
         offsetMeters > SHADOW_MAX_OFFSET_METERS -> AnchorUpdateAction.NEEDS_USER_CONFIRM
-        candidateStableDays < SHADOW_VALIDATION_DAYS -> AnchorUpdateAction.SHADOW
+        !shadow.passed -> AnchorUpdateAction.SHADOW
         offsetMeters <= AUTO_SMOOTH_MAX_OFFSET_METERS -> AnchorUpdateAction.AUTO_SMOOTH
         else -> AnchorUpdateAction.SHADOW
     }
@@ -113,31 +115,19 @@ object AnchorUpdatePolicy {
         return raw.coerceIn(0.0, 1.0)
     }
 
-    /** 连续稳定天数（含今天口径，与 `YearStatsPresenter` 的「含今天」一致）。 */
-    fun stableDays(firstSeenAt: Long, now: Long, zoneId: java.time.ZoneId): Long {
-        if (now <= firstSeenAt) return 0
-        val start = java.time.Instant.ofEpochMilli(firstSeenAt).atZone(zoneId).toLocalDate()
-        val end = java.time.Instant.ofEpochMilli(now).atZone(zoneId).toLocalDate()
-        return java.time.temporal.ChronoUnit.DAYS.between(start, end)
-    }
-
-    /** 稳定天数的时间版（供内部/测试用），便于只传日期。 */
-    fun stableDaysBetween(firstDay: LocalDate, nowDay: LocalDate): Long =
-        java.time.temporal.ChronoUnit.DAYS.between(firstDay, nowDay).coerceAtLeast(0)
-
     /**
      * 人话解释（原则 6：每次判定必须能解释依据）。
      *
      * 文案刻意写成「对用户说」而不是「对日志说」—— 它会直接出现在地点管理页上。
+     * 影子档的文案交给 [ShadowValidator.explain]：那里才看得到「还差什么」。
      */
-    fun explain(action: AnchorUpdateAction, offsetMeters: Double, stableDays: Long): String {
+    fun explain(action: AnchorUpdateAction, offsetMeters: Double, shadow: ShadowValidator.Result): String {
         val offsetText = "${offsetMeters.toInt()} 米"
         return when (action) {
+            AnchorUpdateAction.SHADOW -> ShadowValidator.explain(shadow, offsetMeters)
             AnchorUpdateAction.AUTO_SMOOTH ->
-                "已连续 ${stableDays} 天稳定，与设置位置相差 $offsetText，自动小幅校准"
-            AnchorUpdateAction.SHADOW ->
-                "与设置位置相差 $offsetText，正在影子观察（连续 ${stableDays}/${SHADOW_VALIDATION_DAYS} 天）" +
-                    "，暂不改动位置判定"
+                "已前向观察 ${shadow.validation.elapsedDays} 天且始终稳定，" +
+                    "与设置位置相差 $offsetText，自动小幅校准"
             AnchorUpdateAction.NEEDS_USER_CONFIRM ->
                 "与设置位置相差 $offsetText，已超过 ${SHADOW_MAX_OFFSET_METERS.toInt()} 米。" +
                     "如果确实搬家或换了公司，请手动更新地点"

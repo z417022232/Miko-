@@ -45,7 +45,7 @@ class WorkTimeApplication : Application() {
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                 MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
-                MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14
+                MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15
             )
             .build()
     }
@@ -332,6 +332,26 @@ class WorkTimeApplication : Application() {
 
                 db.execSQL("ALTER TABLE work_records ADD COLUMN finalMinutesSource TEXT")
                 db.execSQL("ALTER TABLE work_records ADD COLUMN firstObservedAt INTEGER")
+            }
+        }
+
+        /**
+         * DB v15「影子验证强化」（v9.1）。
+         *
+         * **只加一列**：`place_anchor_candidates.spreadP90Meters REAL`（可空）。
+         *
+         * 为什么需要它：影子验证从「等够 7 天」升级成「六个条件同时成立」，
+         * 其中一个条件是「P90 离散度没有明显恶化」—— 那窗口初的读数必须留在库里，
+         * 否则每次学习都只能看到当次的值，无从比较。
+         *
+         * 可空且**无默认值**：v15 之前写入的候选行没有这个读数，`NULL` = **未知**。
+         * `ShadowValidator` 见到 null 会判「缺少离散度读数，无法确认是否恶化」→
+         * 该候选本轮不通过（保守），下一次学习写进真实读数后自动恢复正常判定。
+         * **不填 0** —— 0 是「完美集中」，与「未知」是两回事。
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE place_anchor_candidates ADD COLUMN spreadP90Meters REAL")
             }
         }
 

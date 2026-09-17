@@ -81,8 +81,39 @@ interface LearningModelDao {
     @Query("SELECT * FROM place_anchor_candidates WHERE placeId = :placeId ORDER BY lastSeenAt DESC LIMIT 1")
     suspend fun latestCandidate(placeId: Long): PlaceAnchorCandidateEntity?
 
-    @Query("SELECT * FROM place_anchor_candidates WHERE placeId = :placeId AND status = :status ORDER BY lastSeenAt DESC LIMIT 1")
-    suspend fun latestCandidateWithStatus(placeId: Long, status: String): PlaceAnchorCandidateEntity?
+    /**
+     * 某个**影子窗口**的全部观测（窗口身份 = `firstSeenAt`），按时间升序。
+     *
+     * 这是影子验证的唯一数据来源：`ShadowValidator` 的六个条件全从这组行重建，
+     * 所以「模型可从原始数据全量重建」在候选层是成立的。
+     */
+    @Query(
+        "SELECT * FROM place_anchor_candidates WHERE placeId = :placeId AND firstSeenAt = :firstSeenAt " +
+            "ORDER BY lastSeenAt ASC"
+    )
+    suspend fun candidatesInWindow(placeId: Long, firstSeenAt: Long): List<PlaceAnchorCandidateEntity>
+
+    /** 同一自然日内重复学习 → 原地刷新该行，不再插新行（「一天一行」的保证）。 */
+    @Query(
+        "UPDATE place_anchor_candidates SET ambientSourceCount = :ambientSourceCount, " +
+            "spreadP90Meters = :spreadP90Meters, sampleCount = :sampleCount, " +
+            "distinctDayCount = :distinctDayCount, stableMillis = :stableMillis, " +
+            "offsetMeters = :offsetMeters, status = :status, modelVersion = :modelVersion, " +
+            "explanation = :explanation, lastSeenAt = :now, updatedAt = :now WHERE id = :id"
+    )
+    suspend fun updateCandidateObservation(
+        id: Long,
+        sampleCount: Int,
+        distinctDayCount: Int,
+        ambientSourceCount: Int,
+        stableMillis: Long,
+        offsetMeters: Double,
+        spreadP90Meters: Double?,
+        status: String,
+        modelVersion: Long,
+        explanation: String,
+        now: Long
+    )
 
     @Query("SELECT * FROM place_anchor_candidates ORDER BY lastSeenAt DESC LIMIT :limit")
     suspend fun recentCandidates(limit: Int): List<PlaceAnchorCandidateEntity>
@@ -93,13 +124,7 @@ interface LearningModelDao {
     @Insert
     suspend fun insertCandidate(candidate: PlaceAnchorCandidateEntity): Long
 
-    @Query("UPDATE place_anchor_candidates SET status = :status, explanation = :explanation, modelVersion = :modelVersion, updatedAt = :now WHERE id = :id")
-    suspend fun updateCandidateStatus(id: Long, status: String, explanation: String, modelVersion: Long, now: Long)
-
     /** 候选明细只保留最近 N 条/天：学习是长期行为，不能让它把库撑爆（方案 §十 性能要求）。 */
     @Query("DELETE FROM place_anchor_candidates WHERE createdAt < :cutoff")
     suspend fun deleteCandidatesBefore(cutoff: Long)
-
-    @Query("SELECT COUNT(*) FROM place_anchor_candidates WHERE createdAt < :cutoff")
-    suspend fun candidatesBefore(cutoff: Long): Int
 }

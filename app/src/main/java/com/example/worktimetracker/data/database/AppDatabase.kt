@@ -62,7 +62,7 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         LearnedPlaceModelEntity::class,
         PlaceAnchorCandidateEntity::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

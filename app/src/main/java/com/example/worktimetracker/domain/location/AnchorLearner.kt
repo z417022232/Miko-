@@ -51,6 +51,13 @@ class AnchorLearner {
         val stableMillis: Long,
         /** 相对用户配置锚点的偏移（米）；调用方保证传入 configuredAnchor 才可能非空 */
         val offsetMeters: Double,
+        /**
+         * 剔离群后样本到中心的 P90 距离（米）。
+         *
+         * 这个值不是「候选好不好」的判据，而是**影子期恶化的基线**：
+         * 候选刚形成时 P90 多大，7 天后不该明显变大（详见 [ShadowValidator]）。
+         */
+        val spreadP90Meters: Double = 0.0,
         /** 0..1 置信度，分档与自动生效判定见 [AnchorUpdatePolicy] */
         val confidence: Double
     )
@@ -157,6 +164,7 @@ class AnchorLearner {
                 rejectedCount = accurate.size - accepted.size,
                 stableMillis = stableMillis,
                 offsetMeters = offset,
+                spreadP90Meters = p90,
                 confidence = AnchorUpdatePolicy.confidence(
                     sampleCount = accepted.size,
                     distinctDays = distinctDays,

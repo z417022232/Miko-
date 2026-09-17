@@ -10,39 +10,51 @@ import com.example.worktimetracker.data.entity.SiteEntity
 import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 import com.example.worktimetracker.domain.learning.LearningModelType
 import com.example.worktimetracker.domain.learning.ModelStatus
+import com.example.worktimetracker.domain.location.AnchorCandidateStatus
 import com.example.worktimetracker.domain.location.AnchorLearner
 import com.example.worktimetracker.domain.location.AnchorSampleBuilder
 import com.example.worktimetracker.domain.location.AnchorUpdateAction
 import com.example.worktimetracker.domain.location.AnchorUpdatePolicy
 import com.example.worktimetracker.domain.location.GeoPoint
+import com.example.worktimetracker.domain.location.ShadowObservation
+import com.example.worktimetracker.domain.location.ShadowValidator
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 
 /**
  * 地点锚点的持续学习（方案 §三.2 / §十一 阶段2 的**闭环**）。
  *
- * 闭环形状：
+ * ## 闭环形状
  * ```
- * location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ AnchorUpdatePolicy
+ * location_logs ─▶ AnchorSampleBuilder ─▶ AnchorLearner ─▶ ShadowValidator + AnchorUpdatePolicy
  *                                                              │
  *                                        ┌─────────────────────┴─────────────────────┐
  *                                   AUTO_SMOOTH                          SHADOW / NEEDS_USER_CONFIRM
  *                                        │                                           │
- *                                        ▼                                           ▼
- *                     learned_place_models(autoApplied=true)          learned_place_models(autoApplied=false)
+ *                     learned_place_models(autoApplied=true)         learned_place_models(autoApplied=false)
  *                                        │                                           │
  *                                        ▼                                    （记录但不生效）
  *                     SitePoints.withLearnedAnchors() ─▶ 融合判定
  * ```
  * `place_anchor_candidates` 两个分支都写：它是**观测日志**，不是判定输入。
  *
- * ⚠️ 四条纪律（违反即回归）：
- *  1. **只写三张新表**。`sites` 的坐标一个字都不改 —— 用户配置锚点永久权威，
+ * ## 影子窗口 = 一组共享 `firstSeenAt` 的候选行
+ *
+ * 候选表自 DB v15 起是「一个影子窗口**每天一行**」：
+ * 同日重复学习原地刷新；跨天且候选没变则插入新行并沿用同一个 `firstSeenAt`；
+ * 候选移动 ≥[CANDIDATE_DEDUP_METERS] 米或状态变化则 `firstSeenAt = now`（**重开窗口**）。
+ *
+ * 于是 [ShadowValidator] 的六个条件全部**可以从这组行重建**，
+ * 不需要任何额外的累积状态 —— 这是「模型必须能从原始数据全量重建」的落法。
+ *
+ * ## 四条纪律（违反即回归）
+ *  1. **只写三张学习表**。`sites` 的坐标一个字都不改 —— 用户配置锚点永久权威，
  *     学习锚点的优先级由**取用顺序**（[com.example.worktimetracker.domain.location.PlaceModelResolver]）体现；
  *  2. **判定不读候选表**。影子验证的语义就靠这条保证；
- *  3. **学习不许把主链路带崩**。所有异常吞掉并记 `learning` 日志 ——
- *     学习是锦上添花，定位服务才是主链路；
- *  4. **数字全部来自观测**。候选行里的样本数、跨天数、环境来源类数一律实测，
+ *  3. **学习不许把主链路带崩**。所有异常吞掉并记 `LEARNING` 日志 ——
+ *     学习是增强层，定位服务才是主链路（异常只能「记日志 / 模型降级 / 回落既有算法」）；
+ *  4. **数字全部来自观测**。候选行里的样本数、跨天数、环境来源类数、离散度一律实测，
  *     不许按置信度反推凑一个（那会让排查时看到的数据全是假的）。
  */
 class AnchorLearningService(
@@ -58,7 +70,11 @@ class AnchorLearningService(
         val action: AnchorUpdateAction?,
         val reason: AnchorLearner.Reason?,
         val explanation: String,
-        val candidate: AnchorLearner.Candidate? = null
+        val candidate: AnchorLearner.Candidate? = null,
+        /** 影子验证快照；候选未形成时为 null */
+        val shadow: com.example.worktimetracker.domain.location.ShadowValidation? = null,
+        /** 影子验证还差什么（人话）；已通过则为空 */
+        val shadowFailures: List<String> = emptyList()
     )
 
     private val analyzer = LocationStatusAnalyzer()
@@ -66,7 +82,7 @@ class AnchorLearningService(
     /**
      * 对所有启用且有坐标的地点跑一轮学习。
      *
-     * 幂等：同一份历史跑两遍，第二遍走「候选延续」分支，只续期与刷新解释，
+     * 幂等：同一份历史跑两遍，第二遍走「同日原地刷新」分支，
      * 不会重复落行、不会重复升级版本 —— 所以它可以安全地挂在启动流程里反复跑。
      */
     suspend fun learnAll(now: Long = System.currentTimeMillis()): List<Outcome> {
@@ -82,6 +98,9 @@ class AnchorLearningService(
                 AnchorSampleBuilder.Fix(it.time, it.latitude, it.longitude, it.accuracyMeters ?: 999f)
             }
         }.getOrDefault(emptyList())
+
+        // 旧候选行长期积压：一个窗口最多一行/天，留 180 天足够回放
+        runCatching { db.learningModelDao().deleteCandidatesBefore(now - CANDIDATE_RETENTION_MILLIS) }
 
         return sites.mapNotNull { site ->
             runCatching { learnSite(site, fixes, fingerprints, now) }
@@ -124,45 +143,68 @@ class AnchorLearningService(
             )
 
             is AnchorLearner.Outcome.Found ->
-                persist(site, center, result.candidate, ambientSources, now)
+                persist(site, center, result.candidate, ambientSources, fingerprints, now)
         }
     }
 
-    /** 候选达标 → 定档 → 落候选行 +（达标才）升级模型。 */
+    /** 候选达标 → 影子验证 → 定档 → 落候选行 +（通过才）升级模型。 */
     private suspend fun persist(
         site: SiteEntity,
         configured: GeoPoint,
         candidate: AnchorLearner.Candidate,
         ambientSources: Int,
+        fingerprints: List<EnvironmentFingerprintEntity>,
         now: Long
     ): Outcome {
         val dao = db.learningModelDao()
         val existing = dao.place(site.id)
         val latest = dao.latestCandidate(site.id)
+        val today = dayOf(now)
 
-        // 影子期的计时起点只能靠「几何上是不是同一个候选」来判，不能用上一次的状态 ——
-        // 状态本身依赖影子天数，用它做连续性判断会形成环。
-        val continuing = latest != null && analyzer.distanceMeters(
+        // 「几何上是不是同一个候选」只能用几何判 —— 状态本身依赖影子验证结果，用它判会成环
+        val sameCandidate = latest != null && analyzer.distanceMeters(
             latest.centerLat, latest.centerLng,
             candidate.center.latitude, candidate.center.longitude
         ) < CANDIDATE_DEDUP_METERS
-        val firstSeenAt = if (continuing) latest!!.firstSeenAt else now
-        val stableDays = AnchorUpdatePolicy.stableDays(firstSeenAt, now, zone)
 
-        val action = AnchorUpdatePolicy.decide(candidate.offsetMeters, stableDays)
+        // 窗口身份：候选连续 → 沿用窗口；否则开新窗口（firstSeenAt = now）
+        val windowStart = if (sameCandidate) latest!!.firstSeenAt else now
+        val windowRows = if (sameCandidate) dao.candidatesInWindow(site.id, windowStart) else emptyList()
+        val observations = buildObservations(windowRows, today, candidate, ambientSources)
+        val conflictCount = fingerprintConflicts(fingerprints, windowStart)
+        val shadow = ShadowValidator.evaluate(observations, today, conflictCount)
+
+        val action = AnchorUpdatePolicy.decide(candidate.offsetMeters, shadow)
         val status = AnchorUpdatePolicy.statusOf(action)
-        val explanation = AnchorUpdatePolicy.explain(action, candidate.offsetMeters, stableDays)
+        val explanation = AnchorUpdatePolicy.explain(action, candidate.offsetMeters, shadow)
+        val wasApplied = existing?.autoApplied == true
         val autoApplied = action == AnchorUpdateAction.AUTO_SMOOTH
 
-        val modelVersion = if (autoApplied) {
-            openNewVersion(candidate.sampleCount)
-        } else {
-            existing?.modelVersion ?: 0L
+        // 已经生效过就不再重复升版本：否则每次启动都会 +1，版本号会被噪声淹掉。
+        // 反之，一旦验证不再通过（例如候选漂移导致重开窗口），autoApplied 落回 false ——
+        // 学习锚点立刻停用、回落用户配置锚点，等重新验证通过再启用。
+        val modelVersion = when {
+            autoApplied && wasApplied -> existing!!.modelVersion
+            autoApplied -> openNewVersion(candidate.sampleCount)
+            else -> existing?.modelVersion ?: 0L
         }
 
-        // 候选表：同一候选（几何连续）且状态没变 → 只续期，长期运行也不会把表撑爆
-        if (continuing && latest!!.status == status.name) {
-            dao.updateCandidateStatus(latest.id, status.name, explanation, modelVersion, now)
+        // 同窗口同一天 → 原地刷新；否则插入新行（沿用窗口身份，或开新窗口）
+        val sameDay = sameCandidate && latest!!.lastSeenAt.let { dayOf(it) } == today
+        if (sameDay) {
+            dao.updateCandidateObservation(
+                id = latest.id,
+                sampleCount = candidate.sampleCount,
+                distinctDayCount = candidate.distinctDayCount,
+                ambientSourceCount = ambientSources,
+                stableMillis = candidate.stableMillis,
+                offsetMeters = candidate.offsetMeters,
+                spreadP90Meters = candidate.spreadP90Meters,
+                status = status.name,
+                modelVersion = modelVersion,
+                explanation = explanation,
+                now = now
+            )
         } else {
             dao.insertCandidate(
                 PlaceAnchorCandidateEntity(
@@ -173,10 +215,11 @@ class AnchorLearningService(
                     distinctDayCount = candidate.distinctDayCount,
                     ambientSourceCount = ambientSources,
                     stableMillis = candidate.stableMillis,
-                    firstSeenAt = firstSeenAt,
+                    firstSeenAt = windowStart,
                     lastSeenAt = now,
                     offsetMeters = candidate.offsetMeters,
                     status = status.name,
+                    spreadP90Meters = candidate.spreadP90Meters,
                     modelVersion = modelVersion,
                     explanation = explanation,
                     createdAt = now,
@@ -185,7 +228,7 @@ class AnchorLearningService(
             )
         }
 
-        // 只有 AUTO_SMOOTH 才让学习锚点生效；其余状态一律 autoApplied = false（永不参与判定）
+        // 只有影子验证通过才让学习锚点生效；其余状态一律 autoApplied = false（永不参与判定）
         val learned = if (autoApplied) {
             AnchorUpdatePolicy.smooth(
                 old = existing?.learnedAnchor() ?: configured,
@@ -220,9 +263,59 @@ class AnchorLearningService(
             action = action,
             reason = null,
             explanation = explanation,
-            candidate = candidate
+            candidate = candidate,
+            shadow = shadow.validation,
+            shadowFailures = shadow.failures
         )
     }
+
+    /**
+     * 把窗口内的候选行还原成「一天一条」的影子观测，再把**本轮**的读数覆盖进去。
+     *
+     * 同一天可能有多行（历史数据或状态变化时插入的），取当天最后一条；
+     * 本轮的读数一定比库里的新，所以按「同一天去重 + 追加今天」处理。
+     */
+    private fun buildObservations(
+        windowRows: List<PlaceAnchorCandidateEntity>,
+        today: LocalDate,
+        candidate: AnchorLearner.Candidate,
+        ambientSources: Int
+    ): List<ShadowObservation> {
+        val fromDb = windowRows
+            .groupBy { dayOf(it.lastSeenAt) }
+            .map { (day, rows) -> day to rows.maxBy { it.lastSeenAt } }
+            .filter { (day, _) -> day != today }
+            .map { (day, row) ->
+                ShadowObservation(
+                    day = day,
+                    center = GeoPoint(row.centerLat, row.centerLng),
+                    ambientSources = row.ambientSourceCount,
+                    spreadP90Meters = row.spreadP90Meters
+                )
+            }
+            .sortedBy { it.day }
+        val current = ShadowObservation(
+            day = today,
+            center = candidate.center,
+            ambientSources = ambientSources,
+            spreadP90Meters = candidate.spreadP90Meters
+        )
+        return fromDb + current
+    }
+
+    /**
+     * 影子窗口内的**指纹冲突**次数：同一个环境标识同时被两个地点支持。
+     *
+     * 这是「没有出现家庭/公司指纹冲突」条件的判据。只看窗口内仍在活跃的指纹
+     * （`lastObservedAt` 落在窗口内），否则历史脏数据会把新窗口一票否决。
+     */
+    private fun fingerprintConflicts(
+        fingerprints: List<EnvironmentFingerprintEntity>,
+        windowStart: Long
+    ): Int = fingerprints
+        .filter { it.lastObservedAt >= windowStart }
+        .groupBy { it.identifierHash }
+        .count { (_, rows) -> rows.map { it.place }.distinct().size > 1 }
 
     /**
      * 开一个新版本并把旧版本退役（**不删行**）。
@@ -245,11 +338,12 @@ class AnchorLearningService(
             LearningModelMetaEntity(
                 modelType = type,
                 modelVersion = next,
-                trainedThrough = Instant.ofEpochMilli(now).atZone(zone).toLocalDate().toString(),
+                trainedThrough = dayOf(now).toString(),
                 sampleCount = sampleCount,
                 status = ModelStatus.ACTIVE.name,
                 createdAt = now,
-                note = "地点锚点自动平滑（偏移在 ${AnchorUpdatePolicy.AUTO_SMOOTH_MAX_OFFSET_METERS.toInt()} 米内）"
+                note = "地点锚点自动平滑（影子验证六条件通过，偏移在 " +
+                    "${AnchorUpdatePolicy.AUTO_SMOOTH_MAX_OFFSET_METERS.toInt()} 米内）"
             )
         )
         return next
@@ -276,14 +370,25 @@ class AnchorLearningService(
     private fun LearnedPlaceModelEntity.learnedAnchor(): GeoPoint? =
         if (hasLearned) GeoPoint(learnedLat!!, learnedLng!!) else null
 
+    private fun dayOf(millis: Long): LocalDate = Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+
     private fun log(message: String) = AppLogEntity(type = LOG_TYPE, content = message)
 
     private companion object {
         /** 训练窗口：30 天足够跨 ≥5 天门槛，又不至于把整张表读进内存。 */
         const val LOOKBACK_MILLIS = 30L * 24 * 60 * 60 * 1000
 
-        /** 候选延续判定：圆心挪动小于 10 米视为同一个候选。 */
-        const val CANDIDATE_DEDUP_METERS = 10.0
+        /**
+         * 「同一个候选」的几何容差（米）。**同时是影子验证的漂移门槛**
+         * （[ShadowValidator.MAX_CENTER_DRIFT_METERS]）：
+         * 所以「候选中心漂移 ≥10 米」表现为**重开影子窗口**而不是判失败 ——
+         * 也就是说候选一旦移动，旧的验证成果作废，必须重新观察 7 天。这比「判失败」更严。
+         * **两个值必须一起改**，否则会出现「结构上不可能失败的条件」。
+         */
+        const val CANDIDATE_DEDUP_METERS = ShadowValidator.MAX_CENTER_DRIFT_METERS
+
+        /** 候选行保留期：一个窗口最多一行/天，180 天足够回放且不至于撑爆库。 */
+        const val CANDIDATE_RETENTION_MILLIS = 180L * 24 * 60 * 60 * 1000
 
         /** 只有 STABLE 档的指纹才计入「环境来源类数」。 */
         const val STABLE_FINGERPRINT_LEVEL = "STABLE"
