@@ -863,6 +863,7 @@ private fun DataSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
 @Composable
 private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val logs by vm.recentLogs.collectAsState()
+    val journeyStatus by vm.journeyShadowStatus.collectAsState()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 14.dp)) {
         ScreenHeader(
             "运行日志",
@@ -875,6 +876,27 @@ private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             }
         )
         Spacer(Modifier.height(14.dp))
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = MaterialTheme.shapes.extraLarge
+        ) {
+            Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                Text("新行程算法（影子运行）", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    journeyStatus,
+                    color = AppTheme.colors.muted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "当前仅用于学习与新旧对比，不会修改正式工时或真实采样频率。",
+                    color = AppTheme.colors.orange,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         if (logs.isEmpty()) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = MaterialTheme.shapes.extraLarge) {
                 Text("暂无运行日志", color = AppTheme.colors.muted, modifier = Modifier.fillMaxWidth().padding(24.dp))

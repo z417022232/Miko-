@@ -131,6 +131,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val lastKnownLocationText: StateFlow<String> = _lastKnownLocationText
     private val _recentLogs = MutableStateFlow<List<String>>(emptyList())
     val recentLogs: StateFlow<List<String>> = _recentLogs
+    private val _journeyShadowStatus = MutableStateFlow("新行程状态尚未建立")
+    val journeyShadowStatus: StateFlow<String> = _journeyShadowStatus
     private val _lastManualHoursText = MutableStateFlow("")
     val lastManualHoursText: StateFlow<String> = _lastManualHoursText
     private val _placeSearchMessage = MutableStateFlow("")
@@ -185,6 +187,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             loadMonth()
             refreshLastKnownLocation()
             refreshLogsOnce()
+            refreshJourneyShadowStatus()
             refreshLastManualHours()
             refreshToday()
             reloadSites()
@@ -526,6 +529,30 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val recent = db.appLogDao().latestLogs(30)
             _recentLogs.value = recent.map { "${it.type}：${it.content}" }
+            refreshJourneyShadowStatusNow()
+        }
+    }
+
+    fun refreshJourneyShadowStatus() {
+        viewModelScope.launch { refreshJourneyShadowStatusNow() }
+    }
+
+    private suspend fun refreshJourneyShadowStatusNow() {
+        val row = db.journeyShadowStateDao().get()
+        _journeyShadowStatus.value = if (row == null) {
+            "新行程状态尚未建立；启动后会先读取最近30天历史记录进行预学习"
+        } else {
+            buildString {
+                append("当前阶段：").append(row.phase)
+                append("\n上次确认：").append(row.lastConfirmedPhase ?: "暂无")
+                append("\n候选阶段：").append(row.candidatePhase ?: "无")
+                if (row.candidatePhase != null) {
+                    append(" · 支持").append(row.supportCount).append("拍")
+                    append(" · 稳定").append(row.accumulatedStableMillis / 1_000).append("秒")
+                }
+                append("\n理论采样：失败次数").append(row.samplingAttempt)
+                append(" · 模型v").append(row.modelVersion)
+            }
         }
     }
 
