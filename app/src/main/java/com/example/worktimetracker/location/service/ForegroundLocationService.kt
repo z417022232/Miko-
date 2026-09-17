@@ -528,8 +528,10 @@ class ForegroundLocationService : Service(), LocationListener {
     ): List<SitePoint> {
         val now = System.currentTimeMillis()
         if (cachedSitePointsAt > 0L && now - cachedSitePointsAt < SITES_CACHE_MILLIS) return cachedSitePoints
-        cachedSitePoints = runCatching { settings.effectiveSites(app.database.siteDao().all()) }
-            .getOrDefault(emptyList())
+        cachedSitePoints = runCatching {
+            settings.effectiveSites(app.database.siteDao().all())
+                .withLearnedAnchors(app.database.learningModelDao().allPlaces())
+        }.getOrDefault(emptyList())
         cachedSitePointsAt = now
         return cachedSitePoints
     }

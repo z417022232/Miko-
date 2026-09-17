@@ -5,6 +5,7 @@ import androidx.room.RoomDatabase
 import com.example.worktimetracker.data.dao.AppLogDao
 import com.example.worktimetracker.data.dao.EnvironmentEvidenceDao
 import com.example.worktimetracker.data.dao.HolidayDao
+import com.example.worktimetracker.data.dao.LearningModelDao
 import com.example.worktimetracker.data.dao.LocationLogDao
 import com.example.worktimetracker.data.dao.ManualOverrideDao
 import com.example.worktimetracker.data.dao.MonthlySalaryDao
@@ -19,12 +20,15 @@ import com.example.worktimetracker.data.entity.AppLogEntity
 import com.example.worktimetracker.data.entity.EnvironmentFingerprintEntity
 import com.example.worktimetracker.data.entity.EvidenceObservationEntity
 import com.example.worktimetracker.data.entity.HolidayEntity
+import com.example.worktimetracker.data.entity.LearnedPlaceModelEntity
+import com.example.worktimetracker.data.entity.LearningModelMetaEntity
 import com.example.worktimetracker.data.entity.LocationHealthEntity
 import com.example.worktimetracker.data.entity.LocationLogEntity
 import com.example.worktimetracker.data.entity.ManualOverrideEntity
 import com.example.worktimetracker.data.entity.MonthlySalaryEntity
 import com.example.worktimetracker.data.entity.MonthlyPayParamsEntity
 import com.example.worktimetracker.data.entity.PayRateSegmentEntity
+import com.example.worktimetracker.data.entity.PlaceAnchorCandidateEntity
 import com.example.worktimetracker.data.entity.SalarySlipEntity
 import com.example.worktimetracker.data.entity.SalarySlipItemEntity
 import com.example.worktimetracker.data.entity.SiteEntity
@@ -53,9 +57,12 @@ import com.example.worktimetracker.data.entity.WorkStateEntity
         PayRateSegmentEntity::class,
         MonthlyPayParamsEntity::class,
         SalarySlipEntity::class,
-        SalarySlipItemEntity::class
+        SalarySlipItemEntity::class,
+        LearningModelMetaEntity::class,
+        LearnedPlaceModelEntity::class,
+        PlaceAnchorCandidateEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -72,4 +79,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun siteDao(): SiteDao
     abstract fun payrollDao(): PayrollDao
     abstract fun salarySlipDao(): SalarySlipDao
+    abstract fun learningModelDao(): LearningModelDao
 }

@@ -11,6 +11,7 @@ import com.example.worktimetracker.location.recovery.GeofenceRecovery
 import com.example.worktimetracker.data.HistoricalRecordRepair
 import com.example.worktimetracker.data.SalarySlipDraftRepair
 import com.example.worktimetracker.domain.payroll.PayRateSeed
+import com.example.worktimetracker.location.service.AnchorLearningService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -26,6 +27,9 @@ class WorkTimeApplication : Application() {
             // 工资条历史草稿的**分项**（DB v13）：表头由迁移灌，分项留在 Kotlin
             // （SlipDraftSeeder）保证与 PayRateSeed 同源，所以在这里补灌一次。
             SalarySlipDraftRepair.runOnce(this@WorkTimeApplication)
+            // 地点锚点学习（DB v14 / 方案阶段2）：只写三张新表，幂等且吞异常，
+            // 跑失败绝不影响定位主链路（见 AnchorLearningService 的纪律说明）。
+            AnchorLearningService(database).learnAll()
             database.userSettingsDao().getSettings()?.let { GeofenceRecovery.register(this@WorkTimeApplication, it) }
         }
     }
@@ -41,7 +45,7 @@ class WorkTimeApplication : Application() {
             .addMigrations(
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                 MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
-                MIGRATION_11_12, MIGRATION_12_13
+                MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14
             )
             .build()
     }
@@ -257,6 +261,80 @@ class WorkTimeApplication : Application() {
                 )
             }
         }
+        /**
+         * DB v14「统一学习层」地基（方案 §九 / §十一 阶段1、阶段2）。
+         *
+         * **只加不改**：
+         *  - 新表 `learning_model_meta`   —— 模型版本元数据（回滚靠 status，不删行）
+         *  - 新表 `learned_place_models`  —— 地点学习模型（学习锚点与用户配置锚点**两列并存**）
+         *  - 新表 `place_anchor_candidates` —— 锚点候选（影子验证的落地点，判定永不读它）
+         *  - `work_records` 加两列：`finalMinutesSource`（固定/实际工时来源分离）、
+         *    `firstObservedAt`（候选时刻与确认时刻分离）
+         *
+         * ⚠️ 铁律：`work_records` / `monthly_salaries` 的**既有行一个字段都不动**。
+         *    两列都可空且无默认值 → 老记录保持 NULL = 来源未知，**不做任何回填猜测**
+         *    （老数据既可能是固定工时也可能是实际工时，猜错就污染了学习样本）。
+         *
+         * 三张新表**不灌任何种子数据**：模型的第一个版本由 `AnchorLearner` 真正训练出
+         * 候选时才写入，保证 `learning_model_meta` 里的每一行都对应一次真实学习，
+         * 「推算结果永不落库」这条原则在模型层同样成立。
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `learning_model_meta` (" +
+                        "`modelType` TEXT NOT NULL, `modelVersion` INTEGER NOT NULL, " +
+                        "`trainedThrough` TEXT, `sampleCount` INTEGER NOT NULL, " +
+                        "`status` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`invalidatedAt` INTEGER, `note` TEXT, " +
+                        "PRIMARY KEY(`modelType`, `modelVersion`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_learning_model_meta_modelType_status` " +
+                        "ON `learning_model_meta` (`modelType`, `status`)"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `learned_place_models` (" +
+                        "`placeId` INTEGER NOT NULL, `placeType` TEXT NOT NULL, " +
+                        "`configuredLat` REAL, `configuredLng` REAL, " +
+                        "`learnedLat` REAL, `learnedLng` REAL, " +
+                        "`coreRadiusMeters` REAL NOT NULL, " +
+                        "`transitionRadiusMeters` REAL NOT NULL, " +
+                        "`anchorConfidence` REAL NOT NULL, " +
+                        "`fingerprintConfidence` REAL NOT NULL, " +
+                        "`modelVersion` INTEGER NOT NULL, " +
+                        "`autoApplied` INTEGER NOT NULL, " +
+                        "`updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`placeId`))"
+                )
+
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `place_anchor_candidates` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`placeId` INTEGER NOT NULL, " +
+                        "`centerLat` REAL NOT NULL, `centerLng` REAL NOT NULL, " +
+                        "`sampleCount` INTEGER NOT NULL, `distinctDayCount` INTEGER NOT NULL, " +
+                        "`ambientSourceCount` INTEGER NOT NULL, `stableMillis` INTEGER NOT NULL, " +
+                        "`firstSeenAt` INTEGER NOT NULL, `lastSeenAt` INTEGER NOT NULL, " +
+                        "`offsetMeters` REAL NOT NULL, `status` TEXT NOT NULL, " +
+                        "`modelVersion` INTEGER NOT NULL, `explanation` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_place_anchor_candidates_placeId_status` " +
+                        "ON `place_anchor_candidates` (`placeId`, `status`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_place_anchor_candidates_placeId_lastSeenAt` " +
+                        "ON `place_anchor_candidates` (`placeId`, `lastSeenAt`)"
+                )
+
+                db.execSQL("ALTER TABLE work_records ADD COLUMN finalMinutesSource TEXT")
+                db.execSQL("ALTER TABLE work_records ADD COLUMN firstObservedAt INTEGER")
+            }
+        }
+
         val MIGRATION_10_11 = object : Migration(10, 11) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
