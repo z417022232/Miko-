@@ -72,5 +72,8 @@ enum class JourneyReason {
     TEMP_LEAVE_TIMEOUT,
 
     /** 运动判定过期（超过 `JourneyConfig.motionExpirySeconds`）。 */
-    MOTION_EXPIRED
+    MOTION_EXPIRED,
+
+    /** 新状态机执行异常；影子Coordinator保留上一快照并回落旧采样策略。 */
+    ENGINE_FAILED
 }
