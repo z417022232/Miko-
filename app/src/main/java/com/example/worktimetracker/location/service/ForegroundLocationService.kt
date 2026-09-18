@@ -42,6 +42,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.SystemLocationStateChecker
+import com.example.worktimetracker.location.recovery.RecoveryNotifier
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
 import com.example.worktimetracker.location.evidence.AmbientScanPolicy
 import com.example.worktimetracker.location.evidence.BluetoothEvidenceCollector
@@ -186,7 +187,7 @@ class ForegroundLocationService : Service(), LocationListener {
     private val providerGlobalCheck = Runnable {
         val result = SystemLocationStateChecker.checkAndRecord(this)
         if (!result.enabled && result.notifyUser) {
-            sendRecoveryNotification("系统定位已暂停", "定位记录可能中断，点击打开系统定位")
+            RecoveryNotifier.systemLocationDisabled(this)
         }
     }
     private val departureConfirmation = Runnable { scope.launch { confirmDepartureIfDue() } }
@@ -301,7 +302,7 @@ class ForegroundLocationService : Service(), LocationListener {
         if (systemLocation.enabled) startLocationUpdates()
         else if (systemLocation.notifyUser) {
             logEvent("SYSTEM_LOCATION_DISABLED", "服务启动时发现系统定位已关闭")
-            sendRecoveryNotification("系统定位已暂停", "定位记录可能中断，点击打开系统定位")
+            RecoveryNotifier.systemLocationDisabled(this)
         }
         watchdogHandler.postDelayed(locationWatchdog, WATCHDOG_INTERVAL_MILLIS)
         watchdogHandler.post(serviceHeartbeat)
@@ -314,7 +315,7 @@ class ForegroundLocationService : Service(), LocationListener {
         if (!systemLocation.enabled) {
             if (systemLocation.notifyUser) {
                 logEvent("SYSTEM_LOCATION_DISABLED", "服务触发时发现系统定位已关闭")
-                sendRecoveryNotification("系统定位已暂停", "定位记录可能中断，点击打开系统定位")
+                RecoveryNotifier.systemLocationDisabled(this)
             }
             return START_STICKY
         }
@@ -915,9 +916,7 @@ class ForegroundLocationService : Service(), LocationListener {
         val systemLocation = SystemLocationStateChecker.checkAndRecord(this)
         if (!systemLocation.enabled) {
             ServiceRecovery.providerAvailable(this, false)
-            if (systemLocation.notifyUser) sendRecoveryNotification(
-                "系统定位已暂停", "定位记录可能中断，点击打开系统定位"
-            )
+            if (systemLocation.notifyUser) RecoveryNotifier.systemLocationDisabled(this)
             return
         }
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -1479,19 +1478,6 @@ class ForegroundLocationService : Service(), LocationListener {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
         }
     }
-    private fun sendRecoveryNotification(title: String, text: String) {
-        val pendingIntent = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(this, NotificationChannels.RECOVERY_CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setSmallIcon(com.example.worktimetracker.R.drawable.ic_stat_worktime)
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .build()
-        runCatching {
-            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(RECOVERY_NOTIFICATION_ID, notification)
-        }
-    }
     private fun buildNotification(text: String): Notification {
         val pendingIntent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, NotificationChannels.LOCATION_CHANNEL_ID)
@@ -1505,7 +1491,6 @@ class ForegroundLocationService : Service(), LocationListener {
 
     companion object {
         const val NOTIFICATION_ID = 1001
-        private const val RECOVERY_NOTIFICATION_ID = 2002
         // 2026-09-16：原先 15 分钟一轮 + 15 分钟阈值，最坏要半小时才自愈；
         // 9/15 夜班实测断流 25 分钟才重新注册，直接导致到岗时刻被推迟。
         private const val WATCHDOG_INTERVAL_MILLIS = 3 * 60_000L

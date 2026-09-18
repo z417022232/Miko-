@@ -106,8 +106,12 @@ class AnchorLearningService(
         }.getOrDefault(emptyList())
 
         // 旧候选行长期积压：一个窗口最多一行/天，留 180 天足够回放
-        if (pausedPlaceIds.isEmpty()) {
-            runCatching { db.learningModelDao().deleteCandidatesBefore(now - CANDIDATE_RETENTION_MILLIS) }
+        sites.asSequence().map { it.id }.filterNot { it in pausedPlaceIds }.forEach { placeId ->
+            runCatching {
+                db.learningModelDao().deleteCandidatesBeforeForPlace(
+                    placeId, now - CANDIDATE_RETENTION_MILLIS
+                )
+            }
         }
 
         return sites.mapNotNull { site ->

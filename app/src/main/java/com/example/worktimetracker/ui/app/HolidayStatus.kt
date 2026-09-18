@@ -105,6 +105,14 @@ object HolidayStatusPresenter {
     fun displayError(status: HolidayStatusUi, currentYear: Int): String? =
         status.error?.takeUnless { status.hasDataFor(currentYear) }
 
+    fun currentYearSyncSucceeded(
+        status: HolidayStatusUi,
+        succeededYears: Set<Int>,
+        failedYears: Set<Int>,
+        currentYear: Int
+    ): Boolean = currentYear !in failedYears &&
+        (currentYear in succeededYears || status.hasDataFor(currentYear))
+
     /**
      * 结果卡片该用什么色调。
      *

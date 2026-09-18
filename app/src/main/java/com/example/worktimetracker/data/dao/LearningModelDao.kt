@@ -174,4 +174,7 @@ interface LearningModelDao {
     /** 候选明细只保留最近 N 条/天：学习是长期行为，不能让它把库撑爆（方案 §十 性能要求）。 */
     @Query("DELETE FROM place_anchor_candidates WHERE createdAt < :cutoff")
     suspend fun deleteCandidatesBefore(cutoff: Long)
+
+    @Query("DELETE FROM place_anchor_candidates WHERE placeId = :placeId AND createdAt < :cutoff")
+    suspend fun deleteCandidatesBeforeForPlace(placeId: Long, cutoff: Long)
 }

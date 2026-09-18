@@ -103,3 +103,8 @@ object SystemLocationAlertPolicy {
 object SystemLocationStatusPresenter {
     fun showRepairBanner(enabled: Boolean): Boolean = !enabled
 }
+
+object SystemLocationLogPolicy {
+    fun shouldLogDisabled(transition: SystemLocationTransition): Boolean =
+        transition == SystemLocationTransition.DISABLED
+}

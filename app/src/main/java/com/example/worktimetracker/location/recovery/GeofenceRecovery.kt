@@ -21,10 +21,16 @@ import com.google.android.gms.location.Geofence
 import com.google.android.gms.location.GeofencingClient
 import com.google.android.gms.location.GeofencingRequest
 import com.google.android.gms.location.LocationServices
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
 object GeofenceRecovery {
+    private const val PREFS = "geofence_recovery"
+    private const val REGISTERED_SITE_IDS = "registered_site_ids"
+    private val registrationMutex = Mutex()
+
     data class Target(val siteId: Long, val requestId: String, val latitude: Double, val longitude: Double, val radiusMeters: Float)
 
     fun resolveTargets(sites: List<SiteEntity>, models: List<LearnedPlaceModelEntity>, preferences: List<PlaceLearningPreferenceEntity>): List<Target> {
@@ -39,23 +45,43 @@ object GeofenceRecovery {
         }.toList()
     }
 
-    suspend fun register(context: Context): Boolean {
+    suspend fun register(context: Context): Boolean = registrationMutex.withLock {
         val fine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val background = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!fine || !background) return false
-        val app = context.applicationContext as? WorkTimeApplication ?: return false
+        if (!fine || !background) return@withLock false
+        val app = context.applicationContext as? WorkTimeApplication ?: return@withLock false
         val targets = resolveTargets(app.database.siteDao().all(), app.database.learningModelDao().allPlaces(), app.database.learningModelDao().allPreferences())
-        if (targets.isEmpty()) return false
+        val previousIds = registeredSiteIds(context)
+        val currentIds = targets.mapTo(mutableSetOf()) { it.siteId }
+        val staleIds = GeofenceRegistrationPolicy.staleSiteIds(previousIds, currentIds)
+        // 无论上次走 Google 还是 platform fallback，都先清掉旧集合；否则删除/停用地点会残留围栏。
+        (staleIds + previousIds.intersect(currentIds)).forEach { siteId ->
+            runCatching {
+                (context.getSystemService(Context.LOCATION_SERVICE) as LocationManager)
+                    .removeProximityAlert(platformPendingIntent(context, siteId))
+            }
+        }
+        removeGoogleGeofences(context)
+        if (targets.isEmpty()) {
+            saveRegisteredSiteIds(context, emptySet())
+            return@withLock true
+        }
         val request = GeofencingRequest.Builder().setInitialTrigger(GeofencingRequest.INITIAL_TRIGGER_ENTER)
             .apply { targets.forEach { addGeofence(geofence(it)) } }.build()
         val pending = pendingIntent(context)
-        return suspendCoroutine { continuation ->
-            client(context).removeGeofences(pending).addOnCompleteListener {
-                client(context).addGeofences(request, pending)
-                    .addOnSuccessListener { continuation.resume(true) }
-                    .addOnFailureListener { continuation.resume(registerPlatformFallback(context, targets)) }
-            }
+        val registered = suspendCoroutine { continuation ->
+            client(context).addGeofences(request, pending)
+                .addOnSuccessListener { continuation.resume(true) }
+                .addOnFailureListener { continuation.resume(registerPlatformFallback(context, targets)) }
         }
+        // 即便 platform fallback 中途失败，也记录本轮可能已注册过的 ID，确保下次能够清理残留。
+        saveRegisteredSiteIds(context, currentIds)
+        registered
+    }
+
+    private suspend fun removeGoogleGeofences(context: Context) = suspendCoroutine<Unit> { continuation ->
+        client(context).removeGeofences(pendingIntent(context))
+            .addOnCompleteListener { continuation.resume(Unit) }
     }
 
     private fun geofence(target: Target): Geofence = Geofence.Builder().setRequestId(target.requestId)
@@ -70,7 +96,7 @@ object GeofenceRecovery {
     private fun registerPlatformFallback(context: Context, targets: List<Target>): Boolean = runCatching {
         val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         targets.forEach { target ->
-            val pending = platformPendingIntent(context, target)
+            val pending = platformPendingIntent(context, target.siteId)
             manager.removeProximityAlert(pending)
             manager.addProximityAlert(target.latitude, target.longitude, target.radiusMeters, -1L, pending)
         }
@@ -82,10 +108,25 @@ object GeofenceRecovery {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
     )
 
-    private fun platformPendingIntent(context: Context, target: Target): PendingIntent = PendingIntent.getBroadcast(
+    private fun platformPendingIntent(context: Context, siteId: Long): PendingIntent = PendingIntent.getBroadcast(
         context,
-        (target.siteId xor (target.siteId ushr 32)).toInt(),
-        Intent(context, LocationTransitionReceiver::class.java).putExtra("siteId", target.siteId),
+        (siteId xor (siteId ushr 32)).toInt(),
+        Intent(context, LocationTransitionReceiver::class.java).putExtra("siteId", siteId),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
     )
+
+    internal fun registeredSiteIds(context: Context): Set<Long> = context
+        .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .getStringSet(REGISTERED_SITE_IDS, emptySet()).orEmpty()
+        .mapNotNullTo(mutableSetOf()) { it.toLongOrNull() }
+
+    private fun saveRegisteredSiteIds(context: Context, ids: Set<Long>) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putStringSet(REGISTERED_SITE_IDS, ids.mapTo(mutableSetOf(), Long::toString))
+            .commit()
+    }
+}
+
+object GeofenceRegistrationPolicy {
+    fun staleSiteIds(previous: Set<Long>, current: Set<Long>): Set<Long> = previous - current
 }

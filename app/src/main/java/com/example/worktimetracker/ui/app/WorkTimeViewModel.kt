@@ -361,7 +361,9 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             error = holidayStore.lastError()
         )
         val currentYear = LocalDate.now().year
-        val currentYearReady = refreshed.hasDataFor(currentYear)
+        val currentYearReady = HolidayStatusPresenter.currentYearSyncSucceeded(
+            refreshed, outcome.succeededYears, outcome.failures.keys, currentYear
+        )
         _holidayStatus.value = refreshed.copy(
             error = if (currentYearReady) null else refreshed.error,
             resultOk = currentYearReady,

@@ -26,13 +26,13 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
         val now = System.currentTimeMillis()
         val systemLocation = SystemLocationStateChecker.checkAndRecord(applicationContext, now)
         if (!systemLocation.enabled) {
-            app.database.appLogDao().insert(AppLogEntity(
-                type = "SYSTEM_LOCATION_DISABLED",
-                content = "健康巡检发现系统定位已关闭"
-            ))
-            if (systemLocation.notifyUser) sendRecoveryNotification(
-                "系统定位已暂停", "定位记录可能中断，点击打开系统定位"
-            )
+            if (SystemLocationLogPolicy.shouldLogDisabled(systemLocation.transition)) {
+                app.database.appLogDao().insert(AppLogEntity(
+                    type = "SYSTEM_LOCATION_DISABLED",
+                    content = "健康巡检发现系统定位已关闭"
+                ))
+            }
+            if (systemLocation.notifyUser) RecoveryNotifier.systemLocationDisabled(applicationContext)
         } else {
             evaluateHealth(app, now)
         }

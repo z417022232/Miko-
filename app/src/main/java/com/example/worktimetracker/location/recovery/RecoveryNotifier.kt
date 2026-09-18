@@ -4,8 +4,8 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
-import com.example.worktimetracker.MainActivity
 import com.example.worktimetracker.R
 import com.example.worktimetracker.notification.NotificationChannels
 
@@ -15,7 +15,7 @@ object RecoveryNotifier {
     fun systemLocationDisabled(context: Context) {
         NotificationChannels.ensure(context)
         val intent = PendingIntent.getActivity(
-            context, 2, Intent(context, MainActivity::class.java),
+            context, 2, Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val notification = NotificationCompat.Builder(context, NotificationChannels.RECOVERY_CHANNEL_ID)
