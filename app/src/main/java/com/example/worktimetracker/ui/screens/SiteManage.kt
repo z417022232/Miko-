@@ -359,6 +359,7 @@ private fun SiteEditPage(
 ) {
     val sites by vm.sites.collectAsState()
     val sources by vm.siteEvidenceSources.collectAsState()
+    val learningMessage by vm.placeSearchMessage.collectAsState()
     val site = remember(sites, siteId) { sites.firstOrNull { it.id == siteId } }
 
     var draft by remember(siteId) {
@@ -569,6 +570,10 @@ private fun SiteEditPage(
                 style = MaterialTheme.typography.bodySmall,
                 color = AppTheme.colors.orange
             )
+        }
+        if (learningMessage.isNotBlank()) {
+            Spacer(Modifier.height(8.dp))
+            Text(learningMessage, style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.blue)
         }
         Spacer(Modifier.height(14.dp))
 

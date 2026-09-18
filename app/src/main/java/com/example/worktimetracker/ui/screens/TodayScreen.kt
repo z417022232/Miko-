@@ -272,71 +272,6 @@ private fun RestDaysCard(stats: YearStatsPresenter.YearStats) {
 // ---------------------------------------------------------------------------
 
 @Composable
-private fun TodayActionsCard(
-    headline: TodayStatusPresenter.Headline,
-    live: TodayStatusPresenter.TodayMinutes,
-    placeLabel: String,
-    confidence: String?,
-    earningsCents: Long?,
-    onOpenFusion: () -> Unit,
-    onPunch: () -> Unit,
-    onSegments: () -> Unit
-) {
-    Card(
-        onClick = onOpenFusion,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StatusPill(headline.text, toneColor(headline.tone))
-                if (live.running) StatusPill("计时中", AppTheme.colors.blue)
-                Spacer(Modifier.weight(1f))
-                Text(placeLabel, color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
-                Icon(
-                    Icons.Outlined.ChevronRight,
-                    contentDescription = "查看融合详情",
-                    tint = AppTheme.colors.muted,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "今日 ${durationText(live.minutes)}" +
-                    " · 置信度 ${confidence ?: "--"}" +
-                    (earningsCents?.let { " · 约 ${formatCents(it)}" } ?: "") +
-                    " · 点这里看判定与四源明细",
-                color = AppTheme.colors.muted,
-                style = MaterialTheme.typography.labelSmall
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(onClick = onPunch, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Outlined.Fingerprint, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(6.dp))
-                    Text("手动打卡")
-                }
-                OutlinedButton(onClick = onSegments, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Outlined.EditCalendar, null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(6.dp))
-                    Text("补录时段")
-                }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 版面零件
-// ---------------------------------------------------------------------------
-
-/** 统计卡外框：左标题 + 右侧大数字（选中月的读数）+ 一行小字说明。 */
-@Composable
 private fun StatCard(
     title: String,
     accentText: String,
@@ -425,7 +360,3 @@ internal fun toneColor(tone: TodayStatusPresenter.TodayTone): Color = when (tone
     TodayStatusPresenter.TodayTone.WARN -> AppTheme.colors.orange
     TodayStatusPresenter.TodayTone.IDLE -> AppTheme.colors.muted
 }
-
-/** 未使用但保留：融合页与今日页共用「地点标签」口径。 */
-internal fun placeLabelOf(place: ResolvedPlace?): String =
-    place?.let { FusedStatusFormatter.placeLabel(it) } ?: "暂不确定"

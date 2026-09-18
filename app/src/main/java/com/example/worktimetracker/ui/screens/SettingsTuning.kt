@@ -62,40 +62,6 @@ private val SAMPLING_INTERVAL_OPTIONS = listOf(
     10 to "最省电，判定有延迟"
 )
 
-@Composable
-internal fun SamplingIntervalPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
-    val settings by vm.settings.collectAsState()
-    val current = settings.samplingIntervalMinutes
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp)
-    ) {
-        ScreenHeader("常规采集间隔", "间隔越短，进出车间的判定越及时，但耗电越高", onBack = onBack)
-        Spacer(Modifier.height(14.dp))
-        SettingsGroup {
-            SAMPLING_INTERVAL_OPTIONS.forEachIndexed { index, (minutes, note) ->
-                if (index > 0) ThinDivider()
-                ChoiceRow(
-                    title = "$minutes 分钟",
-                    note = note,
-                    selected = current == minutes
-                ) { vm.saveSamplingInterval(minutes) }
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "地点变更后 App 会临时进入 Burst 快速采集（1 分钟一次），不受这一项影响；" +
-                "Burst 的上限在「Burst 上限」页单独设置。",
-            style = MaterialTheme.typography.bodySmall,
-            color = AppTheme.colors.muted
-        )
-        Spacer(Modifier.height(12.dp))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // 15 · Burst 上限
 // ---------------------------------------------------------------------------
@@ -154,49 +120,6 @@ internal fun SamplingAndPowerPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
         )
     }
 }
-
-@Composable
-internal fun BurstCapPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
-    val settings by vm.settings.collectAsState()
-    val current = settings.burstCapMinutes
-
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 14.dp)
-    ) {
-        ScreenHeader("Burst 上限", "上限调低更省电，但可能漏掉短时进出", onBack = onBack)
-        Spacer(Modifier.height(14.dp))
-        SettingsGroup {
-            BURST_CAP_OPTIONS.forEachIndexed { index, (minutes, note) ->
-                if (index > 0) ThinDivider()
-                ChoiceRow(
-                    title = "$minutes 分钟",
-                    note = note,
-                    selected = current == minutes
-                ) { vm.saveBurstCap(minutes) }
-            }
-        }
-        Spacer(Modifier.height(14.dp))
-        SettingsGroup {
-            ReadOnlyRow(Icons.Outlined.Speed, "常规间隔", "${settings.samplingIntervalMinutes} min")
-            ThinDivider()
-            ReadOnlyRow(Icons.Outlined.Bolt, "Burst 期间", "1 min")
-        }
-        Spacer(Modifier.height(14.dp))
-        Text(
-            "Burst 是什么：检测到地点变更时，App 会临时把采集频率提到 1 分钟一次，尽快确认结果；" +
-                "持续到上限后自动回落到常规间隔，避免长时间高功耗。\n\n" +
-                "超过上限后必须回落，这是防止后台被系统限制的硬约束——所以上限最高只能到 10 分钟，" +
-                "调低可以，调高不行。",
-            style = MaterialTheme.typography.bodySmall,
-            color = AppTheme.colors.muted
-        )
-        Spacer(Modifier.height(12.dp))
-    }
-}
-
 // ---------------------------------------------------------------------------
 // 18 · 清空本地记录
 // ---------------------------------------------------------------------------
