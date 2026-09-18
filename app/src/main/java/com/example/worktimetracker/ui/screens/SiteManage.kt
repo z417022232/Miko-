@@ -518,6 +518,17 @@ private fun SiteEditPage(
                 showChevron = true,
                 onClick = { showSearch = true }
             )
+            if (draft.gpsReady) {
+                ThinDivider()
+                SettingsRow(
+                    Icons.Outlined.GpsFixed,
+                    "重新分析学习位置",
+                    "使用最近30天轨迹与环境指纹生成校准候选",
+                    tint = AppTheme.colors.purple,
+                    showChevron = false,
+                    onClick = { vm.rerunPlaceLearning() }
+                )
+            }
         }
         TextButton(onClick = { showCoordinates = !showCoordinates }) {
             Text(if (showCoordinates) "收起手动坐标" else "高级：手动输入坐标")

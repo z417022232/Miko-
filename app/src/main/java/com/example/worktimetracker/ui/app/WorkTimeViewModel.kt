@@ -38,6 +38,7 @@ import com.example.worktimetracker.domain.engine.ReviewAcknowledger
 import com.example.worktimetracker.domain.engine.LocationAnchorCalibration
 import com.example.worktimetracker.domain.engine.LocationStatusAnalyzer
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
+import com.example.worktimetracker.location.service.AnchorLearningService
 import com.example.worktimetracker.location.evidence.EnvironmentSaltStore
 import com.example.worktimetracker.location.evidence.ScannedWifi
 import com.example.worktimetracker.location.evidence.SiteWifiScanner
@@ -927,6 +928,18 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun cancelCompanyCalibration() { _companyCalibrationProposal.value = null }
+
+    fun rerunPlaceLearning() {
+        viewModelScope.launch {
+            _placeSearchMessage.value = "正在重新分析最近30天的位置与环境证据…"
+            runCatching { AnchorLearningService(db).learnAll() }
+                .onSuccess {
+                    reloadLearningStatuses()
+                    _placeSearchMessage.value = "位置学习已重新分析；候选仍按影子验证规则生效"
+                }
+                .onFailure { _placeSearchMessage.value = "重新分析失败：${it.message ?: "请稍后重试"}" }
+        }
+    }
 
     // ---------------------------------------------------------------------
     // 今日（实时页）
