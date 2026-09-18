@@ -543,9 +543,9 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             "新行程状态尚未建立；启动后会先读取最近30天历史记录进行预学习"
         } else {
             buildString {
-                append("当前阶段：").append(row.phase)
-                append("\n上次确认：").append(row.lastConfirmedPhase ?: "暂无")
-                append("\n候选阶段：").append(row.candidatePhase ?: "无")
+                append("当前状态：").append(journeyPhaseLabel(row.phase))
+                append("\n上次确认：").append(row.lastConfirmedPhase?.let(::journeyPhaseLabel) ?: "暂无")
+                append("\n候选状态：").append(row.candidatePhase?.let(::journeyPhaseLabel) ?: "无")
                 if (row.candidatePhase != null) {
                     append(" · 支持").append(row.supportCount).append("拍")
                     append(" · 稳定").append(row.accumulatedStableMillis / 1_000).append("秒")
@@ -554,6 +554,22 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 append(" · 模型v").append(row.modelVersion)
             }
         }
+    }
+
+    private fun journeyPhaseLabel(raw: String): String = when (raw) {
+        "AT_HOME" -> "现在在家"
+        "LEAVING_HOME" -> "正在确认离家"
+        "ARRIVING_HOME" -> "正在确认到家"
+        "COMMUTING_TO_WORK" -> "正在前往公司"
+        "COMMUTING_HOME" -> "正在回家"
+        "ARRIVING_WORK" -> "已到公司，正在确认到岗"
+        "AT_WORK" -> "正在工作"
+        "LEAVING_WORK" -> "正在确认离岗"
+        "TEMP_LEAVE" -> "临时离岗"
+        "OTHER_STOP" -> "工作期间在外停留"
+        "AWAY" -> "当前在其他地点"
+        "STALE" -> "定位信息已过期"
+        else -> "位置暂时判断不出来"
     }
 
     fun refreshLastManualHours() {

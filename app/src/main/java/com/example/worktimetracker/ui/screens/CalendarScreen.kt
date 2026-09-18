@@ -156,6 +156,7 @@ fun CalendarScreen(
         while (true) {
             nowMillis = System.currentTimeMillis()
             vm.refreshToday()
+            vm.refreshJourneyShadowStatus()
             delay(30_000L)
         }
     }
@@ -173,8 +174,8 @@ fun CalendarScreen(
     // 给历史日编一份"当时的实时状态"只会误导，那里一律显示「该日无实时数据」。
     val sourceHealth by vm.sourceHealth.collectAsState()
     val evidenceRefresh by vm.evidenceRefresh.collectAsState()
-    val todayLive = if (selectedDate == today) {
-        TodayLiveInfo(
+    val journeyStatus by vm.journeyShadowStatus.collectAsState()
+    val todayLive = TodayLiveInfo(
             liveMinutes = live,
             headline = TodayStatusPresenter.headline(todayRecord),
             placeSentence = FusedStatusFormatter.placeSentence(fused),
@@ -188,9 +189,6 @@ fun CalendarScreen(
             refreshing = evidenceRefresh.running,
             refreshMessage = evidenceRefresh.message
         )
-    } else {
-        null
-    }
     val cells = remember(month, records, selectedDate, today) {
         CalendarHeatPresenter.buildCells(month, records, today, selectedDate)
     }
@@ -215,7 +213,7 @@ fun CalendarScreen(
             .padding(horizontal = 16.dp, vertical = 14.dp)
     ) {
         ScreenHeader(
-            title = "日历",
+            title = "首页",
             subtitle = if (isCurrentMonth) {
                 "${TodayStatusPresenter.weekLabel(today)} · 已记录 ${summary.workDays} 天"
             } else {
@@ -229,15 +227,18 @@ fun CalendarScreen(
             }
         )
         Spacer(Modifier.height(12.dp))
-        // 本月工时 / 本月工资：从页底提到页顶（原来要滚过热力图才看得到本月结论）
-        MonthSummaryCard(
-            summary = summary,
-            salaryCents = monthlySalaryCents,
-            payroll = monthPayroll,
-            projection = monthProjection,
-            paymentLabel = paymentLabel,
-            onOpenPayroll = { showPayroll = true },
-            onOpenSlip = { onOpenSlip(month) }
+        AuthorityStatusCard(
+            journeyStatus = journeyStatus,
+            live = todayLive,
+            onRefreshEvidence = { vm.refreshEvidenceNow() },
+            onConsumeRefreshMessage = { vm.clearEvidenceRefreshMessage() }
+        )
+        Spacer(Modifier.height(12.dp))
+        SelectedDayCard(
+            record = cardRecord,
+            dayPayCents = vm.dailyPayCents(cardRecord.finalMinutes),
+            hasBaseline = payBaseline != null,
+            onEdit = { showDetail = true }
         )
         Spacer(Modifier.height(12.dp))
         // 月份切换过渡动画：按新旧月份大小决定滑动方向（去下一个月，新内容从右进；
@@ -305,14 +306,14 @@ fun CalendarScreen(
             }
         }
         Spacer(Modifier.height(12.dp))
-        SelectedDayCard(
-            record = cardRecord,
-            dayPayCents = vm.dailyPayCents(cardRecord.finalMinutes),
-            hasBaseline = payBaseline != null,
-            live = todayLive,
-            onRefreshEvidence = { vm.refreshEvidenceNow() },
-            onConsumeRefreshMessage = { vm.clearEvidenceRefreshMessage() },
-            onEdit = { showDetail = true }
+        MonthSummaryCard(
+            summary = summary,
+            salaryCents = monthlySalaryCents,
+            payroll = monthPayroll,
+            projection = monthProjection,
+            paymentLabel = paymentLabel,
+            onOpenPayroll = { showPayroll = true },
+            onOpenSlip = { onOpenSlip(month) }
         )
         Spacer(Modifier.height(12.dp))
     }
@@ -530,13 +531,39 @@ private fun placeTint(decision: FusedDecision?): Color = when (decision) {
  *   选中历史日时这一块退化成一句「该日无实时数据」。
  */
 @Composable
+private fun AuthorityStatusCard(
+    journeyStatus: String,
+    live: TodayLiveInfo,
+    onRefreshEvidence: () -> Unit,
+    onConsumeRefreshMessage: () -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = MaterialTheme.shapes.extraLarge,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text("实时状态", style = MaterialTheme.typography.labelMedium, color = AppTheme.colors.muted)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                journeyStatus.lineSequence().firstOrNull() ?: "位置暂时判断不出来",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            journeyStatus.lineSequence().drop(1).firstOrNull()?.let {
+                Text(it, color = AppTheme.colors.muted, style = MaterialTheme.typography.labelSmall)
+            }
+            Spacer(Modifier.height(10.dp))
+            LiveStatusBlock(live, onRefreshEvidence, onConsumeRefreshMessage, showHeadline = false)
+        }
+    }
+}
+
+@Composable
 private fun SelectedDayCard(
     record: UiDayRecord,
     dayPayCents: Long?,
     hasBaseline: Boolean,
-    live: TodayLiveInfo?,
-    onRefreshEvidence: () -> Unit,
-    onConsumeRefreshMessage: () -> Unit,
     onEdit: () -> Unit
 ) {
     val weekday = record.date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.CHINA)
@@ -610,19 +637,6 @@ private fun SelectedDayCard(
             dayKindText(record.dayKind, record.holidayName, record.finalMinutes > 0)?.let {
                 Text(it, color = dayBadgeColor(record.dayKind), modifier = Modifier.padding(top = 6.dp))
             }
-            // 分界线以下都是「实时」内容：选中今天才成立，历史日如实说没有
-            Spacer(Modifier.height(10.dp))
-            ThinDivider()
-            Spacer(Modifier.height(10.dp))
-            if (live != null) {
-                LiveStatusBlock(live, onRefreshEvidence, onConsumeRefreshMessage)
-            } else {
-                Text(
-                    "该日无实时数据（GPS / Wi-Fi / 蓝牙 / 基站状态只在今天显示）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = AppTheme.colors.muted
-                )
-            }
         }
     }
 }
@@ -641,22 +655,25 @@ private fun SelectedDayCard(
 private fun LiveStatusBlock(
     live: TodayLiveInfo,
     onRefresh: () -> Unit,
-    onConsumeMessage: () -> Unit
+    onConsumeMessage: () -> Unit,
+    showHeadline: Boolean = true
 ) {
     Column(Modifier.fillMaxWidth()) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            StatusPill(live.headline.text, toneColor(live.headline.tone))
-            if (live.liveMinutes.running) StatusPill("计时中", AppTheme.colors.blue)
-            Text(
-                "实时计入 ${durationText(live.liveMinutes.minutes)}",
-                style = MaterialTheme.typography.labelMedium,
-                color = AppTheme.colors.muted
-            )
+        if (showHeadline) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StatusPill(live.headline.text, toneColor(live.headline.tone))
+                if (live.liveMinutes.running) StatusPill("计时中", AppTheme.colors.blue)
+                Text(
+                    "实时计入 ${durationText(live.liveMinutes.minutes)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AppTheme.colors.muted
+                )
+            }
+            Spacer(Modifier.height(10.dp))
         }
-        Spacer(Modifier.height(10.dp))
         // 位置主句：图标 + 一句结论（现在在家 / 现在在公司 / 位置暂时判断不出来）
         Row(
             verticalAlignment = Alignment.CenterVertically,
