@@ -101,7 +101,7 @@ import com.example.worktimetracker.ui.theme.ThemeMode
 private enum class SettingsPage {
     ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME,
     /** v4 界面稿新增：计薪规则 / 常规采集间隔 / Burst 上限 */
-    PAY_RULES, INTERVAL, BURST,
+    PAY_RULES, POWER,
     /** v4.3 界面稿 09/10/11：多地点管理（LOCATION 保留为校准兜底入口） */
     SITES
     // 注：v6 的 SLIP_ENTRY 已移除 —— 工资条录入的唯一入口是日历月卡的「录入工资条 ›」
@@ -134,8 +134,7 @@ fun SettingsScreen(
             vm,
             onBack = { page = SettingsPage.ROOT }
         )
-        SettingsPage.INTERVAL -> SamplingIntervalPage(vm, onBack = { page = SettingsPage.ROOT })
-        SettingsPage.BURST -> BurstCapPage(vm, onBack = { page = SettingsPage.ROOT })
+        SettingsPage.POWER -> SamplingAndPowerPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.THEME -> ThemeSettingsPage(
             current = themeMode,
             onChange = onThemeModeChange,
@@ -154,8 +153,6 @@ private fun SettingsHome(
     val settings by vm.settings.collectAsState()
     val sites by vm.sites.collectAsState()
     val holidayStatus by vm.holidayStatus.collectAsState()
-    var showTimes by remember { mutableStateOf(false) }
-    var showDefault by remember { mutableStateOf(false) }
     var showClear by remember { mutableStateOf(false) }
     val permissions = PermissionManager.check(context)
 
@@ -207,21 +204,12 @@ private fun SettingsHome(
         Spacer(Modifier.height(14.dp))
         SectionTitle("精度与功耗")
         SettingsGroup {
-            AccuracyRow(settings.locationAccuracyMode) { vm.saveAccuracyMode(it) }
-            ThinDivider()
             SettingsRow(
                 Icons.Outlined.Speed,
-                "常规采集间隔",
-                "${settings.samplingIntervalMinutes} min",
+                "采样与功耗",
+                "${accuracyModeLabel(settings.locationAccuracyMode)} · 常规 ${settings.samplingIntervalMinutes} min · 快速 ${settings.burstCapMinutes} min",
                 tint = AppTheme.colors.blue
-            ) { onOpen(SettingsPage.INTERVAL) }
-            ThinDivider()
-            SettingsRow(
-                Icons.Outlined.Bolt,
-                "Burst 上限",
-                "${settings.burstCapMinutes} min · 硬顶 10 min",
-                tint = AppTheme.colors.purple
-            ) { onOpen(SettingsPage.BURST) }
+            ) { onOpen(SettingsPage.POWER) }
         }
         Spacer(Modifier.height(14.dp))
         SectionTitle("数据与外观")
@@ -267,19 +255,6 @@ private fun SettingsHome(
         Spacer(Modifier.height(12.dp))
     }
 
-    if (showTimes) {
-        WorkTimePickerDialog(
-            settings.workStartMinutes,
-            settings.workEndMinutes,
-            onDismiss = { showTimes = false }
-        ) { start, end ->
-            vm.saveWorkTimes((start / 60).toString(), (start % 60).toString(), (end / 60).toString(), (end % 60).toString())
-            showTimes = false
-        }
-    }
-    if (showDefault) {
-        DefaultHoursDialog(settings, vm, onDismiss = { showDefault = false })
-    }
     if (showClear) {
         ClearLocalDataDialog(
             onExportFirst = { showClear = false; onOpen(SettingsPage.DATA) },
@@ -287,6 +262,12 @@ private fun SettingsHome(
             onDismiss = { showClear = false }
         )
     }
+}
+
+private fun accuracyModeLabel(mode: String): String = when (mode) {
+    UserSettingsEntity.LOCATION_ACCURACY_POWER_SAVING -> "省电"
+    UserSettingsEntity.LOCATION_ACCURACY_HIGH -> "高精度"
+    else -> "平衡"
 }
 
 /**

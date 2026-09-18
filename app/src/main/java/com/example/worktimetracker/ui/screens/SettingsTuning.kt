@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
+import com.example.worktimetracker.data.entity.UserSettingsEntity
 import com.example.worktimetracker.ui.theme.AppTheme
 import java.util.Locale
 
@@ -104,6 +105,55 @@ private val BURST_CAP_OPTIONS = listOf(
     5 to "较省电",
     10 to "默认 · 硬顶上限，不能更高"
 )
+
+@Composable
+internal fun SamplingAndPowerPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
+    val settings by vm.settings.collectAsState()
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 14.dp)
+    ) {
+        ScreenHeader("采样与功耗", "精度、常规采样和快速确认集中设置", onBack = onBack)
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("定位精度")
+        SettingsGroup {
+            listOf(
+                Triple(UserSettingsEntity.LOCATION_ACCURACY_POWER_SAVING, "省电", "耗电最低，边界判断可能较慢"),
+                Triple(UserSettingsEntity.LOCATION_ACCURACY_BALANCED, "平衡", "推荐，兼顾准确度与续航"),
+                Triple(UserSettingsEntity.LOCATION_ACCURACY_HIGH, "高精度", "进出判断更敏感，耗电更高")
+            ).forEachIndexed { index, (value, title, note) ->
+                if (index > 0) ThinDivider()
+                ChoiceRow(title, note, settings.locationAccuracyMode == value) { vm.saveAccuracyMode(value) }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("常规采集间隔")
+        SettingsGroup {
+            SAMPLING_INTERVAL_OPTIONS.forEachIndexed { index, (minutes, note) ->
+                if (index > 0) ThinDivider()
+                ChoiceRow("$minutes 分钟", note, settings.samplingIntervalMinutes == minutes) {
+                    vm.saveSamplingInterval(minutes)
+                }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        SectionTitle("快速确认上限")
+        SettingsGroup {
+            BURST_CAP_OPTIONS.forEachIndexed { index, (minutes, note) ->
+                if (index > 0) ThinDivider()
+                ChoiceRow("$minutes 分钟", note, settings.burstCapMinutes == minutes) {
+                    vm.saveBurstCap(minutes)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "地点或行程状态变化时会临时提高采样频率；取得可靠证据或达到上限后自动回落。",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppTheme.colors.muted
+        )
+    }
+}
 
 @Composable
 internal fun BurstCapPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
