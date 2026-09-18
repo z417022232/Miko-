@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.DirectionsWalk
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Event
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.LocationSearching
@@ -109,6 +110,7 @@ import com.example.worktimetracker.ui.theme.AppTheme
 @Composable
 fun CalendarScreen(
     vm: WorkTimeViewModel,
+    onOpenFusion: () -> Unit = {},
     /** 从月卡进「工资条录入与核对」；参数是**当前日历所在月**（作为录入页的锚点） */
     onOpenSlip: (YearMonth) -> Unit = {}
 ) {
@@ -231,7 +233,8 @@ fun CalendarScreen(
             journeyStatus = journeyStatus,
             live = todayLive,
             onRefreshEvidence = { vm.refreshEvidenceNow() },
-            onConsumeRefreshMessage = { vm.clearEvidenceRefreshMessage() }
+            onConsumeRefreshMessage = { vm.clearEvidenceRefreshMessage() },
+            onOpenFusion = onOpenFusion
         )
         Spacer(Modifier.height(12.dp))
         SelectedDayCard(
@@ -325,7 +328,14 @@ fun CalendarScreen(
         }
     }
     if (showDetail) {
-        DayDetailSheet(selected, vm, onDismiss = { showDetail = false })
+        DayDetailSheet(
+            record = cardRecord,
+            vm = vm,
+            liveMinutes = if (cardRecord.date == today) live.minutes else cardRecord.finalMinutes,
+            earningsCents = vm.dailyPayCents(cardRecord.finalMinutes),
+            placeLabel = if (cardRecord.date == today) FusedStatusFormatter.placeLabel(fused?.place ?: ResolvedPlace.UNKNOWN) else "历史记录",
+            onDismiss = { showDetail = false }
+        )
     }
     if (showSalaryEditor) {
         SalaryDialog(
@@ -535,7 +545,8 @@ private fun AuthorityStatusCard(
     journeyStatus: String,
     live: TodayLiveInfo,
     onRefreshEvidence: () -> Unit,
-    onConsumeRefreshMessage: () -> Unit
+    onConsumeRefreshMessage: () -> Unit,
+    onOpenFusion: () -> Unit
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -555,6 +566,9 @@ private fun AuthorityStatusCard(
             }
             Spacer(Modifier.height(10.dp))
             LiveStatusBlock(live, onRefreshEvidence, onConsumeRefreshMessage, showHeadline = false)
+            TextButton(onClick = onOpenFusion, modifier = Modifier.align(Alignment.End)) {
+                Text("查看判断与证据详情")
+            }
         }
     }
 }
@@ -841,7 +855,15 @@ private fun MonthNumberPicker(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss: () -> Unit) {
+private fun DayDetailSheet(
+    record: UiDayRecord,
+    vm: WorkTimeViewModel,
+    liveMinutes: Int,
+    earningsCents: Long?,
+    placeLabel: String,
+    onDismiss: () -> Unit
+) {
+    var showPunch by remember { mutableStateOf(false) }
     var showManual by remember { mutableStateOf(false) }
     var showSegments by remember { mutableStateOf(false) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -897,6 +919,12 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
                 Text("修改当天工时")
             }
             Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = { showPunch = true }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Outlined.Fingerprint, null)
+                Spacer(Modifier.size(8.dp))
+                Text("补录到离岗时间")
+            }
+            Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = { showSegments = true }, modifier = Modifier.fillMaxWidth()) {
                 Text("拆分为两个时间段")
             }
@@ -924,6 +952,17 @@ private fun DayDetailSheet(record: UiDayRecord, vm: WorkTimeViewModel, onDismiss
             showManual = false
             onDismiss()
         }
+    }
+    if (showPunch) {
+        ManualPunchSheet(
+            record = record,
+            liveMinutes = liveMinutes,
+            earningsCents = earningsCents,
+            placeLabel = placeLabel,
+            date = record.date,
+            vm = vm,
+            onDismiss = { showPunch = false }
+        )
     }
     if (showSegments) {
         SegmentDialog(record, vm, onDismiss = { showSegments = false }) {

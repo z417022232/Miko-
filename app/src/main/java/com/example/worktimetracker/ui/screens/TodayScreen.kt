@@ -50,7 +50,7 @@ import com.example.worktimetracker.ui.theme.AppTheme
 import kotlinx.coroutines.delay
 import java.time.YearMonth
 
-private enum class TodayPage { HOME, MONTHLY, FUSION }
+private enum class TodayPage { HOME, MONTHLY }
 
 /**
  * 「今日」一级页宿主（2026-09-16 起首页主体 = **XX 年数据统计**）。
@@ -67,29 +67,20 @@ fun TodayHost(vm: WorkTimeViewModel) {
     when (page) {
         TodayPage.HOME -> TodayScreen(
             vm,
-            onOpenFusion = { page = TodayPage.FUSION },
             onOpenMonthly = { month ->
                 vm.jumpToMonth(month.year.toString(), month.monthValue.toString())
                 page = TodayPage.MONTHLY
             }
         )
         TodayPage.MONTHLY -> StatisticsScreen(vm, onBack = { page = TodayPage.HOME })
-        TodayPage.FUSION -> FusionDetailScreen(vm, onBack = { page = TodayPage.HOME })
     }
 }
 
 @Composable
-fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit, onOpenMonthly: (YearMonth) -> Unit) {
+fun TodayScreen(vm: WorkTimeViewModel, onOpenMonthly: (YearMonth) -> Unit) {
     val stats by vm.yearStats.collectAsState()
     val snapshot = stats
-    val record by vm.todayRecord.collectAsState()
-    val fused by vm.fusedStatus.collectAsState()
-    val segments by vm.todaySegments.collectAsState()
-    val settings by vm.settings.collectAsState()
     val today by vm.workday.collectAsState()
-    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var showPunch by remember { mutableStateOf(false) }
-    var showSegments by remember { mutableStateOf(false) }
     // 选中的**月份下标**（0..11，与图表回调同一口径）；null = 跟随默认
     // （当年看当前月，往年看最后一个有数据的月）
     var pickedWorkIndex by remember(snapshot?.year) { mutableStateOf<Int?>(null) }
@@ -99,26 +90,10 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit, onOpenMonthly: 
     // 顺手重算年度统计 —— 不然刚补录完今天、切过来还是旧数。全程只读，不写库。
     LaunchedEffect(Unit) {
         while (true) {
-            nowMillis = System.currentTimeMillis()
-            vm.refreshToday()
             vm.refreshYearStats()
             delay(30_000L)
         }
     }
-
-    val live = TodayStatusPresenter.displayMinutes(
-        finalMinutes = record?.finalMinutes ?: 0,
-        startMillis = record?.startMillis,
-        endMillis = record?.endMillis,
-        nowMillis = nowMillis,
-        restDeductionMinutes = settings.restDeductionMinutes,
-        fixedMinutes = if (settings.hasDefaultHours) settings.defaultWorkMinutes else null
-    )
-    val headline = TodayStatusPresenter.headline(record)
-    // 计薪规则 v2：当日工资 = 当日计薪分钟 × 基准到手单价（取最近一个已录入实发的月份）
-    val earnings = vm.dailyPayCents(live.minutes)
-    val placeLabel = fused?.place?.let { FusedStatusFormatter.placeLabel(it) } ?: "暂不确定"
-    val confidence = fused?.let { FusedStatusFormatter.confidenceLabel(it) }
 
     Column(
         Modifier
@@ -155,37 +130,7 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit, onOpenMonthly: 
             RestDaysCard(snapshot)
             Spacer(Modifier.height(12.dp))
         }
-        TodayActionsCard(
-            headline = headline,
-            live = live,
-            placeLabel = placeLabel,
-            confidence = confidence,
-            earningsCents = earnings,
-            onOpenFusion = onOpenFusion,
-            onPunch = { showPunch = true },
-            onSegments = { showSegments = true }
-        )
         Spacer(Modifier.height(24.dp))
-    }
-
-    if (showPunch) {
-        ManualPunchSheet(
-            record = record,
-            liveMinutes = live.minutes,
-            earningsCents = earnings,
-            placeLabel = placeLabel,
-            date = today,
-            vm = vm,
-            onDismiss = { showPunch = false }
-        )
-    }
-    if (showSegments) {
-        SegmentEntrySheet(
-            date = today,
-            existing = segments,
-            vm = vm,
-            onDismiss = { showSegments = false }
-        )
     }
 }
 

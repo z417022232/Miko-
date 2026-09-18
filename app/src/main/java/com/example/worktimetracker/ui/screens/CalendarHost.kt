@@ -8,7 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 
-private enum class CalendarPage { HOME, SLIP }
+private enum class CalendarPage { HOME, SLIP, FUSION }
 
 /**
  * 「日历」一级页宿主。
@@ -29,6 +29,7 @@ fun CalendarHost(vm: WorkTimeViewModel) {
     when (page) {
         CalendarPage.HOME -> CalendarScreen(
             vm,
+            onOpenFusion = { page = CalendarPage.FUSION },
             onOpenSlip = { month ->
                 slipAnchorMonth = month.toString()
                 page = CalendarPage.SLIP
@@ -40,5 +41,6 @@ fun CalendarHost(vm: WorkTimeViewModel) {
             // 把主 VM 传下去，录入页才能把「条上实发」一键存成月度实发（计薪基准）
             mainVm = vm
         )
+        CalendarPage.FUSION -> FusionDetailScreen(vm, onBack = { page = CalendarPage.HOME })
     }
 }
