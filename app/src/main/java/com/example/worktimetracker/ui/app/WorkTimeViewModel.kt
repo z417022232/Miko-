@@ -54,6 +54,7 @@ import com.example.worktimetracker.domain.evidence.SourceHealthJudge
 import com.example.worktimetracker.domain.evidence.SourceStatus
 import com.example.worktimetracker.domain.engine.SiteResolver
 import com.example.worktimetracker.ui.CompanyCalibrationProposal
+import com.example.worktimetracker.ui.JourneyDifferenceSummary
 import com.example.worktimetracker.domain.model.WorkSettings
 import com.example.worktimetracker.domain.model.WorkCalculationInput
 import com.example.worktimetracker.domain.model.WorkSegment
@@ -135,6 +136,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val recentLogs: StateFlow<List<String>> = _recentLogs
     private val _journeyShadowStatus = MutableStateFlow("新行程状态尚未建立")
     val journeyShadowStatus: StateFlow<String> = _journeyShadowStatus
+    private val _journeyDifferenceSummary = MutableStateFlow(JourneyDifferenceSummary(0, 0, 0, 0))
+    val journeyDifferenceSummary: StateFlow<JourneyDifferenceSummary> = _journeyDifferenceSummary
     private val _homeRecoveryNotice = MutableStateFlow<String?>(null)
     val homeRecoveryNotice: StateFlow<String?> = _homeRecoveryNotice
     private var lastHomeRecoveryAttemptAt: Long = 0L
@@ -578,6 +581,8 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                 append(" · 模型v").append(row.modelVersion)
             }
         }
+        val journeyLogs = db.appLogDao().latestByType("JOURNEY", 500)
+        _journeyDifferenceSummary.value = JourneyDifferenceSummary.fromContents(journeyLogs.map { it.content })
     }
 
     private fun journeyPhaseLabel(raw: String): String = when (raw) {

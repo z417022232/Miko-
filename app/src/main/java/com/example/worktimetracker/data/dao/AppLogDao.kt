@@ -18,6 +18,9 @@ interface AppLogDao {
     @Query("SELECT * FROM app_logs ORDER BY time DESC LIMIT :limit")
     suspend fun latestLogs(limit: Int = 100): List<AppLogEntity>
 
+    @Query("SELECT * FROM app_logs WHERE type = :type ORDER BY time DESC LIMIT :limit")
+    suspend fun latestByType(type: String, limit: Int = 500): List<AppLogEntity>
+
     @Query("DELETE FROM app_logs")
     suspend fun deleteAll()
 }

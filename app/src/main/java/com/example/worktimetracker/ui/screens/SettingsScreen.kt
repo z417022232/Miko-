@@ -843,6 +843,7 @@ private fun DataSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
 private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val logs by vm.recentLogs.collectAsState()
     val journeyStatus by vm.journeyShadowStatus.collectAsState()
+    val journeySummary by vm.journeyDifferenceSummary.collectAsState()
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 14.dp)) {
         ScreenHeader(
             "运行日志",
@@ -873,6 +874,15 @@ private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
                     color = AppTheme.colors.orange,
                     style = MaterialTheme.typography.labelSmall
                 )
+                if (journeySummary.total > 0) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "最近${journeySummary.total}次对比：一致${journeySummary.matched} · " +
+                            "预期分化${journeySummary.expectedSplit} · 待检查${journeySummary.needsReview}",
+                        color = if (journeySummary.needsReview > 0) AppTheme.colors.orange else AppTheme.colors.green,
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
