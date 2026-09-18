@@ -111,6 +111,7 @@ import com.example.worktimetracker.ui.theme.AppTheme
 fun CalendarScreen(
     vm: WorkTimeViewModel,
     onOpenFusion: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     /** 从月卡进「工资条录入与核对」；参数是**当前日历所在月**（作为录入页的锚点） */
     onOpenSlip: (YearMonth) -> Unit = {}
 ) {
@@ -159,6 +160,7 @@ fun CalendarScreen(
             nowMillis = System.currentTimeMillis()
             vm.refreshToday()
             vm.refreshJourneyShadowStatus()
+            vm.refreshHomeRecoveryStatus()
             delay(30_000L)
         }
     }
@@ -177,6 +179,7 @@ fun CalendarScreen(
     val sourceHealth by vm.sourceHealth.collectAsState()
     val evidenceRefresh by vm.evidenceRefresh.collectAsState()
     val journeyStatus by vm.journeyShadowStatus.collectAsState()
+    val recoveryNotice by vm.homeRecoveryNotice.collectAsState()
     val todayLive = TodayLiveInfo(
             liveMinutes = live,
             headline = TodayStatusPresenter.headline(todayRecord),
@@ -236,6 +239,10 @@ fun CalendarScreen(
             onConsumeRefreshMessage = { vm.clearEvidenceRefreshMessage() },
             onOpenFusion = onOpenFusion
         )
+        if (recoveryNotice != null) {
+            Spacer(Modifier.height(10.dp))
+            RecoveryNoticeCard(recoveryNotice!!, onOpenSettings)
+        }
         Spacer(Modifier.height(12.dp))
         SelectedDayCard(
             record = cardRecord,
@@ -569,6 +576,23 @@ private fun AuthorityStatusCard(
             TextButton(onClick = onOpenFusion, modifier = Modifier.align(Alignment.End)) {
                 Text("查看判断与证据详情")
             }
+        }
+    }
+}
+
+@Composable
+private fun RecoveryNoticeCard(message: String, onOpenSettings: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.orange.copy(alpha = 0.10f)),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+            TextButton(onClick = onOpenSettings) { Text("查看恢复方法") }
         }
     }
 }

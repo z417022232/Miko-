@@ -22,7 +22,7 @@ private enum class CalendarPage { HOME, SLIP, FUSION }
  * 只有当「该月没有条子且上一个计薪月也空着」时才先问用户（见 `SlipMonthResolver`）。
  */
 @Composable
-fun CalendarHost(vm: WorkTimeViewModel) {
+fun CalendarHost(vm: WorkTimeViewModel, onOpenSettings: () -> Unit = {}) {
     var page by remember { mutableStateOf(CalendarPage.HOME) }
     var slipAnchorMonth by remember { mutableStateOf<String?>(null) }
     BackHandler(page != CalendarPage.HOME) { page = CalendarPage.HOME }
@@ -30,6 +30,7 @@ fun CalendarHost(vm: WorkTimeViewModel) {
         CalendarPage.HOME -> CalendarScreen(
             vm,
             onOpenFusion = { page = CalendarPage.FUSION },
+            onOpenSettings = onOpenSettings,
             onOpenSlip = { month ->
                 slipAnchorMonth = month.toString()
                 page = CalendarPage.SLIP

@@ -204,7 +204,7 @@ fun AppRoot(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             when (tab) {
-                MainTab.CALENDAR -> CalendarHost(vm)
+                MainTab.CALENDAR -> CalendarHost(vm, onOpenSettings = { tab = MainTab.SETTINGS })
                 MainTab.DATA -> TodayHost(vm)
                 MainTab.SETTINGS -> SettingsScreen(
                     vm = vm,

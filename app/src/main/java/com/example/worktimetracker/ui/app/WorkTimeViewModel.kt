@@ -48,6 +48,7 @@ import com.example.worktimetracker.location.service.PlaceLearningPreferenceServi
 import com.example.worktimetracker.location.service.PlaceLearningReport
 import com.example.worktimetracker.domain.location.PlaceLearningStatus
 import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.location.recovery.ServiceRecoveryPolicy
 import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
 import com.example.worktimetracker.domain.evidence.SourceHealthJudge
 import com.example.worktimetracker.domain.evidence.SourceStatus
@@ -134,6 +135,9 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     val recentLogs: StateFlow<List<String>> = _recentLogs
     private val _journeyShadowStatus = MutableStateFlow("新行程状态尚未建立")
     val journeyShadowStatus: StateFlow<String> = _journeyShadowStatus
+    private val _homeRecoveryNotice = MutableStateFlow<String?>(null)
+    val homeRecoveryNotice: StateFlow<String?> = _homeRecoveryNotice
+    private var lastHomeRecoveryAttemptAt: Long = 0L
     private val _lastManualHoursText = MutableStateFlow("")
     val lastManualHoursText: StateFlow<String> = _lastManualHoursText
     private val _placeSearchMessage = MutableStateFlow("")
@@ -189,6 +193,7 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             refreshLastKnownLocation()
             refreshLogsOnce()
             refreshJourneyShadowStatus()
+            refreshHomeRecoveryStatus()
             refreshLastManualHours()
             refreshToday()
             reloadSites()
@@ -536,6 +541,24 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
 
     fun refreshJourneyShadowStatus() {
         viewModelScope.launch { refreshJourneyShadowStatusNow() }
+    }
+
+    fun refreshHomeRecoveryStatus() {
+        val context = getApplication<Application>()
+        val now = System.currentTimeMillis()
+        val age = ServiceRecovery.heartbeatAge(context, now)
+        if (age <= 12 * 60_000L) {
+            _homeRecoveryNotice.value = null
+            return
+        }
+        if (now - lastHomeRecoveryAttemptAt < 2 * 60_000L) return
+        lastHomeRecoveryAttemptAt = now
+        val started = ServiceRecovery.start(context, ServiceRecoveryPolicy.RecoveryTrigger.USER_VISIBLE)
+        _homeRecoveryNotice.value = if (started) {
+            "自动记录服务刚刚中断，正在自动恢复…"
+        } else {
+            "自动恢复受到系统限制，请查看设置中的后台运行说明"
+        }
     }
 
     private suspend fun refreshJourneyShadowStatusNow() {
