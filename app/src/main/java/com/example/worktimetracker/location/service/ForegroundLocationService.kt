@@ -512,11 +512,19 @@ class ForegroundLocationService : Service(), LocationListener {
             lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
             lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
         )
-        runJourneyShadowGps(
+        val journeyRuntime = runJourneyShadowGps(
             app, previous, next, location, classified, fused,
             companyDistance, homeDistance, settings, movingAway, legacyDecision.events
         )
-        persistStateTransition(app, previous, next, fixTime, now, settings, type, location)
+        val authoritative = journeyRuntime?.let {
+            JourneyAuthorityAdapter.apply(previous, it.transition, UUID.randomUUID().toString(), now)
+        }?.copy(
+            lastLatitude = location.latitude,
+            lastLongitude = location.longitude,
+            lastGpsFixTime = if (location.provider == LocationManager.GPS_PROVIDER) fixTime else previous.lastGpsFixTime,
+            lastNetworkFixTime = if (location.provider == LocationManager.NETWORK_PROVIDER) fixTime else previous.lastNetworkFixTime
+        ) ?: next
+        persistStateTransition(app, previous, authoritative, fixTime, now, settings, type, location)
         }
     }
 
@@ -533,8 +541,8 @@ class ForegroundLocationService : Service(), LocationListener {
         settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
         movingAway: Boolean,
         legacyEvents: List<TrajectoryAnchorEngine.Event>
-    ) {
-        runCatching {
+    ): com.example.worktimetracker.domain.journey.JourneyRuntimeDecision? {
+        return runCatching {
             val eventTime = location.time
             val resolved = fused?.place ?: when (classified) {
                 LocationType.HOME -> ResolvedPlace.HOME
@@ -615,9 +623,10 @@ class ForegroundLocationService : Service(), LocationListener {
                     }
                 )
             )
+            runtime
         }.onFailure { error ->
             logEvent("JOURNEY", "影子运行失败，正式状态未受影响：${error.message}")
-        }
+        }.getOrNull()
     }
 
     /** 状态机决策后的共享收尾：采样、外出标记、草稿与完结记录、状态保存与日志。 */

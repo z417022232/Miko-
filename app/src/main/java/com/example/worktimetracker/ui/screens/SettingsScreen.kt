@@ -861,7 +861,7 @@ private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             shape = MaterialTheme.shapes.extraLarge
         ) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                Text("新行程算法（影子运行）", fontWeight = FontWeight.SemiBold)
+                Text("新行程算法（正式运行）", fontWeight = FontWeight.SemiBold)
                 Spacer(Modifier.height(6.dp))
                 Text(
                     journeyStatus,
@@ -870,7 +870,7 @@ private fun LogsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "当前仅用于学习与新旧对比，不会修改正式工时或真实采样频率。",
+                    "新算法负责正式行程事件；旧算法继续并行对照，并在新机异常时自动回退。",
                     color = AppTheme.colors.orange,
                     style = MaterialTheme.typography.labelSmall
                 )
