@@ -1260,48 +1260,9 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         _payParams.value[payrollMonth]
 
     /**
-     * 保存某计薪月的浮动参数。
-     *
-     * 绩效系数非法（非数字 / 负数 / > 10）直接整单拒绝，避免静默存进半截数据。
-     * 全空的草稿会**删掉**该行，不留垃圾记录。
-     */
-    fun saveMonthlyPayParams(payrollMonth: String, draft: MonthlyPayDraft) {
-        val coefficient = draft.perfCoefficient.trim().ifBlank { null }
-        if (coefficient != null && PayrollPresenter.parseCoefficient(coefficient) == null) return
-        val nights = draft.nightShiftsOverride.trim()
-        val nightsValue = if (nights.isBlank()) null else (nights.toIntOrNull() ?: return)
-        if (nightsValue != null && nightsValue !in 0..31) return
-
-        viewModelScope.launch {
-            val entity = MonthlyPayParamsEntity(
-                payrollMonth = payrollMonth,
-                perfCoefficient = coefficient,
-                perfBaseDeltaCents = PayrollPresenter.parseMoneyOrNull(draft.perfBaseDelta) ?: 0L,
-                perfAmountCents = PayrollPresenter.parseMoneyOrNull(draft.perfAmount),
-                benefitBonusCents = PayrollPresenter.parseMoneyOrNull(draft.benefitBonus) ?: 0L,
-                heatAllowanceCents = PayrollPresenter.parseMoneyOrNull(draft.heatAllowance) ?: 0L,
-                sickPayCents = PayrollPresenter.parseMoneyOrNull(draft.sickPay) ?: 0L,
-                backPayCents = PayrollPresenter.parseMoneyOrNull(draft.backPay) ?: 0L,
-                otherAddCents = PayrollPresenter.parseMoneyOrNull(draft.otherAdd) ?: 0L,
-                socialOverrideCents = PayrollPresenter.parseMoneyOrNull(draft.socialOverride),
-                housingFundOverrideCents = PayrollPresenter.parseMoneyOrNull(draft.housingFundOverride),
-                nightShiftsOverride = nightsValue
-            )
-            if (entity.isEmpty) {
-                db.payrollDao().deletePayParams(payrollMonth)
-            } else {
-                db.payrollDao().savePayParams(entity)
-            }
-            reloadPayrollConfig()
-        }
-    }
-
-    /**
      * 只改某计薪月的**绩效系数**，其余分项原样保留。
      *
-     * ⚠️ **不要用 [saveMonthlyPayParams] 代替** —— 那个是整行覆盖。界面既然只剩一个输入框，
-     * 直接调它会把「工资条导入」写进来的效益奖金 / 高温 / 病假 / 补发 / 社保公积金 / 夜班天数
-     * 全部抹成 0，预估会立刻失真。
+     * 只更新这一列，避免覆盖工资条导入的效益奖金、高温、病假、补发、社保公积金和夜班天数。
      */
     fun savePerfCoefficient(payrollMonth: String, coefficient: String) {
         val value = coefficient.trim().ifBlank { null }
@@ -1472,20 +1433,6 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
     fun saveAccuracyMode(mode: String) {
         viewModelScope.launch {
             saveSettings(_settings.value.copy(locationAccuracyMode = mode))
-        }
-    }
-
-    fun saveRestWeekPattern(pattern: String) {
-        viewModelScope.launch {
-            saveSettings(_settings.value.copy(restWeekPattern = pattern))
-            loadMonth(force = true)
-        }
-    }
-
-    fun saveHolidaySourceMode(mode: String) {
-        viewModelScope.launch {
-            saveSettings(_settings.value.copy(holidaySourceMode = mode))
-            loadMonth(force = true)
         }
     }
 
@@ -1726,19 +1673,6 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    /** 设为主地点：主地点必须启用，否则「优先匹配」名存实亡。 */
-    fun setPrimarySite(id: Long) {
-        viewModelScope.launch {
-            val dao = db.siteDao()
-            val site = runCatching { dao.byId(id) }.getOrNull() ?: return@launch
-            runCatching { dao.clearPrimary() }
-            runCatching {
-                dao.upsert(site.copy(isPrimary = true, enabled = true, updatedAt = System.currentTimeMillis()))
-            }
-            reloadSites()
-        }
-    }
-
     /** 启用 / 停用地点。停用主地点后会自动把另一个启用地点顶成主地点。 */
     fun setSiteEnabled(id: Long, enabled: Boolean) {
         viewModelScope.launch {
@@ -1775,14 +1709,6 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
                     )
                 }
             }
-            reloadSites()
-        }
-    }
-
-    /** 清空某地点某类证据源（编辑页「清空」按钮）。 */
-    fun clearSiteSources(siteId: Long, sourceType: String) {
-        viewModelScope.launch {
-            runCatching { db.siteDao().deleteSources(siteId, sourceType) }
             reloadSites()
         }
     }

@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.worktimetracker"
         minSdk = 29
         targetSdk = 35
-        versionCode = 31
-        versionName = "9.3"
+        versionCode = 32
+        versionName = "10.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -80,4 +80,3 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
-
