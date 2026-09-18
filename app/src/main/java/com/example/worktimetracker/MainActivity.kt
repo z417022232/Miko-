@@ -24,6 +24,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.BarChart
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Settings
@@ -111,8 +112,8 @@ class MainActivity : ComponentActivity() {
  * 下沉到日历的下钻页（见 CalendarHost）；一级入口留给每天都会看的实时状态。
  */
 private enum class MainTab(val label: String) {
-    CALENDAR("日历"),
-    TODAY("今日"),
+    CALENDAR("首页"),
+    DATA("数据"),
     SETTINGS("设置")
 }
 
@@ -184,7 +185,7 @@ fun AppRoot(
                             Icon(
                                 imageVector = when (item) {
                                     MainTab.CALENDAR -> Icons.Outlined.CalendarMonth
-                                    MainTab.TODAY -> Icons.Outlined.Schedule
+                                    MainTab.DATA -> Icons.Outlined.BarChart
                                     MainTab.SETTINGS -> Icons.Outlined.Settings
                                 },
                                 contentDescription = item.label
@@ -203,8 +204,8 @@ fun AppRoot(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             when (tab) {
-                MainTab.CALENDAR -> CalendarHost(vm, onOpenToday = { tab = MainTab.TODAY })
-                MainTab.TODAY -> TodayHost(vm)
+                MainTab.CALENDAR -> CalendarHost(vm)
+                MainTab.DATA -> TodayHost(vm)
                 MainTab.SETTINGS -> SettingsScreen(
                     vm = vm,
                     themeMode = themeMode,

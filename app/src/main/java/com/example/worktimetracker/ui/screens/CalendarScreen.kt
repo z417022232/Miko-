@@ -105,17 +105,10 @@ import com.example.worktimetracker.ui.theme.AppTheme
  *   且**只在选中今天时**显示（历史日显示「该日无实时数据」）；
  * - 「本月工时 / 本月工资」卡从页底提到页顶 —— 打开日历第一眼就是本月结论。
  *
- * @param onOpenMonthly 月度统计页入口。按钮已按要求从顶部移除，参数暂时保留：
- *   `CalendarHost` 的 MONTHLY 分支还在，等年度统计页做「月份下钻」时接回来，
- *   现在删参数会让那条分支变成纯死代码（不留入口、也没人接）。
- * @param onOpenToday 底部「今日」Tab 本身就在导航栏里，日历不再需要二级跳转入口。
  */
-@Suppress("UNUSED_PARAMETER")
 @Composable
 fun CalendarScreen(
     vm: WorkTimeViewModel,
-    onOpenMonthly: () -> Unit = {},
-    onOpenToday: () -> Unit = {},
     /** 从月卡进「工资条录入与核对」；参数是**当前日历所在月**（作为录入页的锚点） */
     onOpenSlip: (YearMonth) -> Unit = {}
 ) {

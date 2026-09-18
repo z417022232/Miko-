@@ -8,7 +8,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 
-private enum class CalendarPage { HOME, MONTHLY, SLIP }
+private enum class CalendarPage { HOME, SLIP }
 
 /**
  * 「日历」一级页宿主。
@@ -22,21 +22,18 @@ private enum class CalendarPage { HOME, MONTHLY, SLIP }
  * 只有当「该月没有条子且上一个计薪月也空着」时才先问用户（见 `SlipMonthResolver`）。
  */
 @Composable
-fun CalendarHost(vm: WorkTimeViewModel, onOpenToday: () -> Unit = {}) {
+fun CalendarHost(vm: WorkTimeViewModel) {
     var page by remember { mutableStateOf(CalendarPage.HOME) }
     var slipAnchorMonth by remember { mutableStateOf<String?>(null) }
     BackHandler(page != CalendarPage.HOME) { page = CalendarPage.HOME }
     when (page) {
         CalendarPage.HOME -> CalendarScreen(
             vm,
-            onOpenMonthly = { page = CalendarPage.MONTHLY },
-            onOpenToday = onOpenToday,
             onOpenSlip = { month ->
                 slipAnchorMonth = month.toString()
                 page = CalendarPage.SLIP
             }
         )
-        CalendarPage.MONTHLY -> StatisticsScreen(vm, onBack = { page = CalendarPage.HOME })
         CalendarPage.SLIP -> SlipEntryPage(
             onBack = { page = CalendarPage.HOME },
             initialMonth = slipAnchorMonth,

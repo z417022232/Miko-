@@ -26,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -49,7 +50,7 @@ import com.example.worktimetracker.ui.theme.AppTheme
 import kotlinx.coroutines.delay
 import java.time.YearMonth
 
-private enum class TodayPage { HOME, FUSION }
+private enum class TodayPage { HOME, MONTHLY, FUSION }
 
 /**
  * 「今日」一级页宿主（2026-09-16 起首页主体 = **XX 年数据统计**）。
@@ -64,13 +65,21 @@ fun TodayHost(vm: WorkTimeViewModel) {
     var page by remember { mutableStateOf(TodayPage.HOME) }
     BackHandler(page != TodayPage.HOME) { page = TodayPage.HOME }
     when (page) {
-        TodayPage.HOME -> TodayScreen(vm, onOpenFusion = { page = TodayPage.FUSION })
+        TodayPage.HOME -> TodayScreen(
+            vm,
+            onOpenFusion = { page = TodayPage.FUSION },
+            onOpenMonthly = { month ->
+                vm.jumpToMonth(month.year.toString(), month.monthValue.toString())
+                page = TodayPage.MONTHLY
+            }
+        )
+        TodayPage.MONTHLY -> StatisticsScreen(vm, onBack = { page = TodayPage.HOME })
         TodayPage.FUSION -> FusionDetailScreen(vm, onBack = { page = TodayPage.HOME })
     }
 }
 
 @Composable
-fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
+fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit, onOpenMonthly: (YearMonth) -> Unit) {
     val stats by vm.yearStats.collectAsState()
     val snapshot = stats
     val record by vm.todayRecord.collectAsState()
@@ -134,7 +143,12 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
             }
             Spacer(Modifier.height(12.dp))
         } else {
-            MonthHoursCard(snapshot, pickedWorkIndex, onSelect = { pickedWorkIndex = it })
+            MonthHoursCard(
+                snapshot,
+                pickedWorkIndex,
+                onSelect = { pickedWorkIndex = it },
+                onOpenMonth = onOpenMonthly
+            )
             Spacer(Modifier.height(12.dp))
             MonthSalaryCard(snapshot, pickedSalaryIndex, onSelect = { pickedSalaryIndex = it })
             Spacer(Modifier.height(12.dp))
@@ -189,7 +203,8 @@ fun TodayScreen(vm: WorkTimeViewModel, onOpenFusion: () -> Unit) {
 private fun MonthHoursCard(
     stats: YearStatsPresenter.YearStats,
     pickedIndex: Int?,
-    onSelect: (Int) -> Unit
+    onSelect: (Int) -> Unit,
+    onOpenMonth: (YearMonth) -> Unit
 ) {
     val index = pickedIndex ?: defaultWorkIndex(stats)
     val point = stats.months.getOrNull(index)
@@ -211,6 +226,12 @@ private fun MonthHoursCard(
             color = AppTheme.colors.muted,
             style = MaterialTheme.typography.labelSmall
         )
+        if (point != null) {
+            TextButton(
+                onClick = { onOpenMonth(YearMonth.of(stats.year, point.month)) },
+                modifier = Modifier.align(Alignment.End)
+            ) { Text("查看 ${point.month} 月工时明细") }
+        }
     }
 }
 
