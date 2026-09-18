@@ -715,6 +715,20 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun searchPlace(keyword: String, onResult: (Double?, Double?, String) -> Unit) {
+        val query = keyword.trim()
+        if (query.isBlank()) { onResult(null, null, "请输入地点名称"); return }
+        viewModelScope.launch {
+            runCatching {
+                @Suppress("DEPRECATION")
+                Geocoder(getApplication(), Locale.CHINA).getFromLocationName(query, 1)?.firstOrNull()
+            }.onSuccess { result ->
+                if (result == null) onResult(null, null, "未搜索到地点")
+                else onResult(result.latitude, result.longitude, "已找到：${result.getAddressLine(0) ?: query}")
+            }.onFailure { onResult(null, null, "搜索失败：${it.message ?: "请稍后重试"}") }
+        }
+    }
+
     fun saveSplitSegments(date: LocalDate, firstStart: String, firstEnd: String, secondStart: String, secondEnd: String, deductRest: Boolean) {
         val minutes = parseRangeMinutes(firstStart, firstEnd) + parseRangeMinutes(secondStart, secondEnd) - if (deductRest) _settings.value.restDeductionMinutes else 0
         saveManualHours(date, (minutes.coerceAtLeast(0) / 60.0).toString(), false, "手动拆分时间段")

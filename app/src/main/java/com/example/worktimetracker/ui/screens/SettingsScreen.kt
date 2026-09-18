@@ -99,7 +99,7 @@ import com.example.worktimetracker.ui.theme.AppTheme
 import com.example.worktimetracker.ui.theme.ThemeMode
 
 private enum class SettingsPage {
-    ROOT, LOCATION, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME,
+    ROOT, RULES, PERMISSIONS, DATA, LOGS, HOLIDAY, THEME,
     /** v4 界面稿新增：计薪规则 / 常规采集间隔 / Burst 上限 */
     PAY_RULES, POWER,
     /** v4.3 界面稿 09/10/11：多地点管理（LOCATION 保留为校准兜底入口） */
@@ -121,10 +121,8 @@ fun SettingsScreen(
         SettingsPage.ROOT -> SettingsHome(vm, themeMode = themeMode, onOpen = { page = it })
         SettingsPage.SITES -> SiteManageHost(
             vm = vm,
-            onBack = { page = SettingsPage.ROOT },
-            onOpenLegacyLocations = { page = SettingsPage.LOCATION }
+            onBack = { page = SettingsPage.ROOT }
         )
-        SettingsPage.LOCATION -> LocationSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.RULES -> AutoRulesPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.PERMISSIONS -> PermissionSettingsPage(vm, onBack = { page = SettingsPage.ROOT })
         SettingsPage.DATA -> DataSettingsPage(vm, onBack = { page = SettingsPage.ROOT })

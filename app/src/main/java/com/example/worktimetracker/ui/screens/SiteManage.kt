@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bluetooth
 import androidx.compose.material.icons.outlined.GpsFixed
 import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -79,15 +80,7 @@ private enum class SitePage { LIST, EDIT, WIFI }
 @Composable
 internal fun SiteManageHost(
     vm: WorkTimeViewModel,
-    onBack: () -> Unit,
-    /**
-     * 「公司与家庭」旧页的入口。
-     *
-     * 这一页没有删：v4.2 之前的 companyLat/homeLat 仍是判定兜底（[com.example.worktimetracker.domain.engine.SiteResolver.effective]），
-     * 而且「在公司重新校准位置」这个能力只长在那里。换装/重装后必须重新校准，
-     * 所以把入口保留在列表页底部，而不是随导航改版一起丢掉。
-     */
-    onOpenLegacyLocations: () -> Unit = {}
+    onBack: () -> Unit
 ) {
     var page by remember { mutableStateOf(SitePage.LIST) }
     var editingId by remember { mutableStateOf<Long?>(null) }
@@ -99,8 +92,7 @@ internal fun SiteManageHost(
         SitePage.LIST -> SiteListPage(
             vm = vm,
             onBack = onBack,
-            onEdit = { id -> editingId = id; page = SitePage.EDIT },
-            onOpenLegacyLocations = onOpenLegacyLocations
+            onEdit = { id -> editingId = id; page = SitePage.EDIT }
         )
         SitePage.EDIT -> SiteEditPage(
             vm = vm,
@@ -124,8 +116,7 @@ internal fun SiteManageHost(
 private fun SiteListPage(
     vm: WorkTimeViewModel,
     onBack: () -> Unit,
-    onEdit: (Long?) -> Unit,
-    onOpenLegacyLocations: () -> Unit
+    onEdit: (Long?) -> Unit
 ) {
     val sites by vm.sites.collectAsState()
     val sources by vm.siteEvidenceSources.collectAsState()
@@ -252,7 +243,7 @@ private fun SiteListPage(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     "每个地点靠证据源匹配。证据源越多、越稳定，判定越快、越省电。" +
-                        "至少需要 1 个证据源才能保存。",
+                        "地点名称是保存门槛；GPS和环境证据可以保存后继续补充。",
                     color = AppTheme.colors.muted,
                     style = MaterialTheme.typography.bodySmall
                 )
@@ -272,14 +263,6 @@ private fun SiteListPage(
         }
         Spacer(Modifier.height(14.dp))
 
-        SettingsGroup {
-            SettingsRow(
-                Icons.Outlined.Place,
-                "公司与家庭（旧设置）",
-                "重新校准公司位置 · 手动输入坐标与半径",
-                tint = AppTheme.colors.orange
-            ) { onOpenLegacyLocations() }
-        }
         Spacer(Modifier.height(20.dp))
     }
 }
@@ -388,6 +371,8 @@ private fun SiteEditPage(
 
     var showDelete by remember { mutableStateOf(false) }
     var showRadius by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var showCoordinates by remember { mutableStateOf(false) }
     var locationHint by remember { mutableStateOf("") }
     var actionHint by remember { mutableStateOf("") }
 
@@ -524,6 +509,32 @@ private fun SiteEditPage(
                     }
                 }
             )
+            ThinDivider()
+            SettingsRow(
+                Icons.Outlined.Search,
+                "搜索地点",
+                "按公司、园区、小区或道路名称查找坐标",
+                tint = AppTheme.colors.blue,
+                showChevron = true,
+                onClick = { showSearch = true }
+            )
+        }
+        TextButton(onClick = { showCoordinates = !showCoordinates }) {
+            Text(if (showCoordinates) "收起手动坐标" else "高级：手动输入坐标")
+        }
+        if (showCoordinates) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = draft.latitude?.toString().orEmpty(),
+                    onValueChange = { draft = draft.copy(latitude = it.toDoubleOrNull()) },
+                    label = { Text("纬度") }, singleLine = true, modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = draft.longitude?.toString().orEmpty(),
+                    onValueChange = { draft = draft.copy(longitude = it.toDoubleOrNull()) },
+                    label = { Text("经度") }, singleLine = true, modifier = Modifier.weight(1f)
+                )
+            }
         }
         Spacer(Modifier.height(14.dp))
 
@@ -595,6 +606,35 @@ private fun SiteEditPage(
             draft = draft.copy(radiusMeters = it)
             showRadius = false
         }
+    }
+
+    if (showSearch) {
+        var keyword by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showSearch = false },
+            title = { Text("搜索地点") },
+            text = {
+                Column {
+                    OutlinedTextField(keyword, { keyword = it }, label = { Text("地点名称") }, singleLine = true)
+                    if (locationHint.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(locationHint, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.searchPlace(keyword) { lat, lng, message ->
+                        locationHint = message
+                        if (lat != null && lng != null) {
+                            draft = draft.copy(latitude = lat, longitude = lng)
+                            showSearch = false
+                        }
+                    }
+                }) { Text("搜索并使用") }
+            },
+            dismissButton = { TextButton(onClick = { showSearch = false }) { Text("取消") } }
+        )
     }
 
     if (showDelete && siteId != null) {
