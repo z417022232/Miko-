@@ -21,6 +21,8 @@ object ServiceRecovery {
     private const val SYSTEM_LOCATION_DISABLED_AT = "system_location_disabled_at"
     private const val SYSTEM_LOCATION_RECOVERED_AT = "system_location_recovered_at"
     private const val NOTIFY_PREFIX = "health_notified_"
+    private const val LOCATION_ALERT_EPISODE = "system_location_alert_episode"
+    private const val LOCATION_ALERT_NOTIFIED = "system_location_alert_notified"
 
     /**
      * 判定「定位服务还活着」的心跳窗口。
@@ -134,6 +136,40 @@ object ServiceRecovery {
     fun systemLocationRecovered(context: Context, now: Long) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putLong(SYSTEM_LOCATION_RECOVERED_AT, now).apply()
+    }
+
+    /** 记录系统定位状态变化；通知领取由 [claimSystemLocationNotification] 单独完成。 */
+    @Synchronized
+    fun recordSystemLocationState(context: Context, enabled: Boolean, now: Long = System.currentTimeMillis()) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val transition = SystemLocationStatePolicy.transition(
+            prefs.getLong(SYSTEM_LOCATION_DISABLED_AT, 0L),
+            prefs.getLong(SYSTEM_LOCATION_RECOVERED_AT, 0L),
+            enabled
+        )
+        val edit = prefs.edit()
+        when (transition) {
+            SystemLocationTransition.DISABLED -> edit
+                .putLong(SYSTEM_LOCATION_DISABLED_AT, now)
+                .putLong(LOCATION_ALERT_EPISODE, now)
+            SystemLocationTransition.RECOVERED -> edit
+                .putLong(SYSTEM_LOCATION_RECOVERED_AT, now)
+                .putLong(LOCATION_ALERT_EPISODE, 0L)
+                .putLong(LOCATION_ALERT_NOTIFIED, 0L)
+            SystemLocationTransition.NONE -> Unit
+        }
+        edit.commit()
+    }
+
+    /** 原子领取当前关闭周期的唯一一次用户通知。 */
+    @Synchronized
+    fun claimSystemLocationNotification(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val episode = prefs.getLong(LOCATION_ALERT_EPISODE, 0L)
+        val notified = prefs.getLong(LOCATION_ALERT_NOTIFIED, 0L)
+        if (episode <= 0L || episode == notified) return false
+        prefs.edit().putLong(LOCATION_ALERT_NOTIFIED, episode).commit()
+        return true
     }
 
     fun lastSystemLocationDisabled(context: Context): Long =

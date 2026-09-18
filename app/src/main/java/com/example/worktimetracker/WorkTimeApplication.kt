@@ -34,7 +34,7 @@ class WorkTimeApplication : Application() {
             // 阶段3新机预学习：仅当影子表为空时回放最近30天既有定位/工时事实，
             // 生成起始快照；不改旧记录，也不拿历史数据抵扣未来影子验证。
             JourneyHistoryPrelearningService(database).runOnce()
-            database.userSettingsDao().getSettings()?.let { GeofenceRecovery.register(this@WorkTimeApplication, it) }
+            GeofenceRecovery.register(this@WorkTimeApplication)
         }
     }
 

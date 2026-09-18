@@ -70,6 +70,20 @@ class AlarmWatchdogReceiver : BroadcastReceiver() {
                 // 先续期下一次闹钟（重试链兜底），再检查心跳年龄
                 AlarmWatchdog.scheduleNext(app)
                 val now = System.currentTimeMillis()
+                val locationCheck = SystemLocationStateChecker.checkAndRecord(app, now)
+                val systemLocationEnabled = locationCheck.enabled
+                if (!systemLocationEnabled) {
+                    if (locationCheck.notifyUser) RecoveryNotifier.systemLocationDisabled(app)
+                    if (locationCheck.transition == SystemLocationTransition.DISABLED) {
+                        (app as? WorkTimeApplication)?.database?.appLogDao()?.insert(
+                            AppLogEntity(
+                                type = "SYSTEM_LOCATION_DISABLED",
+                                content = "闹钟看门狗发现系统定位已关闭，已停止拉起定位服务"
+                            )
+                        )
+                    }
+                    return@launch
+                }
                 val heartbeatAge = ServiceRecovery.heartbeatAge(app, now)
                 if (heartbeatAge > AlarmWatchdog.DEAD_AFTER_MILLIS) {
                     val started = ServiceRecovery.start(

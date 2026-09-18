@@ -7,6 +7,7 @@ import android.os.Build
 
 object NotificationChannels {
     const val LOCATION_CHANNEL_ID = "work_time_location"
+    const val RECOVERY_CHANNEL_ID = "work_time_recovery"
 
     fun ensure(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -17,6 +18,13 @@ object NotificationChannels {
                 NotificationManager.IMPORTANCE_LOW
             ).apply { description = "用于持续显示正在记录工时的前台服务" }
             manager.createNotificationChannel(channel)
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    RECOVERY_CHANNEL_ID,
+                    "自动记录恢复提醒",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply { description = "系统定位关闭、自动记录中断等需要立即处理的提醒" }
+            )
         }
     }
 }

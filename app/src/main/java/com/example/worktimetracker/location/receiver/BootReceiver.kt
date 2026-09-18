@@ -22,8 +22,7 @@ class BootReceiver : BroadcastReceiver() {
                     val app = context.applicationContext as WorkTimeApplication
                     val healthScheduled = ServiceRecovery.schedule(context)
                     val serviceStarted = ServiceRecovery.start(context, ServiceRecoveryPolicy.RecoveryTrigger.BOOT)
-                    val settings = app.database.userSettingsDao().getSettings()
-                    val geofenceRegistered = settings != null && GeofenceRecovery.register(context, settings)
+                    val geofenceRegistered = GeofenceRecovery.register(context)
                     if (ServiceRecoveryPolicy.bootVerified(serviceStarted, healthScheduled, geofenceRegistered)) {
                         AutostartVerificationStore(context).verifyBootRecovery()
                     } else {

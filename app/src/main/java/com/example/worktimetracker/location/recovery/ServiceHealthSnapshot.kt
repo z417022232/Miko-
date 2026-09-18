@@ -59,3 +59,47 @@ class HealthNotificationGate(private val windowMillis: Long = DEFAULT_WINDOW_MIL
         const val DEFAULT_WINDOW_MILLIS = 60 * 60_000L
     }
 }
+
+/**
+ * 系统定位开关的一次「关闭 -> 恢复」作为一个事件周期。
+ *
+ * 前台服务、闹钟和 WorkManager 都会观测同一开关；这个纯函数把去重键收敛到
+ * [disabledEpisodeStartedAt]，避免各调用方使用不同的通知 key 而连续打扰用户。
+ */
+data class SystemLocationAlertState(
+    val disabledEpisodeStartedAt: Long? = null,
+    val notifiedEpisodeStartedAt: Long? = null,
+    val lastRecoveredAt: Long? = null
+)
+
+data class SystemLocationAlertDecision(
+    val next: SystemLocationAlertState,
+    val notifyUser: Boolean
+)
+
+object SystemLocationAlertPolicy {
+    fun onObserved(state: SystemLocationAlertState, enabled: Boolean, now: Long): SystemLocationAlertDecision {
+        if (enabled) {
+            if (state.disabledEpisodeStartedAt == null) return SystemLocationAlertDecision(state, false)
+            return SystemLocationAlertDecision(
+                SystemLocationAlertState(lastRecoveredAt = now),
+                notifyUser = false
+            )
+        }
+
+        val episode = state.disabledEpisodeStartedAt ?: now
+        val notify = state.notifiedEpisodeStartedAt != episode
+        return SystemLocationAlertDecision(
+            state.copy(
+                disabledEpisodeStartedAt = episode,
+                notifiedEpisodeStartedAt = if (notify) episode else state.notifiedEpisodeStartedAt
+            ),
+            notifyUser = notify
+        )
+    }
+}
+
+/** 设置页状态的纯 Kotlin 表达，便于把 Android 开关读取与 Compose 展示分开验证。 */
+object SystemLocationStatusPresenter {
+    fun showRepairBanner(enabled: Boolean): Boolean = !enabled
+}

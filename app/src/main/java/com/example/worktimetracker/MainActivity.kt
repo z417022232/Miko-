@@ -60,6 +60,7 @@ import androidx.core.content.ContextCompat
 import com.example.worktimetracker.location.service.ForegroundLocationService
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.ServiceRecoveryPolicy
+import com.example.worktimetracker.location.recovery.SystemLocationStateChecker
 import com.example.worktimetracker.ui.app.WorkTimeViewModel
 import com.example.worktimetracker.ui.app.AppForegroundReset
 import com.example.worktimetracker.ui.screens.CalendarHost
@@ -96,10 +97,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        // 只检查系统总开关并记录状态；权限请求仍只由首次引导负责，避免每次回前台重复弹窗。
+        val systemLocationEnabled = SystemLocationStateChecker.checkAndRecord(this, claimNotification = false).enabled
         val hasLocationPermission =
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
                 ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (hasLocationPermission) {
+        if (hasLocationPermission && systemLocationEnabled) {
             ServiceRecovery.start(this, ServiceRecoveryPolicy.RecoveryTrigger.USER_VISIBLE)
         }
     }

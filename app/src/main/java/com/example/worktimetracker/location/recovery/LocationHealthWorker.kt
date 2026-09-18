@@ -24,7 +24,18 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
     override suspend fun doWork(): Result {
         val app = applicationContext as WorkTimeApplication
         val now = System.currentTimeMillis()
-        evaluateHealth(app, now)
+        val systemLocation = SystemLocationStateChecker.checkAndRecord(applicationContext, now)
+        if (!systemLocation.enabled) {
+            app.database.appLogDao().insert(AppLogEntity(
+                type = "SYSTEM_LOCATION_DISABLED",
+                content = "健康巡检发现系统定位已关闭"
+            ))
+            if (systemLocation.notifyUser) sendRecoveryNotification(
+                "系统定位已暂停", "定位记录可能中断，点击打开系统定位"
+            )
+        } else {
+            evaluateHealth(app, now)
+        }
         repairIncompleteFallbackRecords(app)
         return Result.success()
     }
@@ -103,7 +114,7 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
             Intent(applicationContext, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = NotificationCompat.Builder(applicationContext, NotificationChannels.LOCATION_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(applicationContext, NotificationChannels.RECOVERY_CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(com.example.worktimetracker.R.drawable.ic_stat_worktime)

@@ -41,6 +41,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.location.recovery.SystemLocationStateChecker
 import com.example.worktimetracker.location.permission.LocationCalibrationStore
 import com.example.worktimetracker.location.evidence.AmbientScanPolicy
 import com.example.worktimetracker.location.evidence.BluetoothEvidenceCollector
@@ -183,10 +184,9 @@ class ForegroundLocationService : Service(), LocationListener {
         if (providers.isNotEmpty()) logEvent("LOCATION_DISABLED", "系统定位Provider暂停：${providers.joinToString()}")
     }
     private val providerGlobalCheck = Runnable {
-        val enabled = locationManager?.isLocationEnabled ?: true
-        if (providerAlerts.shouldNotifyGlobal(enabled, System.currentTimeMillis())) {
-            ServiceRecovery.systemLocationDisabled(this, System.currentTimeMillis())
-            sendSimpleNotification("系统定位已暂停", "系统睡眠模式暂停定位，恢复后将自动继续")
+        val result = SystemLocationStateChecker.checkAndRecord(this)
+        if (!result.enabled && result.notifyUser) {
+            sendRecoveryNotification("系统定位已暂停", "定位记录可能中断，点击打开系统定位")
         }
     }
     private val departureConfirmation = Runnable { scope.launch { confirmDepartureIfDue() } }
@@ -256,8 +256,15 @@ class ForegroundLocationService : Service(), LocationListener {
         motionController?.start()
         scope.launch {
             app.database.userSettingsDao().observeSettings().collectLatest {
+                val oldMode = cachedSettings?.locationAccuracyMode
                 cachedSettings = it
                 if (it != null) rescheduleDepartureConfirmation(it)
+                if (it != null && LocationAccuracyPolicy.requiresReconfigure(oldMode, it.locationAccuracyMode)
+                ) {
+                    logEvent("SAMPLING", "定位精度档切换为 ${it.locationAccuracyMode}，重新注册定位监听")
+                    registrationState.invalidate(SOURCE_LOCATION)
+                    startLocationUpdates()
+                }
             }
         }
         scope.launch {
@@ -290,7 +297,12 @@ class ForegroundLocationService : Service(), LocationListener {
                 }
             }
         }
-        startLocationUpdates()
+        val systemLocation = SystemLocationStateChecker.checkAndRecord(this)
+        if (systemLocation.enabled) startLocationUpdates()
+        else if (systemLocation.notifyUser) {
+            logEvent("SYSTEM_LOCATION_DISABLED", "服务启动时发现系统定位已关闭")
+            sendRecoveryNotification("系统定位已暂停", "定位记录可能中断，点击打开系统定位")
+        }
         watchdogHandler.postDelayed(locationWatchdog, WATCHDOG_INTERVAL_MILLIS)
         watchdogHandler.post(serviceHeartbeat)
         logEvent("SERVICE", "前台定位服务已启动")
@@ -298,6 +310,14 @@ class ForegroundLocationService : Service(), LocationListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val systemLocation = SystemLocationStateChecker.checkAndRecord(this)
+        if (!systemLocation.enabled) {
+            if (systemLocation.notifyUser) {
+                logEvent("SYSTEM_LOCATION_DISABLED", "服务触发时发现系统定位已关闭")
+                sendRecoveryNotification("系统定位已暂停", "定位记录可能中断，点击打开系统定位")
+            }
+            return START_STICKY
+        }
         // 手动「立即刷新一次」：由 UI 以 startForegroundService(ACTION_REFRESH_NOW) 触发
         if (intent?.action == ACTION_REFRESH_NOW) {
             requestImmediateRefresh()
@@ -881,7 +901,7 @@ class ForegroundLocationService : Service(), LocationListener {
         watchdogHandler.removeCallbacks(providerSummary)
         watchdogHandler.postDelayed(providerSummary, 5_000L)
         watchdogHandler.removeCallbacks(providerGlobalCheck)
-        watchdogHandler.postDelayed(providerGlobalCheck, 60_000L)
+        watchdogHandler.post(providerGlobalCheck)
     }
     @Deprecated("Deprecated in Java") override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
 
@@ -892,10 +912,23 @@ class ForegroundLocationService : Service(), LocationListener {
             sendSimpleNotification("定位权限异常", "缺少定位权限，工时记录可能需要自动补全")
             return
         }
+        val systemLocation = SystemLocationStateChecker.checkAndRecord(this)
+        if (!systemLocation.enabled) {
+            ServiceRecovery.providerAvailable(this, false)
+            if (systemLocation.notifyUser) sendRecoveryNotification(
+                "系统定位已暂停", "定位记录可能中断，点击打开系统定位"
+            )
+            return
+        }
         locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val manager = locationManager ?: return
-        val activeProviders = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        val accuracyPlan = LocationAccuracyPolicy.plan(cachedSettings?.locationAccuracyMode)
+        val preferredProviders = accuracyPlan.activeProviders
             .filter { manager.isProviderEnabled(it) }
+        val activeProviders = if (preferredProviders.isNotEmpty()) preferredProviders else {
+            // 省电档首选 Network；没有 Google 服务/网络定位不可用时仍回退系统 GPS，避免完全断流。
+            listOf(LocationManager.GPS_PROVIDER).filter { manager.isProviderEnabled(it) }
+        }
         val providers = activeProviders + listOf(LocationManager.PASSIVE_PROVIDER).filter { manager.isProviderEnabled(it) }
         if (activeProviders.isEmpty()) {
             ServiceRecovery.providerAvailable(this, false)
@@ -908,7 +941,12 @@ class ForegroundLocationService : Service(), LocationListener {
         // 重新配置前统一移除旧监听，每类来源至多一个活动监听
         manager.removeUpdates(this)
         providers.forEach { provider ->
-            manager.requestLocationUpdates(provider, currentSamplingIntervalMillis, 50f, this)
+            manager.requestLocationUpdates(
+                provider,
+                currentSamplingIntervalMillis,
+                accuracyPlan.minDistanceMeters,
+                this
+            )
         }
     }
 
@@ -1441,6 +1479,19 @@ class ForegroundLocationService : Service(), LocationListener {
             (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
         }
     }
+    private fun sendRecoveryNotification(title: String, text: String) {
+        val pendingIntent = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val notification = NotificationCompat.Builder(this, NotificationChannels.RECOVERY_CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(com.example.worktimetracker.R.drawable.ic_stat_worktime)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+        runCatching {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(RECOVERY_NOTIFICATION_ID, notification)
+        }
+    }
     private fun buildNotification(text: String): Notification {
         val pendingIntent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, NotificationChannels.LOCATION_CHANNEL_ID)
@@ -1454,6 +1505,7 @@ class ForegroundLocationService : Service(), LocationListener {
 
     companion object {
         const val NOTIFICATION_ID = 1001
+        private const val RECOVERY_NOTIFICATION_ID = 2002
         // 2026-09-16：原先 15 分钟一轮 + 15 分钟阈值，最坏要半小时才自愈；
         // 9/15 夜班实测断流 25 分钟才重新注册，直接导致到岗时刻被推迟。
         private const val WATCHDOG_INTERVAL_MILLIS = 3 * 60_000L

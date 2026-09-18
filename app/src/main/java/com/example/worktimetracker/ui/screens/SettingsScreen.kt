@@ -2,6 +2,7 @@ package com.example.worktimetracker.ui.screens
 
 import android.Manifest
 import android.content.Intent
+import android.provider.Settings
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -87,6 +88,8 @@ import com.example.worktimetracker.location.permission.AutostartState
 import com.example.worktimetracker.location.permission.AutostartVerificationStore
 import com.example.worktimetracker.location.service.ForegroundLocationService
 import com.example.worktimetracker.location.recovery.ServiceRecovery
+import com.example.worktimetracker.location.recovery.SystemLocationStateChecker
+import com.example.worktimetracker.location.recovery.SystemLocationStatusPresenter
 import com.example.worktimetracker.ui.app.HolidayResultTone
 import com.example.worktimetracker.ui.app.HolidayStatusPresenter
 import com.example.worktimetracker.ui.app.HolidayStatusUi
@@ -433,6 +436,7 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     val autostartState = remember(refresh) { autostartStore.get() }
     val lastSystemLocationDisabled = remember(refresh) { ServiceRecovery.lastSystemLocationDisabled(context) }
     val lastSystemLocationRecovered = remember(refresh) { ServiceRecovery.lastSystemLocationRecovered(context) }
+    val systemLocationEnabled = remember(refresh) { SystemLocationStateChecker.isEnabled(context) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refresh++ }
     fun repair(item: PermissionItem) {
         when (item) {
@@ -475,6 +479,22 @@ private fun PermissionSettingsPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 14.dp)) {
         ScreenHeader("权限与自动记录", "OriginOS 6 后台运行检查", onBack)
         Spacer(Modifier.height(14.dp))
+        if (SystemLocationStatusPresenter.showRepairBanner(systemLocationEnabled)) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = AppTheme.colors.red.copy(alpha = 0.12f)),
+                shape = MaterialTheme.shapes.large,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("系统定位已关闭", color = AppTheme.colors.red, fontWeight = FontWeight.Bold)
+                    Text("自动记录与地点围栏目前不能工作，请先打开系统定位。", color = AppTheme.colors.red)
+                    Button(onClick = {
+                        context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                    }) { Text("打开系统定位") }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+        }
         SettingsGroup {
             PermissionRow("精确定位", "用于判断公司和家庭范围", status.fineLocation) { repair(PermissionItem.FINE_LOCATION) }
             ThinDivider()
