@@ -25,7 +25,9 @@ data class FusionSourceLine(
     /** 绝对定位来源（gps / network / passive），环境证据为 null。 */
     val provider: String?,
     /** 原始精度（米），环境证据为 null。 */
-    val accuracyMeters: Double?
+    val accuracyMeters: Double?,
+    val feature: String? = null,
+    val signal: Int? = null
 )
 
 object FusionBreakdown {
@@ -39,13 +41,17 @@ object FusionBreakdown {
         return text.split("|").mapNotNull { raw ->
             val match = LINE.find(raw.trim()) ?: return@mapNotNull null
             val (source, place, quality, age, provider, accuracy) = match.destructured
+            val feature = Regex("""feature=([A-Za-z0-9_-]+)""").find(raw)?.groupValues?.get(1)
+            val signal = Regex("""signal=(-?\d+)""").find(raw)?.groupValues?.get(1)?.toIntOrNull()
             FusionSourceLine(
                 source = source,
                 placeHint = place,
                 quality = quality.toDoubleOrNull() ?: return@mapNotNull null,
                 ageSeconds = age.toIntOrNull(),
                 provider = provider.ifBlank { null },
-                accuracyMeters = accuracy.toDoubleOrNull()
+                accuracyMeters = accuracy.toDoubleOrNull(),
+                feature = feature,
+                signal = signal
             )
         }
     }
@@ -89,6 +95,24 @@ object FusionBreakdown {
         else -> placeHint
     }
 
+    fun decisionSummary(placeHint: String): String = "融合结果=${placeLabel(placeHint)}"
+
+    /**
+     * 首页展示用的四源融合可信度。单个 80% 定位不会再原样冒充融合结果；
+     * 同地点支持来源越完整，完整度系数越接近 1。
+     */
+    fun fusedConfidence(lines: List<FusionSourceLine>, finalPlace: String): Double? {
+        val four = lines.filter { it.source in setOf("GNSS", "NETWORK_LOCATION", "WIFI", "BLUETOOTH", "CELL") }
+            .groupBy { if (it.source == "NETWORK_LOCATION") "GNSS" else it.source }
+            .mapNotNull { (_, values) -> values.maxByOrNull { it.quality } }
+        if (four.isEmpty()) return null
+        val supporting = four.filter { it.placeHint == finalPlace }
+        if (supporting.isEmpty()) return 0.0
+        val average = supporting.map { it.quality }.average()
+        val completeness = 0.5 + 0.5 * supporting.size / 4.0
+        return (average * completeness).coerceIn(0.0, 1.0)
+    }
+
     /** 明细行的副标题：观测时间与精度（有才拼）。 */
     fun detailLabel(line: FusionSourceLine): String {
         val parts = mutableListOf<String>()
@@ -97,6 +121,8 @@ object FusionBreakdown {
             val accuracy = line.accuracyMeters
             parts.add(if (accuracy != null) "$provider ${accuracy.toInt()}m" else provider)
         }
+        line.feature?.let { parts.add("特征 $it") }
+        line.signal?.let { parts.add("$it dBm") }
         line.ageSeconds?.let { parts.add("${it}s 前") }
         return parts.joinToString(" · ")
     }

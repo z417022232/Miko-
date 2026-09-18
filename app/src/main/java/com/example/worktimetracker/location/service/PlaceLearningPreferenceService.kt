@@ -78,12 +78,8 @@ class PlaceLearningPreferenceService(
                     type = LOG_TYPE,
                     content = buildString {
                         append("地点 ").append(placeId).append(" 学习校准")
-                        if (enabled) {
-                            append("重新开启，前向验证重新计时 ")
-                            append(AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS).append(" 天")
-                        } else {
-                            append("停用（粘性）")
-                        }
+                        if (enabled) append("恢复，从冻结状态继续")
+                        else append("暂停并冻结")
                         append("；学习数据一律保留")
                     }
                 )

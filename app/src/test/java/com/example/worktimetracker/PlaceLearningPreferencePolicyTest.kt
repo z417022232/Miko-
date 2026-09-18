@@ -62,36 +62,18 @@ class PlaceLearningPreferencePolicyTest {
         assertEquals(now, effect.preference.updatedAt)
     }
 
-    @Test fun enablingRevokesTheTakeableState() {
-        // 开启时必须吊销 autoApplied，否则下一次学习前它立刻生效，重新验证等于没做。
-        assertEquals(
-            false,
-            PlaceLearningPreferencePolicy.enable(placeId = 1L, now = now).modelAutoAppliedAfter
-        )
+    @Test fun resumingKeepsTheFrozenModelState() {
+        assertNull(PlaceLearningPreferencePolicy.enable(placeId = 1L, now = now).modelAutoAppliedAfter)
     }
 
-    @Test fun enablingReopensTheForwardShadowWindow() {
-        // 只吊销 autoApplied 还不够：窗口里已经攒够 7 天，
-        // 同一轮学习会立刻重新判通过 —— 必须连窗口一起重开。
-        assertTrue(PlaceLearningPreferencePolicy.enable(placeId = 1L, now = now).reopenShadowWindow)
+    @Test fun resumingKeepsTheFrozenShadowWindow() {
+        assertFalse(PlaceLearningPreferencePolicy.enable(placeId = 1L, now = now).reopenShadowWindow)
     }
 
-    @Test fun theTwoRevocationStepsAreBothRequiredAndNeitherIsRedundant() {
-        // 这条测试的意义：证明上面两条**都不是多余的**。
-        // 只要少任何一条，就构造得出「开启后立刻生效」的输入：
-        //  - 少了「吊销 autoApplied」→ 模型带着旧的 autoApplied=true 直接生效；
-        //  - 少了「重开窗口」     → 窗口仍是 8 天，下一轮学习立刻判通过。
-        val effect = PlaceLearningPreferencePolicy.enable(placeId = 1L, now = now)
-        assertEquals("少了它就立刻生效", false, effect.modelAutoAppliedAfter)
-        assertTrue("少了它下一轮学习立刻判通过", effect.reopenShadowWindow)
-    }
-
-    @Test fun enablingMentionsTheReValidationWindowLength() {
+    @Test fun resumingExplainsThatLearningContinuesFromFrozenState() {
         val text = PlaceLearningPreferencePolicy.enable(1L, now).explanation
-        assertTrue(
-            "文案要写明天数，且必须与门槛同源；实际=$text",
-            text.contains(AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS.toString())
-        )
+        assertTrue(text.contains("冻结"))
+        assertFalse(text.contains("重新验证"))
     }
 
     // -------------------------------------------------------------- 缺行语义
@@ -113,7 +95,7 @@ class PlaceLearningPreferencePolicyTest {
         val enabled = PlaceLearningPreferencePolicy.enable(1L, now + 1000)
         assertFalse(disabled.preference.autoApplyEnabled)
         assertTrue(enabled.preference.autoApplyEnabled)
-        assertNotNull("重新开启仍要吊销可生效状态", enabled.modelAutoAppliedAfter)
-        assertTrue(enabled.reopenShadowWindow)
+        assertNull("恢复后应保留冻结前的可生效状态", enabled.modelAutoAppliedAfter)
+        assertFalse(enabled.reopenShadowWindow)
     }
 }

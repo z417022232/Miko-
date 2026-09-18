@@ -226,7 +226,7 @@ private fun DecisionHero(fused: FusedStatusSnapshot?) {
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    fused.decision.name,
+                    FusionBreakdown.decisionSummary(fused.place.name),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     color = decisionColor(fused.decision)
@@ -246,9 +246,6 @@ private fun DecisionHero(fused: FusedStatusSnapshot?) {
             )
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FusedStatusFormatter.confidenceLabel(fused)?.let {
-                    StatPill("置信度 $it", AppTheme.colors.blue)
-                }
                 TodayStatusPresenterRef.conflictText(fused)?.let {
                     StatPill(it, AppTheme.colors.orange)
                 }

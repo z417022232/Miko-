@@ -78,6 +78,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableLongStateOf
 import com.example.worktimetracker.domain.evidence.EvidenceSourceKind
 import com.example.worktimetracker.domain.evidence.FusedDecision
+import com.example.worktimetracker.domain.evidence.FusionBreakdown
 import com.example.worktimetracker.domain.evidence.FusedStatusFormatter
 import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.domain.evidence.ResolvedPlace
@@ -180,6 +181,8 @@ fun CalendarScreen(
     val evidenceRefresh by vm.evidenceRefresh.collectAsState()
     val journeyStatus by vm.journeyShadowStatus.collectAsState()
     val recoveryNotice by vm.homeRecoveryNotice.collectAsState()
+    val breakdownLines = FusionBreakdown.parse(fused?.sourceBreakdown)
+    val fusionConfidence = fused?.let { FusionBreakdown.fusedConfidence(breakdownLines, it.place.name) }
     val todayLive = TodayLiveInfo(
             liveMinutes = live,
             headline = TodayStatusPresenter.headline(todayRecord),
@@ -187,9 +190,24 @@ fun CalendarScreen(
             place = fused?.place,
             decision = fused?.decision,
             basis = FusedStatusFormatter.basisLabel(fused),
-            confidenceLevel = FusedStatusFormatter.confidenceLevel(fused),
-            confidenceFraction = (fused?.confidence?.toFloat() ?: 0f).coerceIn(0f, 1f),
-            confidencePercent = fused?.let { FusedStatusFormatter.confidenceLabel(it) },
+            confidenceLevel = when {
+                fusionConfidence == null -> FusedStatusFormatter.ConfidenceLevel.NONE
+                fusionConfidence >= 0.8 -> FusedStatusFormatter.ConfidenceLevel.HIGH
+                fusionConfidence >= 0.6 -> FusedStatusFormatter.ConfidenceLevel.MEDIUM
+                else -> FusedStatusFormatter.ConfidenceLevel.LOW
+            },
+            confidenceFraction = fusionConfidence?.toFloat() ?: 0f,
+            confidencePercent = fusionConfidence?.let(FusionBreakdown::percentLabel),
+            sourceQualities = breakdownLines.mapNotNull { line ->
+                val kind = when (line.source) {
+                    "GNSS", "NETWORK_LOCATION" -> EvidenceSourceKind.GNSS
+                    "WIFI" -> EvidenceSourceKind.WIFI
+                    "BLUETOOTH" -> EvidenceSourceKind.BLUETOOTH
+                    "CELL" -> EvidenceSourceKind.CELL
+                    else -> null
+                }
+                kind?.let { it to line.quality }
+            }.toMap(),
             health = sourceHealth,
             refreshing = evidenceRefresh.running,
             refreshMessage = evidenceRefresh.message
@@ -517,6 +535,7 @@ private data class TodayLiveInfo(
     val confidenceLevel: FusedStatusFormatter.ConfidenceLevel,
     val confidenceFraction: Float,
     val confidencePercent: String?,
+    val sourceQualities: Map<EvidenceSourceKind, Double>,
     val health: Map<EvidenceSourceKind, SourceStatus>,
     val refreshing: Boolean,
     val refreshMessage: String?
@@ -561,8 +580,6 @@ private fun AuthorityStatusCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text("实时状态", style = MaterialTheme.typography.labelMedium, color = AppTheme.colors.muted)
-            Spacer(Modifier.height(6.dp))
             Text(
                 journeyStatus.lineSequence().firstOrNull() ?: "位置暂时判断不出来",
                 style = MaterialTheme.typography.titleMedium,
@@ -572,9 +589,25 @@ private fun AuthorityStatusCard(
                 Text(it, color = AppTheme.colors.muted, style = MaterialTheme.typography.labelSmall)
             }
             Spacer(Modifier.height(10.dp))
-            LiveStatusBlock(live, onRefreshEvidence, onConsumeRefreshMessage, showHeadline = false)
+            ConfidenceMeter(
+                level = live.confidenceLevel,
+                fraction = live.confidenceFraction,
+                percentText = live.confidencePercent,
+                labelText = "融合可信度"
+            )
+            Spacer(Modifier.height(10.dp))
+            EvidenceSourceRow(
+                health = live.health,
+                refreshing = live.refreshing,
+                onRefresh = onRefreshEvidence,
+                qualities = live.sourceQualities
+            )
+            if (live.refreshMessage != null) {
+                Spacer(Modifier.height(8.dp))
+                EvidenceRefreshBanner(live.refreshMessage, live.refreshing, onConsumeRefreshMessage)
+            }
             TextButton(onClick = onOpenFusion, modifier = Modifier.align(Alignment.End)) {
-                Text("查看判断与证据详情")
+                Text("查看融合结果与证据")
             }
         }
     }

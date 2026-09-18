@@ -17,8 +17,8 @@ package com.example.worktimetracker.domain.location
  * 模型其实好得很，只是用户不让用。之后无法区分「模型坏了」和「用户关了」，
  * 而这两种情况该做的事完全不同（前者要重训，后者只需等用户开回来）。
  *
- * 因此 [autoApplyEnabled] 是**粘性**的：用户停用后，学习照常观察、照常落候选、
- * 照常升级模型版本 —— 只是取锚点时不吃它（见 [PlaceModelResolver]）。
+ * 因此 [autoApplyEnabled] 是**粘性暂停**：暂停后候选、窗口和模型版本全部冻结；
+ * 恢复时从冻结点继续，取锚点仍由 [PlaceModelResolver] 统一决定。
  *
  * ## 缺行 = 启用
  *
@@ -52,10 +52,8 @@ data class PlaceLearningPreference(
  * - **停用只写偏好**：`autoApplied` 是「算法是否通过」的事实，用户没资格改它（改了就丢事实）。
  *   停用表现在**取用时**：`PlaceModelResolver` 见到 `autoApplyEnabled = false` 直接回落配置锚点。
  *   好处是「停用 → 重新开启」不会因为中途的重训而漂移 —— 模型状态自始至终是算法自己的账。
- * - **重新开启要求重新验证**：停用期间模型可能已经漂了，而用户停用前的「验证通过」
- *   是基于停用**之前**那段连续观察得出的。开回来时若直接沿用旧结论，就等于
- *   拿一份被中断过的观察当连续观察用 —— 那和「用历史天数抵扣影子期」是同一个错误。
- *   所以开启时**吊销** `autoApplied` 并重开前向影子窗口，必须重新观察满 7 天。
+ * - **恢复保持原状态**：暂停期间学习层不写候选或模型，因此恢复时无需吊销
+ *   `autoApplied`，也不重开影子窗口。
  *
  * 两条合起来的意思：停用是**用户意志**（不动模型），开启是**算法重验**（动模型）。
  */
@@ -95,7 +93,7 @@ object PlaceLearningPreferencePolicy {
         ),
         modelAutoAppliedAfter = null,
         reopenShadowWindow = false,
-        explanation = "已停用学习校准：判定仍使用你设置的位置。学习记录保留，随时可以开回来。"
+        explanation = "已暂停学习校准：当前学习状态已冻结，判定使用你设置的位置。"
     )
 
     /**
@@ -115,10 +113,9 @@ object PlaceLearningPreferencePolicy {
             autoApplyEnabled = true,
             updatedAt = now
         ),
-        modelAutoAppliedAfter = false,
-        reopenShadowWindow = true,
-        explanation = "已重新开启学习校准：将重新进行 " +
-            "${AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS} 天前向验证，通过后才会生效。"
+        modelAutoAppliedAfter = null,
+        reopenShadowWindow = false,
+        explanation = "已恢复学习校准：从冻结前的学习状态继续。"
     )
 
     /** 偏好行 → 领域对象；缺行按默认启用（见 [PlaceLearningPreference] 的「缺行 = 启用」）。 */

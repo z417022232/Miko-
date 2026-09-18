@@ -301,6 +301,6 @@ class PlaceLearningStatusPresenterTest {
         val labels = status.facts.map { it.label }
         assertTrue(labels.contains("训练样本"))
         assertTrue(labels.contains("前向验证"))
-        assertTrue(status.facts.any { it.value.contains("已停用") })
+        assertTrue(status.facts.any { it.value.contains("已暂停") })
     }
 }

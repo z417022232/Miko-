@@ -94,13 +94,24 @@ class HolidayStatusPresenterTest {
         assertTrue(full.contains("cdn.jsdelivr.net"))
 
         val partial = HolidayStatusPresenter.resultText(
-            HolidayStatusUi(), setOf(2026), setOf(2027), "cdn.jsdelivr.net"
+            HolidayStatusUi(), setOf(2025), setOf(2026), "cdn.jsdelivr.net", currentYear = 2026
         )
         assertTrue("部分失败必须说明已沿用本地数据", partial.contains("沿用本地数据"))
-        assertTrue(partial.contains("2027"))
+        assertTrue(partial.contains("2026"))
 
         val failed = HolidayStatusPresenter.resultText(HolidayStatusUi(), emptySet(), setOf(2026, 2027), null)
         assertTrue(failed.contains("沿用本地数据"))
+    }
+
+    @Test
+    fun `currentYearSuccessIgnoresUnavailableFutureYear`() {
+        val status = HolidayStatusUi(coveredYears = setOf(2026), error = "2027 数据尚未发布")
+        val text = HolidayStatusPresenter.resultText(
+            status, setOf(2026), setOf(2027), "cdn.jsdelivr.net", currentYear = 2026
+        )
+        assertEquals("已更新 2026 年（cdn.jsdelivr.net）", text)
+        assertEquals(HolidayResultTone.SUCCESS, HolidayStatusPresenter.resultTone(true, text))
+        assertNull(HolidayStatusPresenter.displayError(status, currentYear = 2026))
     }
 
     /**

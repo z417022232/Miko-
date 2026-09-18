@@ -837,7 +837,7 @@ private fun HolidayDataPage(vm: WorkTimeViewModel, onBack: () -> Unit) {
             }
         }
 
-        val errorText = status.error
+        val errorText = HolidayStatusPresenter.displayError(status, today.year)
         if (errorText != null && status.message.isBlank()) {
             Spacer(Modifier.height(12.dp))
             Card(

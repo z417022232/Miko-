@@ -47,6 +47,31 @@ class FusionBreakdownTest {
     }
 
     @Test
+    fun `环境来源保留匿名特征与信号用于实时解释`() {
+        val line = FusionBreakdown.parse("WIFI=HOME q0.95 12s前(feature=ab12cd34 signal=-61)").single()
+        assertEquals("ab12cd34", line.feature)
+        assertEquals(-61, line.signal)
+        assertEquals("家 · 特征 ab12cd34 · -61 dBm · 12s 前", FusionBreakdown.detailLabel(line))
+    }
+
+    @Test
+    fun `最近融合结果用中文地点而不是枚举名`() {
+        assertEquals("融合结果=家", FusionBreakdown.decisionSummary("HOME"))
+        assertEquals("融合结果=公司", FusionBreakdown.decisionSummary("COMPANY"))
+    }
+
+    @Test
+    fun `融合可信度不会把单个网络定位百分比原样当融合结果`() {
+        val one = FusionBreakdown.parse("NETWORK_LOCATION=HOME q0.80 1s前(network 20m)")
+        assertEquals(0.50, FusionBreakdown.fusedConfidence(one, "HOME")!!, 1e-9)
+        val four = FusionBreakdown.parse(
+            "GNSS=HOME q0.80 1s前(gps 8m) | WIFI=HOME q0.80 1s前 | " +
+                "BLUETOOTH=HOME q0.80 1s前 | CELL=HOME q0.80 1s前"
+        )
+        assertEquals(0.80, FusionBreakdown.fusedConfidence(four, "HOME")!!, 1e-9)
+    }
+
+    @Test
     fun `坏片段被跳过而不是整段失效`() {
         val lines = FusionBreakdown.parse("GNSS=COMPANY q0.88 30s前 | 这不是证据 | WIFI=HOME q0.90 5s前")
         assertEquals(2, lines.size)

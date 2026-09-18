@@ -79,15 +79,31 @@ object HolidayStatusPresenter {
     }
 
     /** 手动更新后的结果文案。 */
-    fun resultText(status: HolidayStatusUi, succeededYears: Set<Int>, failedYears: Set<Int>, host: String?): String = when {
-        succeededYears.isNotEmpty() && failedYears.isEmpty() ->
-            "已更新 ${succeededYears.sorted().joinToString("、")} 年" + (host?.let { "（$it）" } ?: "")
+    fun resultText(
+        status: HolidayStatusUi,
+        succeededYears: Set<Int>,
+        failedYears: Set<Int>,
+        host: String?,
+        currentYear: Int = LocalDateTime.now().year
+    ): String {
+        val relevantFailures = failedYears.filterTo(sortedSetOf()) { it <= currentYear }
+        return when {
+        succeededYears.isNotEmpty() && relevantFailures.isEmpty() ->
+            if (currentYear in succeededYears && failedYears.isNotEmpty()) {
+                "已更新 $currentYear 年" + (host?.let { "（$it）" } ?: "")
+            } else {
+                "已更新 ${succeededYears.sorted().joinToString("、")} 年" + (host?.let { "（$it）" } ?: "")
+            }
         succeededYears.isNotEmpty() ->
             "已更新 ${succeededYears.sorted().joinToString("、")} 年；" +
-                "${failedYears.sorted().joinToString("、")} 年失败，已沿用本地数据"
+                "${relevantFailures.joinToString("、")} 年失败，已沿用本地数据"
         status.error != null -> "更新失败，已沿用本地数据"
         else -> "更新失败，已沿用本地数据"
+        }
     }
+
+    fun displayError(status: HolidayStatusUi, currentYear: Int): String? =
+        status.error?.takeUnless { status.hasDataFor(currentYear) }
 
     /**
      * 结果卡片该用什么色调。

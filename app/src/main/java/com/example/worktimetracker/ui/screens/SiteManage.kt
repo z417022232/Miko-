@@ -307,10 +307,6 @@ private fun SiteListRow(
                         Spacer(Modifier.size(8.dp))
                         StatusPill("不计工时", AppTheme.colors.muted)
                     }
-                    if (row.site.migrated) {
-                        Spacer(Modifier.size(8.dp))
-                        StatusPill("来自旧设置", AppTheme.colors.orange)
-                    }
                 }
                 Spacer(Modifier.height(3.dp))
                 Text(sourceSummary, color = AppTheme.colors.muted, style = MaterialTheme.typography.bodySmall)

@@ -293,19 +293,31 @@ class EvidenceCoordinator(
         stored: List<EvidenceObservationEntity>,
         now: Long
     ) {
-        val logger = diagnosticLogger ?: return
         val breakdown = stored.groupBy { it.source }.mapNotNull { (source, list) ->
             val latest = list.maxByOrNull { it.eventTime } ?: return@mapNotNull null
             val age = ((now - latest.eventTime).coerceAtLeast(0)) / 1000
-            "$source=${latest.placeHint} q${"%.2f".format(latest.quality)} ${age}s前" +
-                (latest.provider?.let { "($it ${"%.0f".format(latest.accuracyMeters ?: 0f)}m)" } ?: "")
+            buildString {
+                append("$source=${latest.placeHint} q${"%.2f".format(java.util.Locale.US, latest.quality)} ${age}s前")
+                latest.provider?.let {
+                    append("($it ${"%.0f".format(java.util.Locale.US, latest.accuracyMeters ?: 0f)}m)")
+                }
+                if (latest.provider == null && (latest.identifierHash != null || latest.signal != null)) {
+                    append("(")
+                    latest.identifierHash?.let { append("feature=${it.take(8)}") }
+                    if (latest.identifierHash != null && latest.signal != null) append(" ")
+                    latest.signal?.let { append("signal=$it") }
+                    append(")")
+                }
+            }
         }.joinToString(" | ")
         lastSourceBreakdown = breakdown.ifEmpty { null }
+        val logger = diagnosticLogger ?: return
         val key = "${resolved.place.name}/${resolved.decision.name}/${resolved.reason}"
         if (key == lastLoggedFusionKey) return
         lastLoggedFusionKey = key
-        val content = "融合结果=${resolved.place.name}(${resolved.decision.name}/${resolved.reason}) " +
-            "conf=${"%.2f".format(resolved.confidence)}" + if (breakdown.isEmpty()) "" else " 证据: $breakdown"
+        val place = com.example.worktimetracker.domain.evidence.FusionBreakdown.placeLabel(resolved.place.name)
+        val content = "融合结果=$place（${resolved.decision.name}/${resolved.reason}）" +
+            if (breakdown.isEmpty()) "" else " 证据：$breakdown"
         runCatching { logger("FUSION", content) }
     }
 

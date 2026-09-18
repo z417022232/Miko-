@@ -32,7 +32,7 @@ enum class PlaceLearningPhase(val label: String) {
     NEEDS_CONFIRM("需要你确认新位置"),
 
     /** 用户停用（粘性），判定回落用户设置 */
-    PAUSED("已停用学习校准")
+    PAUSED("已暂停学习校准")
 }
 
 /** 一条「标签 + 值」的展示明细。 */
@@ -95,7 +95,7 @@ object PlaceLearningStatusPresenter {
             return PlaceLearningStatus(
                 placeId = input.placeId,
                 phase = PlaceLearningPhase.PAUSED,
-                headline = "学习校准已停用：判定仍使用你设置的位置，学习记录已保留。",
+                headline = "学习校准已暂停：候选、模型和验证进度已冻结。",
                 facts = facts,
                 failures = emptyList(),
                 effectiveAnchorSource = input.effectiveAnchorSource,
@@ -178,7 +178,13 @@ object PlaceLearningStatusPresenter {
                 }
             )
         )
-        add(LearningFact("前向验证", shadowProgress(shadow)))
+        if (input.effectiveAnchorSource == EffectiveAnchorSource.LEARNED &&
+            input.trainingDistinctDays >= AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS
+        ) {
+            add(LearningFact("历史预学习", "已完成 · 跨 ${input.trainingDistinctDays} 天"))
+        } else {
+            add(LearningFact("前向验证", shadowProgress(shadow)))
+        }
         add(
             LearningFact(
                 "候选偏移",
@@ -201,7 +207,7 @@ object PlaceLearningStatusPresenter {
             )
         )
         add(LearningFact("离散度 P90", spread(shadow)))
-        add(LearningFact("自动校准开关", if (enabled) "开启" else "已停用（粘性）"))
+        add(LearningFact("自动校准开关", if (enabled) "开启" else "已暂停（状态冻结）"))
     }
 
     private fun shadowProgress(shadow: ShadowValidator.Result?): String {

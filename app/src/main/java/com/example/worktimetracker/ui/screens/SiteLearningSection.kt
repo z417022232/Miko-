@@ -36,8 +36,8 @@ import com.example.worktimetracker.ui.theme.AppTheme
  *    而是「现在到底按哪个位置算」。所以「当前判定使用：…」放在第一行，
  *    而且它的真值来自 PlaceModelResolver（同一个取用函数），不是界面推断的。
  *
- * 2. **停用是粘性的，文案要如实说**。按一次「停用」之后，
- *    学习照常观察、数据一行不删；重新开启要重新走 7 天验证。
+ * 2. **暂停是粘性的，文案要如实说**。按一次「暂停」之后，
+ *    学习状态冻结、数据一行不删；恢复时从冻结点继续。
  *    这两句必须写清楚，否则用户会以为按了暂停就丢了几周的成果，
  *    或者以为开回来没生效是 bug。
  *
@@ -139,12 +139,12 @@ internal fun SiteLearningSection(
             ) {
                 if (status.canDisable) {
                     TextButton(onClick = { onSetEnabled(false) }) {
-                        Text("停用学习校准", color = AppTheme.colors.orange)
+                        Text("暂停学习校准", color = AppTheme.colors.orange)
                     }
                 }
                 if (status.canReEnable) {
                     TextButton(onClick = { onSetEnabled(true) }) {
-                        Text("重新开启自动校准", color = AppTheme.colors.blue)
+                        Text("恢复学习校准", color = AppTheme.colors.blue)
                     }
                 }
             }
@@ -167,15 +167,14 @@ internal fun SiteLearningSection(
 internal fun LearningDisableNotice() {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Text(
-            "关于「停用学习校准」",
+            "关于「暂停学习校准」",
             style = MaterialTheme.typography.bodySmall,
             fontWeight = FontWeight.Medium
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            "停用后判定立刻回到你设置的位置。已积累的观察与模型都会保留，" +
-                "随时可以重新开启；重新开启需要再验证 " +
-                "${AnchorUpdatePolicy.SHADOW_VALIDATION_DAYS} 天才会生效。",
+            "暂停后立即冻结候选、模型和验证进度，判定回到你设置的位置。" +
+                "恢复后从冻结前的状态继续，不会清零或重开验证窗口。",
             style = MaterialTheme.typography.bodySmall,
             color = AppTheme.colors.muted
         )

@@ -360,10 +360,13 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             cachedYears = holidayRepository.cachedYears(),
             error = holidayStore.lastError()
         )
+        val currentYear = LocalDate.now().year
+        val currentYearReady = refreshed.hasDataFor(currentYear)
         _holidayStatus.value = refreshed.copy(
-            resultOk = outcome.ok && outcome.failures.isEmpty(),
+            error = if (currentYearReady) null else refreshed.error,
+            resultOk = currentYearReady,
             message = HolidayStatusPresenter.resultText(
-                refreshed, outcome.succeededYears, outcome.failures.keys, outcome.host
+                refreshed, outcome.succeededYears, outcome.failures.keys, outcome.host, currentYear
             )
         )
     }

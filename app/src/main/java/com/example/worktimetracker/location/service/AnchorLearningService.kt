@@ -16,6 +16,7 @@ import com.example.worktimetracker.domain.location.AnchorSampleBuilder
 import com.example.worktimetracker.domain.location.AnchorUpdateAction
 import com.example.worktimetracker.domain.location.AnchorUpdatePolicy
 import com.example.worktimetracker.domain.location.GeoPoint
+import com.example.worktimetracker.domain.location.HistoricalAnchorBootstrap
 import com.example.worktimetracker.domain.location.ShadowObservation
 import com.example.worktimetracker.domain.location.ShadowValidator
 import java.time.LocalDate
@@ -50,9 +51,8 @@ import java.time.ZoneId
  * ## 四条纪律（违反即回归）
  *  1. **只写三张学习表**。`sites` 的坐标一个字都不改 —— 用户配置锚点永久权威，
  *     学习锚点的优先级由**取用顺序**（[com.example.worktimetracker.domain.location.PlaceModelResolver]）体现；
- *     自 DB v16 起**还要再让开** `place_learning_preferences`：用户停用后学习照常跑，
- *     但这个方法**绝不读写那张表** —— 粘性停用是取用层的事，
- *     学习层一旦也去参考它，就会出现「停用期间模型停止演化」这种把两层搅在一起的行为；
+ *     自 DB v16 起读取 `place_learning_preferences`：暂停地点的候选、窗口与模型全部冻结，
+ *     恢复后从同一状态继续；
  *  2. **判定不读候选表**。影子验证的语义就靠这条保证；
  *  3. **学习不许把主链路带崩**。所有异常吞掉并记 `LEARNING` 日志 ——
  *     学习是增强层，定位服务才是主链路（异常只能「记日志 / 模型降级 / 回落既有算法」）；
@@ -94,6 +94,10 @@ class AnchorLearningService(
 
         val fingerprints = runCatching { db.environmentEvidenceDao().allFingerprints() }
             .getOrDefault(emptyList())
+        val pausedPlaceIds = runCatching { db.learningModelDao().allPreferences() }
+            .getOrDefault(emptyList())
+            .filterNot { it.autoApplyEnabled }
+            .mapTo(mutableSetOf()) { it.placeId }
         // 30 天轨迹只查一次：多个地点共用同一份轨迹，逐站点各查一遍会把启动 IO 乘以地点数
         val fixes = runCatching {
             db.locationLogDao().getLogs(now - LOOKBACK_MILLIS, now).map {
@@ -102,9 +106,12 @@ class AnchorLearningService(
         }.getOrDefault(emptyList())
 
         // 旧候选行长期积压：一个窗口最多一行/天，留 180 天足够回放
-        runCatching { db.learningModelDao().deleteCandidatesBefore(now - CANDIDATE_RETENTION_MILLIS) }
+        if (pausedPlaceIds.isEmpty()) {
+            runCatching { db.learningModelDao().deleteCandidatesBefore(now - CANDIDATE_RETENTION_MILLIS) }
+        }
 
         return sites.mapNotNull { site ->
+            if (site.id in pausedPlaceIds) return@mapNotNull null
             runCatching { learnSite(site, fixes, fingerprints, now) }
                 .onFailure { error ->
                     runCatching { db.appLogDao().insert(log("地点学习失败 site=${site.id}：${error.message}")) }
@@ -178,9 +185,16 @@ class AnchorLearningService(
         val conflictCount = fingerprintConflicts(fingerprints, windowStart)
         val shadow = ShadowValidator.evaluate(observations, today, conflictCount)
 
-        val action = AnchorUpdatePolicy.decide(candidate.offsetMeters, shadow)
+        val historicalBootstrap = existing?.autoApplied != true && HistoricalAnchorBootstrap.canApply(
+            distinctDays = candidate.distinctDayCount,
+            offsetMeters = candidate.offsetMeters
+        )
+        val action = if (historicalBootstrap) AnchorUpdateAction.AUTO_SMOOTH
+        else AnchorUpdatePolicy.decide(candidate.offsetMeters, shadow)
         val status = AnchorUpdatePolicy.statusOf(action)
-        val explanation = AnchorUpdatePolicy.explain(action, candidate.offsetMeters, shadow)
+        val explanation = if (historicalBootstrap) {
+            "历史数据已完成预学习（跨 ${candidate.distinctDayCount} 天），直接启用学习校准"
+        } else AnchorUpdatePolicy.explain(action, candidate.offsetMeters, shadow)
         val wasApplied = existing?.autoApplied == true
         val autoApplied = action == AnchorUpdateAction.AUTO_SMOOTH
 

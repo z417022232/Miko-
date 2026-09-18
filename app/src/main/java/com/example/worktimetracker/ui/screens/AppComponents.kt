@@ -470,6 +470,7 @@ fun ConfidenceMeter(
     fraction: Float,
     percentText: String?,
     modifier: Modifier = Modifier,
+    labelText: String = "可信度",
 ) {
     val tint = when (level) {
         FusedStatusFormatter.ConfidenceLevel.HIGH -> AppTheme.colors.green
@@ -479,7 +480,7 @@ fun ConfidenceMeter(
     }
     val safe = fraction.coerceIn(0f, 1f)
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text("可信度", style = MaterialTheme.typography.labelMedium, color = AppTheme.colors.muted)
+        Text(labelText, style = MaterialTheme.typography.labelMedium, color = AppTheme.colors.muted)
         Spacer(Modifier.width(8.dp))
         Box(
             Modifier
@@ -526,11 +527,12 @@ fun EvidenceSourceRow(
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
     trailingHint: String? = null,
+    qualities: Map<EvidenceSourceKind, Double> = emptyMap(),
 ) {
     Row(modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         EvidenceSourceKind.entries.forEach { kind ->
             val status = health[kind] ?: SourceStatus.UNKNOWN
-            EvidenceSourceBadge(kind, status, refreshing)
+            EvidenceSourceBadge(kind, status, refreshing, qualities[kind])
             Spacer(Modifier.size(14.dp))
         }
         Spacer(Modifier.weight(1f))
@@ -549,6 +551,7 @@ private fun EvidenceSourceBadge(
     kind: EvidenceSourceKind,
     status: SourceStatus,
     refreshing: Boolean,
+    quality: Double?,
 ) {
     val tint = evidenceSourceTint(status)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -568,7 +571,8 @@ private fun EvidenceSourceBadge(
         }
         Spacer(Modifier.height(3.dp))
         Text(
-            kind.label,
+            if (quality == null) "${kind.label} --" else
+                "${kind.label} ${Math.round(quality * 100).toInt().coerceIn(0, 100)}%",
             style = MaterialTheme.typography.labelSmall,
             color = if (status == SourceStatus.ABNORMAL) AppTheme.colors.red else AppTheme.colors.muted
         )
