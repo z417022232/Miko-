@@ -33,6 +33,10 @@ object ProtectedRecordMerge {
             homeArrivalTime = if (protected(ManualField.HOME_ARRIVAL)) existing.homeArrivalTime else automatic.homeArrivalTime ?: existing.homeArrivalTime,
             actualMinutes = automatic.actualMinutes ?: existing.actualMinutes,
             finalMinutes = if (protected(ManualField.FINAL_MINUTES)) existing.finalMinutes else automatic.finalMinutes,
+            // 来源跟着 finalMinutes 走：少了这一行，已有记录（existing != null 的完结路径）
+            // 永远写不进 finalMinutesSource，「只有 ACTUAL/MANUAL 可进训练集」就是空话
+            finalMinutesSource = if (protected(ManualField.FINAL_MINUTES)) existing.finalMinutesSource
+            else automatic.finalMinutesSource ?: existing.finalMinutesSource,
             note = if (protected(ManualField.NOTE)) existing.note else automatic.note ?: existing.note,
             // A2: 复核原因以自动计算为准；无新原因时保留原值
             reviewReason = automatic.reviewReason ?: existing.reviewReason,

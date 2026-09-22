@@ -53,7 +53,7 @@ object HistoricalRecordRepair {
                 }
                 val rebuilt = reconstructor.reconstruct(start, points, 18 * 60) ?: continue
                 val session = engine.buildSession(start, rebuilt.companyDeparture, domain)
-                val merged = ConfirmedSession.merge(existing = record, shift = session.shiftType.name, companyArrival = start, companyDeparture = rebuilt.companyDeparture, homeDeparture = rebuilt.homeDeparture, homeArrival = rebuilt.homeArrival, actualMinutes = session.actualMinutes, calculatedMinutes = session.finalMinutes, needsReview = session.needsReview)
+                val merged = ConfirmedSession.merge(existing = record, shift = session.shiftType.name, companyArrival = start, companyDeparture = rebuilt.companyDeparture, homeDeparture = rebuilt.homeDeparture, homeArrival = rebuilt.homeArrival, actualMinutes = session.actualMinutes, calculatedMinutes = session.finalMinutes, needsReview = session.needsReview, finalMinutesSource = session.finalMinutesSource)
                 db.workRecordDao().upsert(merged)
             }
             prefs.edit().putBoolean(KEY, true).apply()

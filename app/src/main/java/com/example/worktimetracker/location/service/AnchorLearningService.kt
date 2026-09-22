@@ -291,6 +291,18 @@ class AnchorLearningService(
             )
         )
 
+        // 学习层的自动决策必须留痕：候选落库/版本升降/状态翻转此前**只存在于 DB**，
+        // 日志侧查不到「为什么这次判 SHADOW / 为什么这次判 AUTO_APPLIED」
+        // （真机体检：LEARNING 全库 4 条，且全是手工开关）。
+        runCatching {
+            db.appLogDao().insert(log(
+                "地点 ${site.name}（id=${site.id}）判定=${action}｜状态=${status}｜" +
+                    "autoApplied=${autoApplied}（曾生效=${everApplied}）｜模型版本=${modelVersion}｜" +
+                    "偏移=${candidate.offsetMeters.toInt()}米｜窗口天数=${shadow.validation.elapsedDays}｜" +
+                    "来源=${if (historicalBootstrap) "历史预学习" else "影子验证"}｜${explanation}"
+            ))
+        }
+
         return Outcome(
             placeId = site.id,
             placeName = site.name,

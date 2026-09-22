@@ -431,6 +431,17 @@ class WorkTimeViewModel(application: Application) : AndroidViewModel(application
             ReviewAcknowledger.acknowledge(old, note).fold(
                 onSuccess = { acknowledged ->
                     db.workRecordDao().upsert(acknowledged)
+                    // 「记录被改写」要有可查的痕迹：此前唯一的痕迹是 manualFieldsMask 的一个 bit，
+                    // 排查时看不出这是用户点头还是算法改的（真机体检：id197/198 的 512 位）
+                    db.appLogDao().insert(
+                        AppLogEntity(
+                            type = "REVIEW",
+                            content = "用户认可 ${acknowledged.workDate} 的自动判定：" +
+                                "final=${acknowledged.finalMinutes}min" +
+                                "（原复核原因=${old.reviewReason ?: "无"}）" +
+                                "${note.takeIf { it.isNotBlank() }?.let { "｜备注=$it" } ?: ""}"
+                        )
+                    )
                     db.manualOverrideDao().insert(
                         ManualOverrideEntity(
                             recordId = acknowledged.id,

@@ -2,6 +2,7 @@ package com.example.worktimetracker.domain.engine
 
 import com.example.worktimetracker.data.entity.WorkRecordEntity
 import com.example.worktimetracker.data.entity.ManualField
+import com.example.worktimetracker.domain.model.FinalMinutesSource
 
 object ReviewRecordEditor {
     fun confirm(
@@ -22,6 +23,8 @@ object ReviewRecordEditor {
             startTime = startMillis,
             endTime = endMillis,
             finalMinutes = finalMinutes,
+            // 用户手改的工时 = 人工事实，可进训练集（与「算法实算」同列，与「固定工时」区分）
+            finalMinutesSource = FinalMinutesSource.MANUAL.name,
             isManual = true,
             manualFieldsMask = existing.manualFieldsMask or ManualField.SHIFT.bit or
                 ManualField.COMPANY_ARRIVAL.bit or ManualField.COMPANY_DEPARTURE.bit or

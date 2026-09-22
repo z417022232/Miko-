@@ -3,6 +3,7 @@ package com.example.worktimetracker.location.service
 import com.example.worktimetracker.data.entity.ManualField
 import com.example.worktimetracker.data.entity.ManualFieldMask
 import com.example.worktimetracker.data.entity.WorkRecordEntity
+import com.example.worktimetracker.domain.model.FinalMinutesSource
 
 object ConfirmedSession {
     fun merge(
@@ -24,7 +25,12 @@ object ConfirmedSession {
         /** v1 算法对齐后的有效 end。灰区/超限不计加班时为 expectedEnd；正常为 endMillis。 */
         v1EffectiveEndMillis: Long? = null,
         /** A2: needsReview 结构化原因。null = 无需复核。 */
-        reviewReason: String? = null
+        reviewReason: String? = null,
+        /**
+         * `finalMinutes` 的来源（[FinalMinutesSource]）。null = 调用方不知道来源 ——
+         * 此时**保留库里原值**，绝不回填猜测（老记录的 null 同理，见 [FinalMinutesSource]）。
+         */
+        finalMinutesSource: FinalMinutesSource? = null
     ): WorkRecordEntity {
         val validDeparture = companyDeparture?.takeIf { it >= companyArrival }
         val validHomeDeparture = homeDeparture?.takeIf { it <= companyArrival }
@@ -59,6 +65,9 @@ object ConfirmedSession {
             homeArrivalTime = validHomeArrival,
             actualMinutes = actualMinutes,
             finalMinutes = if (base.isManual) base.finalMinutes else calculatedMinutes,
+            // 手工记录的来源不由算法改写；自动结果只在**知道来源**时才写（不知道就留原值）
+            finalMinutesSource = if (base.isManual) base.finalMinutesSource
+            else finalMinutesSource?.name ?: base.finalMinutesSource,
             needsReview = review,
             reviewReason = if (base.isManual) base.reviewReason else reviewReason,
             note = if (base.isManual) base.note else v1Note ?: base.note,

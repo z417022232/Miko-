@@ -864,7 +864,8 @@ class ForegroundLocationService : Service(), LocationListener {
             calculatedMinutes = session.finalMinutes,
             needsReview = session.needsReview || capped,
             status = session.status.name,
-            mode = MergeMode.FINALIZE_SESSION
+            mode = MergeMode.FINALIZE_SESSION,
+            finalMinutesSource = session.finalMinutesSource
         )
         app.database.workRecordDao().upsert(
             if (existing != null) ProtectedRecordMerge.merge(existing, recordToSave, MergeMode.FINALIZE_SESSION) else recordToSave

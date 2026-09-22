@@ -53,6 +53,13 @@ data class WorkSession(
     val status: RecordStatus,
     val actualMinutes: Int,
     val finalMinutes: Int,
+    /**
+     * `finalMinutes` 的来源（[FinalMinutesSource]）。
+     *
+     * 必须落库：光有一个数字，将来分不清它是真出勤还是「固定工时」填的。
+     * null = 调用方没给（历史修补等场景），此时不得回填猜测 —— 见 [FinalMinutesSource]。
+     */
+    val finalMinutesSource: FinalMinutesSource? = null,
     val needsReview: Boolean = false,
     /** v1 规则按 status 分支对齐后的有效开始时间（迟到向上取整、早退/灰区按 endTime）。null 表示 rest。 */
     val v1EffectiveStartMillis: Long? = null,

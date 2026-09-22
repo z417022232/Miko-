@@ -1,5 +1,6 @@
 package com.example.worktimetracker.domain.engine
 
+import com.example.worktimetracker.domain.model.FinalMinutesSource
 import com.example.worktimetracker.domain.model.RecordStatus
 import com.example.worktimetracker.domain.model.ShiftType
 import com.example.worktimetracker.domain.model.WorkSession
@@ -71,6 +72,14 @@ class WorkSessionEngine(
             status = finalStatus,
             actualMinutes = actual,
             finalMinutes = v1Result.finalMinutes,
+            // finalMinutes 的**来源**必须跟着结果一起落库，否则阶段4/5 分不清
+            // 某天的 660 分钟是真干了 11 小时，还是被「固定工时」直接填的
+            // （真机体检：整列全为 NULL，「只有 ACTUAL/MANUAL 可进训练集」无从执行）。
+            finalMinutesSource = sourceOf(
+                ruleTrace = v1Result.ruleTrace,
+                observedStart = startMillis != null,
+                observedEnd = endMillis != null
+            ),
             needsReview = reviewReasons.isNotEmpty(),
             v1EffectiveStartMillis = v1Result.effectiveStartMillis,
             v1EffectiveEndMillis = v1Result.effectiveEndMillis,
@@ -78,6 +87,25 @@ class WorkSessionEngine(
             reviewReason = reviewReasons.takeIf { it.isNotEmpty() }?.joinToString("；"),
             crossesMidnight = crossesMidnight
         )
+    }
+
+    /**
+     * `finalMinutes` 的来源判定。
+     *
+     * 顺序不能调：**先认「固定工时」短路**（那条路上 finalMinutes 与真实出勤无关），
+     * 再看**两端时刻是不是都观测到了**（缺一端就只能用班次窗口补全 = 推算）。
+     *
+     * 只有 [FinalMinutesSource.ACTUAL]（与人工改过的 [FinalMinutesSource.MANUAL]）
+     * 能进学习训练集 —— 这条判定就是那道闸门的输入端。
+     */
+    internal fun sourceOf(
+        ruleTrace: List<String>,
+        observedStart: Boolean,
+        observedEnd: Boolean
+    ): FinalMinutesSource = when {
+        ruleTrace.contains("R_DEFAULT_HOURS") -> FinalMinutesSource.DEFAULT
+        !observedStart || !observedEnd -> FinalMinutesSource.INFERRED
+        else -> FinalMinutesSource.ACTUAL
     }
 
     /**
