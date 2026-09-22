@@ -23,10 +23,14 @@ interface WorkRecordDao {
     @Query("SELECT * FROM work_records WHERE isManual = 0 AND startTime IS NOT NULL AND endTime IS NOT NULL AND needsReview = 0 AND status = 'WORK' ORDER BY startTime DESC LIMIT 14")
     suspend fun latestValidForLearning(): List<WorkRecordEntity>
 
-    /** 迟到家证据补写目标：最近一条已完结（离岗时间早于到家时间）且缺到家时间的自动记录。
-     *  注意不能限定 status='WORK'：迟到日记录是 ARRIVAL_EXCEPTION（见 b2fca68 状态透传），同样需要补写。 */
-    @Query("SELECT * FROM work_records WHERE status != 'REST' AND homeArrivalTime IS NULL AND startTime IS NOT NULL AND endTime IS NOT NULL AND endTime <= :arrival ORDER BY endTime DESC LIMIT 1")
-    suspend fun latestFinishedWithoutHomeArrival(arrival: Long): WorkRecordEntity?
+    /** 迟到家证据补写的候选行：所有缺到家时间、且已填完起止时刻的记录。
+     *  注意不能限定 status='WORK'：迟到日记录是 ARRIVAL_EXCEPTION（见 b2fca68 状态透传），同样需要补写。
+     *  真正的选行规则在 [com.example.worktimetracker.location.service.HomeArrivalBackfill]（纯函数、有单测），
+     *  这里只负责取候选 —— SQL 里写死选行会测不到。 */
+    @Query("""SELECT * FROM work_records
+        WHERE homeArrivalTime IS NULL AND startTime IS NOT NULL AND endTime IS NOT NULL
+        ORDER BY endTime DESC LIMIT 30""")
+    suspend fun recordsMissingHomeArrival(): List<WorkRecordEntity>
 
     @Query("SELECT COALESCE(MAX(updatedAt), 0) FROM work_records WHERE isManual = 0 AND startTime IS NOT NULL AND endTime IS NOT NULL AND needsReview = 0 AND status = 'WORK'")
     suspend fun learningRevision(): Long

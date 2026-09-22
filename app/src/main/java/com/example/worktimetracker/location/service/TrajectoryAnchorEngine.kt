@@ -54,10 +54,15 @@ class TrajectoryAnchorEngine(
         val companyStable = fix.companyAnchorDistanceMeters?.let { it <= config.companyStableRadiusMeters } == true
         val homeStable = fix.homeAnchorDistanceMeters?.let { it <= config.homeStableRadiusMeters } == true
         val continuous = continuity.isContinuous(previous.lastLocationTime, fix.time)
+        // 仍在家的范围内（典型：下班回家途中已进家、但还没到稳定半径）。
+        // 这时不得开新会话 —— 否则「下班回家」会被记成「离家上班」，并顺手清掉到家候选。
+        val nearHome = fix.homeDistanceMeters?.let { it <= config.homeRadiusMeters } == true
         val events = mutableListOf<Event>()
         val next = when (previous.currentState) {
             "REST" -> when {
-                homeStable -> previous.copy(sessionStart = null)
+                // 到家候选一旦结束使命就必须清掉：留着会跨班次残留，
+                // 被下一班的「离岗计时确认」当成到家证据（实测 09-20 因此被判成已到家）
+                homeStable || nearHome -> previous.copy(sessionStart = null, candidateHomeArrivalTime = null)
                 fix.movingAway || fix.type == LocationType.OTHER -> newSession(previous, fix.time).also {
                     events += Event.HomeDeparture(fix.time, fix.time)
                 }
@@ -98,8 +103,10 @@ class TrajectoryAnchorEngine(
                     // 晚到家：只补齐同一 sessionId 的到家证据，不创建新会话
                     events += Event.HomeArrival(fix.time, fix.time)
                     previous.copy(currentState = "REST", sessionStart = null,
-                        homeArrivalTime = fix.time, homeArrivalConfirmedAt = fix.time)
-                } else previous.copy(currentState = "REST", sessionStart = null)
+                        homeArrivalTime = fix.time, homeArrivalConfirmedAt = fix.time,
+                        candidateHomeArrivalTime = null)
+                } else previous.copy(currentState = "REST", sessionStart = null,
+                    candidateHomeArrivalTime = null)
             } else previous
             else -> previous
         }

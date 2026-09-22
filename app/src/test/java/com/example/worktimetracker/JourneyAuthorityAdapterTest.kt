@@ -48,6 +48,20 @@ class JourneyAuthorityAdapterTest {
         assertNull(end.tempLeaveStart)
     }
 
+    @Test fun homeDepartureClearsPreviousHomeArrivalTraces() {
+        // 新一轮通勤开始时必须清掉上一班的到家痕迹：留着会跨班次残留，
+        // 被下一班的「离岗计时确认」当成到家证据（实测 09-20 因此把下班路上判成已到家）
+        val next = JourneyAuthorityAdapter.apply(
+            WorkStateEntity(currentState = "REST", sessionId = "old", sessionStart = 10,
+                homeArrivalTime = 500, candidateHomeArrivalTime = 500, confirmedDepartureTime = 400),
+            transition(JourneyPhase.COMMUTING_TO_WORK, JourneyEvent.HomeDeparture(600, 610)), "new", 610
+        )
+        assertEquals("LEAVING_HOME", next.currentState)
+        assertNull(next.homeArrivalTime)
+        assertNull(next.candidateHomeArrivalTime)
+        assertNull(next.confirmedDepartureTime)
+    }
+
     private fun transition(phase: JourneyPhase, vararg events: JourneyEvent) = JourneyTransition(
         JourneySnapshot(phase, null, phase, 0), events.toList(), setOf(JourneyReason.PLACE_CONFIRMED), "test"
     )

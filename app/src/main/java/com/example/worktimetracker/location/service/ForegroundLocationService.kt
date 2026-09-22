@@ -672,10 +672,13 @@ class ForegroundLocationService : Service(), LocationListener {
         if (previous.currentState != "FINISHED" && next.currentState == "FINISHED" && previous.sessionStart != null) {
             finalizeSessionRecord(app, previous, next, fixTime, settings)
         }
-        if (previous.currentState == "FINISHED" && next.currentState == "REST" && next.homeArrivalTime != null) {
-            // 迟到家证据：工时记录已在 FINISHED 时落库，必须把到家时间补写进当天 WorkRecord，
-            // 否则记录永远缺 homeArrivalTime 被标记 needsReview
-            backfillHomeArrival(app, next.homeArrivalTime)
+        // 迟到家证据：工时记录已在 FINISHED 时落库，必须把到家时间补写进当天 WorkRecord，
+        // 否则记录永远缺 homeArrivalTime 被标记 needsReview。
+        // 只看 next 是 REST 就够：实测 09-20 那拍 previous 是 LEAVING_HOME（前一日到家时刻残留
+        // 让「离岗计时确认」直接跳到 REST），写死 previous=="FINISHED" 会让补写整轮缺席。
+        if (previous.currentState != "REST" && next.currentState == "REST" && next.homeArrivalTime != null) {
+            // sessionStart 用来把补写目标锁定在「本次会话」上，避免同一早晨两段会话时写错行
+            backfillHomeArrival(app, next.homeArrivalTime, previous.sessionStart)
         }
         app.database.workStateDao().save(next)
         scheduleDepartureConfirmation(next, settings)
@@ -808,7 +811,11 @@ class ForegroundLocationService : Service(), LocationListener {
                 DepartureConfirmationPolicy.Action.WAIT_FOR_EVIDENCE -> Unit
                 DepartureConfirmationPolicy.Action.CONFIRM -> {
                     val now = System.currentTimeMillis()
+                    // 到家候选若早于离岗候选，必然是上一班次的残留（跨班次没清）。
+                    // 拿它当到家证据会把「下班路上」误判成「已经到家」→ 状态直接跳到 REST，
+                    // 于是真正的到家时刻再也补不进记录（实测 09-19 / 09-20 两条记录永久缺到家时间）。
                     val firstHome = state.candidateHomeArrivalTime
+                        ?.takeIf { candidate == null || it >= candidate }
                     val next = state.copy(
                         currentState = if (firstHome != null) "REST" else "FINISHED",
                         confirmedDepartureTime = candidate,
@@ -866,9 +873,16 @@ class ForegroundLocationService : Service(), LocationListener {
         sendWorkRecordNotification(session)
     }
 
-    /** 迟到家证据补写：把 FINISHED→REST 时才拿到的 homeArrivalTime 写回当天已完结的工时记录。 */
-    private suspend fun backfillHomeArrival(app: WorkTimeApplication, arrival: Long) {
-        val record = app.database.workRecordDao().latestFinishedWithoutHomeArrival(arrival) ?: return
+    /**
+     * 迟到家证据补写：把 REST 时才拿到的 homeArrivalTime 写回本次会话已完结的工时记录。
+     *
+     * [sessionStart] 是本轮会话的到岗时刻（[WorkStateEntity.sessionStart]），用来把目标行锁定在
+     * 「本次会话及更早」的记录上。09-21 早晨出现过两段会话，第二段 09:18 建的记录 endTime 更晚，
+     * 只按 MAX(endTime) 会把到家时间写进后一段那条，而真实目标是夜班那条。
+     */
+    private suspend fun backfillHomeArrival(app: WorkTimeApplication, arrival: Long, sessionStart: Long?) {
+        val record = HomeArrivalBackfill.pick(
+            app.database.workRecordDao().recordsMissingHomeArrival(), arrival, sessionStart) ?: return
         if (com.example.worktimetracker.data.entity.ManualFieldMask.contains(
                 record.manualFieldsMask, com.example.worktimetracker.data.entity.ManualField.HOME_ARRIVAL)) return
         app.database.workRecordDao().upsert(record.copy(

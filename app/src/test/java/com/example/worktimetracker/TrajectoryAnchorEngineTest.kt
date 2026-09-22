@@ -83,6 +83,37 @@ class TrajectoryAnchorEngineTest {
         assertTrue(decision.events.isEmpty())
     }
 
+    // ---------- 2026-09-22：到家候选跨班次残留 + 「下班回家」被记成「离家上班」 ----------
+
+    @Test fun restDoesNotStartCommuteWhileStillNearHome() {
+        // 下班回家途中已进家、但还没到稳定半径时不许开新会话：
+        // 否则「下班回家」会被记成「离家上班」，并顺手清掉到家候选（实测 09-20 连发 10 拍 HomeDeparture）
+        val decision = engine.next(
+            WorkStateEntity(currentState = "REST", sessionId = "s"),
+            fix(1_000L, LocationType.OTHER, home = 120.0, homeAnchor = 180.0, moving = true), config
+        )
+        assertEquals("REST", decision.nextState.currentState)
+        assertTrue(decision.events.filterIsInstance<TrajectoryAnchorEngine.Event.HomeDeparture>().isEmpty())
+        assertEquals("s", decision.nextState.sessionId)
+    }
+
+    @Test fun restClearsHomeArrivalCandidate() {
+        // 到家候选一旦结束使命必须清掉：留着会跨班次残留，
+        // 被下一班的「离岗计时确认」当成到家证据，状态直接跳到 REST，真正的到家时刻再也补不进记录
+        val atHome = engine.next(
+            WorkStateEntity(currentState = "REST", candidateHomeArrivalTime = 60L),
+            fix(500L, LocationType.HOME, homeAnchor = 20.0), config
+        )
+        assertNull(atHome.nextState.candidateHomeArrivalTime)
+        val finished = engine.next(
+            WorkStateEntity(currentState = "FINISHED", sessionId = "s", sessionStart = 1_000L,
+                confirmedDepartureTime = 2_000L, candidateHomeArrivalTime = 1_500L),
+            fix(3_000L, LocationType.HOME, company = 2_000.0, companyAnchor = 1_900.0, homeAnchor = 20.0), config
+        )
+        assertEquals("REST", finished.nextState.currentState)
+        assertNull(finished.nextState.candidateHomeArrivalTime)
+    }
+
     @Test fun nearCompanyCandidateExpiresAcrossFifteenHourGap() {
         val state = WorkStateEntity(currentState = "NEAR_COMPANY", sessionId = "s",
             candidateCompanyArrivalTime = 100L, stableCompanyCount = 1, lastLocationTime = 100L)
@@ -196,7 +227,8 @@ class TrajectoryAnchorEngineTest {
     }
 
     private fun fix(time: Long, type: LocationType, company: Double? = null, companyAnchor: Double? = null,
-        homeAnchor: Double? = null, moving: Boolean = false, strong: Boolean = false) = TrajectoryAnchorEngine.Fix(
-        time, type, 10f, "gps", company, companyAnchor, null, homeAnchor, 0f, moving, strong
+        homeAnchor: Double? = null, moving: Boolean = false, strong: Boolean = false,
+        home: Double? = null) = TrajectoryAnchorEngine.Fix(
+        time, type, 10f, "gps", company, companyAnchor, home, homeAnchor, 0f, moving, strong
     )
 }

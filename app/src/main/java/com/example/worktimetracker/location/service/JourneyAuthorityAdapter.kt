@@ -23,6 +23,12 @@ object JourneyAuthorityAdapter {
                     sessionId = next.sessionId ?: newSessionId,
                     homeDepartureTime = event.occurredAt,
                     candidateHomeDepartureTime = event.occurredAt,
+                    // 新一轮通勤开始：上一班的到家痕迹必须清掉。留着会跨班次残留，
+                    // 被下一班的「离岗计时确认」当成到家证据（实测 09-20 因此被判成已到家）。
+                    homeArrivalTime = null,
+                    candidateHomeArrivalTime = null,
+                    confirmedDepartureTime = null,
+                    tempLeaveStart = null,
                     updatedAt = now
                 )
                 is JourneyEvent.CompanyArrival -> next.copy(
@@ -32,6 +38,7 @@ object JourneyAuthorityAdapter {
                     candidateCompanyArrivalTime = event.occurredAt,
                     companyArrivalConfirmedAt = event.confirmedAt,
                     candidateCompanyDepartureTime = null,
+                    candidateHomeArrivalTime = null,
                     tempLeaveStart = null,
                     updatedAt = now
                 )
