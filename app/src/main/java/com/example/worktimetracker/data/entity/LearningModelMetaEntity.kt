@@ -16,13 +16,21 @@ import androidx.room.Index
 @Entity(
     tableName = "learning_model_meta",
     primaryKeys = ["modelType", "modelVersion"],
-    indices = [Index(value = ["modelType", "status"])]
+    indices = [Index(value = ["modelType", "status"]), Index(value = ["placeId"])]
 )
 data class LearningModelMetaEntity(
     /** [com.example.worktimetracker.domain.learning.LearningModelType] 的 name */
     val modelType: String,
     /** 同类型内单调递增；版本号本身不代表新旧以外的任何语义 */
     val modelVersion: Long,
+    /**
+     * 这一版属于哪个地点（`sites.id`）；DB v18 起才有，老行为 null（站点归属不可考）。
+     *
+     * 没有这一列时，所有地点共用同一条 `PLACE_ANCHOR` 版本序列：
+     * 站点 1 开 v1、站点 2 开 v2 时，v2 的建立会把 v1 退休 ——
+     * 于是「最后开版本的那个站点」之外，其余站点当前生效的版本恒为 RETIRED。
+     */
+    val placeId: Long? = null,
     /** 训练数据覆盖到的口径（如地点模型存 `yyyy-MM-dd`，工资模型存 `yyyy-MM`）；null = 未知 */
     val trainedThrough: String? = null,
     /** 参与训练的样本数（可解释性用，不参与算法） */

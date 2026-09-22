@@ -189,25 +189,36 @@ class AnchorLearningService(
         val conflictCount = fingerprintConflicts(fingerprints, windowStart)
         val shadow = ShadowValidator.evaluate(observations, today, conflictCount)
 
-        val historicalBootstrap = existing?.autoApplied != true && HistoricalAnchorBootstrap.canApply(
+        // 「曾经生效过」而不是「当前生效着」—— 用 autoApplied 当闸门会让
+        // 「被影子验证否决」的站点每轮都被 30 天历史样本直接放行，影子验证形同虚设。
+        val everApplied = existing?.everApplied == true
+        val historicalBootstrap = HistoricalAnchorBootstrap.canApply(
+            everApplied = everApplied,
             distinctDays = candidate.distinctDayCount,
             offsetMeters = candidate.offsetMeters
         )
         val action = if (historicalBootstrap) AnchorUpdateAction.AUTO_SMOOTH
-        else AnchorUpdatePolicy.decide(candidate.offsetMeters, shadow)
+             else AnchorUpdatePolicy.decide(candidate.offsetMeters, shadow)
         val status = AnchorUpdatePolicy.statusOf(action)
         val explanation = if (historicalBootstrap) {
             "历史数据已完成预学习（跨 ${candidate.distinctDayCount} 天），直接启用学习校准"
         } else AnchorUpdatePolicy.explain(action, candidate.offsetMeters, shadow)
         val wasApplied = existing?.autoApplied == true
         val autoApplied = action == AnchorUpdateAction.AUTO_SMOOTH
+        // 只增不减：一旦生效过就永久留痕，历史预学习不再有机会绕过影子验证
+        val nextEverApplied = everApplied || autoApplied
 
         // 已经生效过就不再重复升版本：否则每次启动都会 +1，版本号会被噪声淹掉。
         // 反之，一旦验证不再通过（例如候选漂移导致重开窗口），autoApplied 落回 false ——
         // 学习锚点立刻停用、回落用户配置锚点，等重新验证通过再启用。
         val modelVersion = when {
             autoApplied && wasApplied -> existing!!.modelVersion
-            autoApplied -> openNewVersion(candidate.sampleCount)
+            autoApplied -> openNewVersion(
+                placeId = site.id,
+                sampleCount = candidate.sampleCount,
+                viaBootstrap = historicalBootstrap,
+                distinctDays = candidate.distinctDayCount
+            )
             else -> existing?.modelVersion ?: 0L
         }
 
@@ -275,6 +286,7 @@ class AnchorLearningService(
                 fingerprintConfidence = existing?.fingerprintConfidence ?: 0.0,
                 modelVersion = modelVersion,
                 autoApplied = autoApplied,
+                everApplied = nextEverApplied,
                 updatedAt = now
             )
         )
@@ -329,14 +341,23 @@ class AnchorLearningService(
      *
      * 回滚 = 把新版本置 `RETIRED`、目标版本置 `ACTIVE`；所以每一版都必须留下
      * 「基于多少样本、训到什么口径」的痕迹，否则回滚时认不出哪版是好的。
+     *
+     * ⚠️ 退役范围必须限定在 [placeId]：多站点共用 `PLACE_ANCHOR` 版本序列时，
+     * 不限定地点会让后开版本的站点把先开版本站点的版本一并退休。
      */
-    private suspend fun openNewVersion(sampleCount: Int): Long {
+    private suspend fun openNewVersion(
+        placeId: Long,
+        sampleCount: Int,
+        viaBootstrap: Boolean,
+        distinctDays: Int
+    ): Long {
         val dao = db.learningModelDao()
         val type = LearningModelType.PLACE_ANCHOR.name
         val now = System.currentTimeMillis()
         val next = dao.maxVersion(type) + 1
         dao.retireOtherVersions(
             modelType = type,
+            placeId = placeId,
             keepVersion = next,
             retiredStatus = ModelStatus.RETIRED.name,
             now = now
@@ -345,12 +366,19 @@ class AnchorLearningService(
             LearningModelMetaEntity(
                 modelType = type,
                 modelVersion = next,
+                placeId = placeId,
                 trainedThrough = dayOf(now).toString(),
                 sampleCount = sampleCount,
                 status = ModelStatus.ACTIVE.name,
                 createdAt = now,
-                note = "地点锚点自动平滑（影子验证六条件通过，偏移在 " +
-                    "${AnchorUpdatePolicy.AUTO_SMOOTH_MAX_OFFSET_METERS.toInt()} 米内）"
+                // note 必须写这一版**真实**的来源：写死「影子验证六条件通过」会让
+                // 历史预学习开出来的版本也说同一句话，审计时认不出哪版走的是哪条路
+                note = if (viaBootstrap) {
+                    "历史数据预学习直接接管（跨 $distinctDays 天，未走影子验证）"
+                } else {
+                    "地点锚点自动平滑（影子验证六条件通过，偏移在 " +
+                        "${AnchorUpdatePolicy.AUTO_SMOOTH_MAX_OFFSET_METERS.toInt()} 米内）"
+                }
             )
         )
         return next

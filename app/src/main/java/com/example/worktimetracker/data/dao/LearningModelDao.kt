@@ -42,13 +42,21 @@ interface LearningModelDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMeta(meta: LearningModelMetaEntity)
 
-    /** 回滚/退役：把某类型下除 [keepVersion] 外的 ACTIVE 版本置为退役（不删行）。 */
+    /**
+     * 回滚/退役：把某类型下**同一地点**除 [keepVersion] 外的 ACTIVE 版本置为退役（不删行）。
+     *
+     * ⚠️ [placeId] 必须是判等条件之一。少了它，多站点共用同一条 `PLACE_ANCHOR` 版本序列时，
+     * 后开版本的站点会把先开版本站点的版本一起退休（DB v18 修的就是这个）。
+     * `placeId` 为 null 的老行不会被 `IS` 命中，保持原状。
+     */
     @Query(
         "UPDATE learning_model_meta SET status = :retiredStatus, invalidatedAt = :now " +
-            "WHERE modelType = :modelType AND modelVersion <> :keepVersion AND status = 'ACTIVE'"
+            "WHERE modelType = :modelType AND placeId IS :placeId " +
+            "AND modelVersion <> :keepVersion AND status = 'ACTIVE'"
     )
     suspend fun retireOtherVersions(
         modelType: String,
+        placeId: Long?,
         keepVersion: Long,
         retiredStatus: String,
         now: Long

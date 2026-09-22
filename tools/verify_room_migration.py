@@ -308,9 +308,34 @@ def verify_probes(con: sqlite3.Connection, snapshot: dict) -> list[str]:
 
 # ---------------------------------------------------------------------------- 比对
 
-def compare_structure(con: sqlite3.Connection, new_schema: dict) -> tuple[list[str], list[str]]:
+def added_columns(old_schema: dict, new_schema: dict) -> set[tuple[str, str]]:
+    """本次迁移**新增**的列（(table, column)）。
+
+    用途：`ALTER TABLE ... ADD COLUMN x NOT NULL DEFAULT 0` 会在 SQLite 里留下一个
+    `DEFAULT 0`，而 Room 导出的 schema **不记录 Kotlin 默认值**（`defaultValue` 恒为 null）。
+    于是「新增列的默认值」必然对不上 —— v10→v11 的 7 条、v17→v18 的 1 条都是这一类。
+    把它们一律当错误会让验证器在每次加列时都 FAIL，最后被当成噪音忽略；
+    所以新增列的默认值差异降级为提示，但**仅限于新增列**，老列的默认值漂移仍然必须报错。
+    """
+    def cols(schema: dict) -> set[tuple[str, str]]:
+        out: set[tuple[str, str]] = set()
+        for ent in schema.get("entities", []):
+            for f in ent["fields"]:
+                out.add((ent["tableName"], f["columnName"]))
+        return out
+
+    return cols(new_schema) - cols(old_schema)
+
+
+def compare_structure(
+    con: sqlite3.Connection,
+    new_schema: dict,
+    added: set[tuple[str, str]] | None = None,
+) -> tuple[list[str], list[str]]:
     """返回 (errors, notes)。"""
+    added = added or set()
     errors: list[str] = []
+    warnings: list[str] = []
     by_name = {e["tableName"]: e for e in new_schema["entities"]}
 
     present = table_names(con)
@@ -339,9 +364,13 @@ def compare_structure(con: sqlite3.Connection, new_schema: dict) -> tuple[list[s
                     "%s.%s NOT NULL 不一致：实际=%d 期望=%d" % (table, name, g["notnull"], e["notnull"])
                 )
             if (g["default"] or None) != (e["default"] or None):
-                errors.append(
-                    "%s.%s 默认值不一致：实际=%r 期望=%r" % (table, name, g["default"], e["default"])
-                )
+                message = "%s.%s 默认值不一致：实际=%r 期望=%r" % (table, name, g["default"], e["default"])
+                # 新增列的 DEFAULT 是 SQLite 的硬性要求（NOT NULL 加列必须给默认值），
+                # Room 又不把 Kotlin 默认值写进 schema —— 这类差异只提示，不算失败。
+                if (table, name) in added:
+                    warnings.append(message + "（本次新增列，SQLite 要求加列必须给默认值）")
+                else:
+                    errors.append(message)
 
         want_pk = list(ent["primaryKey"]["columnNames"])
         got_pk = pk_order(con, table)
@@ -372,6 +401,8 @@ def compare_structure(con: sqlite3.Connection, new_schema: dict) -> tuple[list[s
                 )
 
     notes = ["逐表核对 %d/%d" % (len(set(by_name) & present), len(by_name))]
+    for w in warnings:
+        notes.append("⚠ %s" % w)
     return errors, notes
 
 
@@ -451,7 +482,7 @@ def main(argv=None) -> int:
     if got_version != v_to:
         errors.append("PRAGMA user_version 实际=%d 期望=%d" % (got_version, v_to))
 
-    struct_errors, notes = compare_structure(con, new)
+    struct_errors, notes = compare_structure(con, new, added_columns(old, new))
     errors.extend(struct_errors)
 
     errors.extend(verify_probes(con, snapshot))

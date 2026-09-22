@@ -42,6 +42,18 @@ data class LearnedPlaceModelEntity(
     val modelVersion: Long = 0,
     /** 当前学习锚点是否为「已自动生效」状态（true 才会被取用） */
     val autoApplied: Boolean = false,
+    /**
+     * 该地点**是否曾经生效过**（只增不减的事实痕迹，DB v18）。
+     *
+     * ⚠️ 这是「事实」不是「开关」，和 `autoApplied` 必须分开看：
+     * `autoApplied == false` 有两种完全不同的含义 ——「从没生效过」与「生效过但被影子验证否决」。
+     * 只拿 `autoApplied` 当历史预学习的闸门时，后者每轮都会被候选自带的 30 天历史样本
+     * 直接放行（实测：站点 1 / 站点 2 每天在 SHADOW ↔ AUTO_APPLIED 之间振荡）。
+     *
+     * 与用户侧无关：`place_learning_preferences` 才管用户停用/启用，
+     * 用户停用**不得**写进模型的事实痕迹里。
+     */
+    val everApplied: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     val hasLearned: Boolean get() = learnedLat != null && learnedLng != null

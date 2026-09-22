@@ -50,7 +50,7 @@ class WorkTimeApplication : Application() {
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                 MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
                 MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
-                MIGRATION_15_16, MIGRATION_16_17
+                MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18
             )
             .build()
     }
@@ -424,6 +424,30 @@ class WorkTimeApplication : Application() {
                         "`modelVersion` INTEGER NOT NULL, " +
                         "`updatedAt` INTEGER NOT NULL, " +
                         "PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
+        /**
+         * DB v18：学习层两个维度补齐（真机体检问题 1 / 问题 2）。
+         *
+         * ① `learning_model_meta.placeId` —— 版本元数据此前没有站点维度，
+         *    所有站点共用同一条 `PLACE_ANCHOR` 版本序列，后开版本的站点会把
+         *    先开版本站点的版本一并 RETIRED（实测 placeId=1 的生效版本恒为 RETIRED）。
+         *    老行置 NULL：归属不可考，不猜；`IS` 判等不会命中它们。
+         * ② `learned_place_models.everApplied` —— 「这个站点曾经生效过吗」没有痕迹位，
+         *    于是 `autoApplied` 从 true 落回 false 后，历史预学习每轮都用它自带的
+         *    30 天历史样本直接重新启用，影子验证被永久绕过（每天 SHADOW ↔ AUTO_APPLIED 振荡）。
+         */
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE learning_model_meta ADD COLUMN placeId INTEGER")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_learning_model_meta_placeId` " +
+                        "ON `learning_model_meta` (`placeId`)"
+                )
+                db.execSQL(
+                    "ALTER TABLE learned_place_models ADD COLUMN everApplied INTEGER NOT NULL DEFAULT 0"
                 )
             }
         }
