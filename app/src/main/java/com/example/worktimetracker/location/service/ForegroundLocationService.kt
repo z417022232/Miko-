@@ -146,6 +146,8 @@ class ForegroundLocationService : Service(), LocationListener {
     private var locationManager: LocationManager? = null
     private val watchdogHandler = Handler(Looper.getMainLooper())
     private var lastFixReceivedAt: Long = 0L
+    /** 看门狗上次**重新注册**定位监听的时刻（0 = 从未）；用于给重注册加冷却。 */
+    private var lastLocationReRegisterAt: Long = 0L
     private var currentSamplingIntervalMillis = LocationSamplingPolicy.WORK_WINDOW_INTERVAL_MILLIS
     private var pendingSamplingIntervalMillis = currentSamplingIntervalMillis
     private val applySamplingInterval = Runnable {
@@ -161,13 +163,16 @@ class ForegroundLocationService : Service(), LocationListener {
             val now = System.currentTimeMillis()
             val lastCallback = registrationState.lastCallback(SOURCE_LOCATION) ?: 0L
             val staleAfter = maxOf(LOCATION_STALE_MILLIS, currentSamplingIntervalMillis + 5 * 60_000L)
-            if (lastCallback == 0L || now - lastCallback >= staleAfter) {
+            if (LocationWatchdogPolicy.needsAmbientScan(lastCallback, now, staleAfter)) {
                 // 静止且设置了 50 米最小距离时无回调是正常现象：先请求环境快照补充证据
                 requestAmbientScan(significantMotion = false, now = now)
                 val hardStaleAfter = maxOf(staleAfter, currentSamplingIntervalMillis * 2)
-                if (lastCallback == 0L || now - lastCallback >= hardStaleAfter) {
+                if (LocationWatchdogPolicy.shouldReRegister(
+                        lastCallback, now, hardStaleAfter, lastLocationReRegisterAt)
+                ) {
                     logEvent("LOCATION_WATCHDOG", "长时间未收到定位，正在重新注册定位监听")
                     registrationState.invalidate(SOURCE_LOCATION)
+                    lastLocationReRegisterAt = now
                     startLocationUpdates()
                 }
             }
@@ -391,6 +396,8 @@ class ForegroundLocationService : Service(), LocationListener {
         // 同步更新聚合键：定位看护检查读取 SOURCE_LOCATION 的回调时间，
         // 与各 Provider（gps/network）分开记录，缺少会导致看护一直误判陈旧并反复重注册
         registrationState.recordCallback(SOURCE_LOCATION, now)
+        // 收到回调 = 注册真的生效了，重注册冷却清零（下次真收不到时立刻就能重注册）
+        lastLocationReRegisterAt = 0L
         // 手动一次性刷新：任何一次回调都算「服务已响应」，立刻回到常规采样档
         // （放在最前面，基线回调/被 fixGate 拦掉的回调也会复位，避免 8 秒兜底才恢复）
         if (oneShotRefreshInFlight) {
