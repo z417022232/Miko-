@@ -62,6 +62,20 @@ class JourneyAuthorityAdapterTest {
         assertNull(next.confirmedDepartureTime)
     }
 
+    @Test fun noConfirmedEventLeavesFormalStateUntouched() {
+        // 环境证据路径现在也走权威链，因此这条契约必须成立：
+        // 新机本拍没有任何已确认事件时，正式状态一个字都不许动
+        // （否则「新机权威」会变成「新机沉默时让旧引擎继续推进」）。
+        val before = WorkStateEntity(
+            currentState = "LEAVING_HOME", sessionId = "s",
+            candidateCompanyArrivalTime = 100, stableCompanyCount = 1
+        )
+        val next = JourneyAuthorityAdapter.apply(
+            before, transition(JourneyPhase.COMMUTING_TO_WORK), "new", 200
+        )
+        assertEquals(before, next)
+    }
+
     private fun transition(phase: JourneyPhase, vararg events: JourneyEvent) = JourneyTransition(
         JourneySnapshot(phase, null, phase, 0), events.toList(), setOf(JourneyReason.PLACE_CONFIRMED), "test"
     )

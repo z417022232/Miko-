@@ -1212,12 +1212,25 @@ class ForegroundLocationService : Service(), LocationListener {
             val decision = anchorEngine.next(previous, fix, TrajectoryAnchorEngine.Config(
                 settings.companyRadiusMeters, settings.homeRadiusMeters,
                 calibration.companyStableRadius(), HOME_STABLE_RADIUS_METERS, settings.leaveCompanyConfirmMinutes))
-            runJourneyShadowAmbient(app, previous, decision.nextState, fused, now, settings, decision.events)
-            persistStateTransition(app, previous, decision.nextState, now, now, settings, type, null)
+            // 与 GPS 路径同一条权威链：新行程引擎的 confirmedEvents 才决定正式状态。
+            // 此前这里直接把旧引擎的 nextState 落盘，环境证据拍完全绕过新机 ——
+            // 实测 09-20 09:39:13 正是这条路径把状态写成 LEAVING_HOME，
+            // 而新机当时判的是 AWAY 却没机会纠正它。
+            val journeyRuntime = runJourneyShadowAmbient(
+                app, previous, decision.nextState, fused, now, settings, decision.events)
+            val authoritative = journeyRuntime?.let {
+                JourneyAuthorityAdapter.apply(previous, it.transition, UUID.randomUUID().toString(), now)
+            } ?: decision.nextState
+            persistStateTransition(app, previous, authoritative, now, now, settings, type, null)
         }
     }
 
-    /** 环境证据的一拍影子运行；弱证据会被新Reducer按 MAINTAINED/UNKNOWN 契约只维持。 */
+    /**
+     * 环境证据的一拍影子运行；弱证据会被新Reducer按 MAINTAINED/UNKNOWN 契约只维持。
+     *
+     * @return 新机本拍的决策，调用方据此走 [JourneyAuthorityAdapter] 落正式状态；
+     *   影子跑失败返回 null（此时退回旧引擎结果，保证主链路不中断）。
+     */
     private suspend fun runJourneyShadowAmbient(
         app: WorkTimeApplication,
         legacyBefore: com.example.worktimetracker.data.entity.WorkStateEntity,
@@ -1226,8 +1239,8 @@ class ForegroundLocationService : Service(), LocationListener {
         now: Long,
         settings: com.example.worktimetracker.data.entity.UserSettingsEntity,
         legacyEvents: List<TrajectoryAnchorEngine.Event>
-    ) {
-        runCatching {
+    ): com.example.worktimetracker.domain.journey.JourneyRuntimeDecision? {
+        return runCatching {
             val observation = JourneyObservation(
                 now = now,
                 place = fused.place,
@@ -1289,9 +1302,10 @@ class ForegroundLocationService : Service(), LocationListener {
                     }
                 )
             )
+            runtime
         }.onFailure { error ->
             logEvent("JOURNEY", "环境影子运行失败，正式状态未受影响：${error.message}")
-        }
+        }.getOrNull()
     }
 
     private suspend fun learnedSettings(
