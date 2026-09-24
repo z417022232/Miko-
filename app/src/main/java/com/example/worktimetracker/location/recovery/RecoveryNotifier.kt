@@ -20,7 +20,7 @@ object RecoveryNotifier {
         )
         val notification = NotificationCompat.Builder(context, NotificationChannels.RECOVERY_CHANNEL_ID)
             .setContentTitle("系统定位已暂停")
-            .setContentText("定位记录可能中断，点击打开系统定位")
+            .setContentText("记录已暂停；多半是省电策略（如睡眠待机优化）关闭了定位，点击打开")
             .setSmallIcon(R.drawable.ic_stat_worktime)
             .setContentIntent(intent)
             .setAutoCancel(true)

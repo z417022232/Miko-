@@ -25,6 +25,27 @@ class SystemLocationEntryPointContractTest {
         assertTrue("关闭时必须跳过拉起", source.contains("if (!systemLocationEnabled)"))
     }
 
+    @Test
+    fun `location switch receiver is manifest declared for both system location actions`() {
+        val manifest = source("app/src/main/AndroidManifest.xml")
+        val receiver = manifest.indexOf(".location.recovery.LocationSwitchReceiver")
+        assertTrue("必须声明系统定位开关接收器", receiver >= 0)
+        val filterBody = manifest.substring(receiver, manifest.indexOf("</receiver>", receiver))
+        assertTrue("必须监听 PROVIDERS_CHANGED", filterBody.contains("android.location.PROVIDERS_CHANGED"))
+        assertTrue("必须监听 MODE_CHANGED", filterBody.contains("android.location.MODE_CHANGED"))
+        assertTrue("接收系统广播必须 exported", filterBody.contains("android:exported=\"true\""))
+    }
+
+    @Test
+    fun `location switch receiver filters actions and kicks alarm only when heartbeat stale`() {
+        val source = source("app/src/main/java/com/example/worktimetracker/location/recovery/LocationSwitchReceiver.kt")
+        assertTrue("必须按 action 白名单过滤", source.contains("isSwitchAction(action)"))
+        val check = source.indexOf("SystemLocationStateChecker.checkAndRecord")
+        val kick = source.indexOf("AlarmWatchdog.scheduleKick")
+        assertTrue("必须先记录状态转移再决定是否踢看门狗", check >= 0 && kick > check)
+        assertTrue("踢看门狗必须由纯策略判定心跳失效", source.contains("LocationSwitchRecoveryPolicy.evaluate"))
+    }
+
     private fun source(relative: String): String {
         var dir = File(System.getProperty("user.dir"))
         repeat(5) {

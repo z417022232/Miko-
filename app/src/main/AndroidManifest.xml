@@ -64,6 +64,16 @@
                 <action android:name="com.example.worktimetracker.action.ALARM_WATCHDOG" />
             </intent-filter>
         </receiver>
+        <!-- 系统定位开关变化：受保护的系统广播；夜间省电策略重新打开定位时即时自愈 -->
+        <receiver
+            android:name=".location.recovery.LocationSwitchReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.location.PROVIDERS_CHANGED" />
+                <action android:name="android.location.MODE_CHANGED" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

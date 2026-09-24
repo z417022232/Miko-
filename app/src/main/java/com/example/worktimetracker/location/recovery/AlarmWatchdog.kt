@@ -30,6 +30,9 @@ object AlarmWatchdog {
     /** 心跳年龄超过此值即判定服务死亡（心跳周期 5 分钟 × 1.6 余量） */
     const val DEAD_AFTER_MILLIS = 8 * 60_000L
 
+    private const val KICK_DELAY_MILLIS = 2_000L
+    private const val KICK_WINDOW_MILLIS = 60_000L
+
     fun scheduleNext(context: Context, nowMillis: Long = System.currentTimeMillis()) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
         val pi = pendingIntent(context)
@@ -41,6 +44,25 @@ object AlarmWatchdog {
             } else {
                 // 无精确闹钟权限时退化为非精确闹钟，窗口放宽到 ±5 分钟仍可自愈
                 am.setWindow(AlarmManager.RTC_WAKEUP, next, 5 * 60_000L, pi)
+            }
+        }
+    }
+
+    /**
+     * 立即触发一次看门狗（[LocationSwitchReceiver] 在系统定位开关恢复时使用）：
+     * 用同一个 PendingIntent 把原本 10 分钟后的闹钟提前到现在，接收端顶部会先续期
+     * 下一轮周期闹钟，链条不会断；若触发时心跳已恢复新鲜则只续期、不拉服务。
+     */
+    fun scheduleKick(context: Context, nowMillis: Long = System.currentTimeMillis()) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val pi = pendingIntent(context)
+        val at = nowMillis + KICK_DELAY_MILLIS
+        val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
+        runCatching {
+            if (canExact) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            } else {
+                am.setWindow(AlarmManager.RTC_WAKEUP, at, KICK_WINDOW_MILLIS, pi)
             }
         }
     }
