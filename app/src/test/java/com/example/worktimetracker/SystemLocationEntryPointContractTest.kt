@@ -46,6 +46,22 @@ class SystemLocationEntryPointContractTest {
         assertTrue("踢看门狗必须由纯策略判定心跳失效", source.contains("LocationSwitchRecoveryPolicy.evaluate"))
     }
 
+    @Test
+    fun `notification claim is gated by vivo sleep mode and stale alert is cancelled on recovery`() {
+        val claim = source("app/src/main/java/com/example/worktimetracker/location/recovery/ServiceRecovery.kt")
+        val body = functionBody(claim, "fun claimSystemLocationNotification(")
+        val gate = body.indexOf("SystemLocationNotifyGate.shouldNotifyLocationOff")
+        val mark = body.indexOf("putLong(LOCATION_ALERT_NOTIFIED")
+        assertTrue("通知领取必须先过睡眠模式豁免", gate in 0 until mark)
+        assertTrue("豁免判定必须基于 vivo 睡眠标志读取", body.contains("VivoSleepModeReader.isActive(context)"))
+        val notifier = source("app/src/main/java/com/example/worktimetracker/location/recovery/RecoveryNotifier.kt")
+        assertTrue("必须提供撤旧通知入口", notifier.contains("cancelSystemLocationDisabled"))
+        val service = source("app/src/main/java/com/example/worktimetracker/location/service/ForegroundLocationService.kt")
+        assertTrue("服务恢复路径必须撤旧通知", service.contains("RecoveryNotifier.cancelSystemLocationDisabled"))
+        val receiver = source("app/src/main/java/com/example/worktimetracker/location/recovery/LocationSwitchReceiver.kt")
+        assertTrue("开关广播恢复路径必须撤旧通知（覆盖服务已死场景）", receiver.contains("RecoveryNotifier.cancelSystemLocationDisabled"))
+    }
+
     private fun source(relative: String): String {
         var dir = File(System.getProperty("user.dir"))
         repeat(5) {

@@ -33,7 +33,10 @@ class LocationSwitchReceiver : BroadcastReceiver() {
                 val now = System.currentTimeMillis()
                 // 与服务内 / 闹钟看门狗共用同一份状态转移与一次性通知领取
                 val check = SystemLocationStateChecker.checkAndRecord(app, now)
-                if (!check.enabled && check.transition == SystemLocationTransition.DISABLED) {
+                if (check.enabled) {
+                    // 覆盖服务已死的场景：进程由本广播拉起，没人替它撤旧通知
+                    RecoveryNotifier.cancelSystemLocationDisabled(app)
+                } else if (check.transition == SystemLocationTransition.DISABLED) {
                     (app as? WorkTimeApplication)?.database?.appLogDao()?.insert(
                         AppLogEntity(
                             type = "SYSTEM_LOCATION_DISABLED",

@@ -30,4 +30,16 @@ object RecoveryNotifier {
                 .notify(NOTIFICATION_ID, notification)
         }
     }
+
+    /**
+     * 定位恢复后撤掉还挂着的「系统定位已暂停」——它引导用户去打开定位，
+     * 定位已经恢复时它就是误导；与 [systemLocationDisabled] 同用 id [NOTIFICATION_ID]，
+     * 也顺带清掉健康巡检同 id 的恢复提示。未显示时取消是幂等的。
+     */
+    fun cancelSystemLocationDisabled(context: Context) {
+        runCatching {
+            (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                .cancel(NOTIFICATION_ID)
+        }
+    }
 }

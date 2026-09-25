@@ -911,6 +911,8 @@ class ForegroundLocationService : Service(), LocationListener {
                 ServiceRecovery.systemLocationRecovered(this, System.currentTimeMillis())
                 logEvent("LOCATION_ENABLED", "系统定位已恢复，自动继续记录")
             }
+            // 定位已回来，「系统定位已暂停」通知若还挂着就是误导，撤掉
+            RecoveryNotifier.cancelSystemLocationDisabled(this)
             startLocationUpdates()
         }
     }

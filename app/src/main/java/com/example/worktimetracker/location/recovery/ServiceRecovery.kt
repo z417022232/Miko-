@@ -168,6 +168,9 @@ object ServiceRecovery {
         val episode = prefs.getLong(LOCATION_ALERT_EPISODE, 0L)
         val notified = prefs.getLong(LOCATION_ALERT_NOTIFIED, 0L)
         if (episode <= 0L || episode == notified) return false
+        // 方案一定型（2026-09-25）：睡眠待机优化夜间关定位是已知正常行为，静默自愈不通知。
+        // 不标记已通知——若睡眠模式退出后定位仍处于关闭态，下一次领取照常成功。
+        if (!SystemLocationNotifyGate.shouldNotifyLocationOff(VivoSleepModeReader.isActive(context))) return false
         prefs.edit().putLong(LOCATION_ALERT_NOTIFIED, episode).commit()
         return true
     }
