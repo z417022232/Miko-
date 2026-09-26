@@ -7,16 +7,17 @@ import org.junit.Test
 
 class SystemLocationNotifyGateTest {
 
-    @Test fun `sleep mode active means the nightly location off is expected and silent`() {
-        assertFalse(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = true))
+    @Test fun `no sleep mode means always notify regardless of session`() {
+        assertTrue(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = false, hasActiveWorkSession = true))
+        assertTrue(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = false, hasActiveWorkSession = false))
     }
 
-    @Test fun `any disable outside vivo sleep mode still notifies`() {
-        assertTrue(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = false))
+    @Test fun `sleep mode with active work session must notify`() {
+        // 夜班：人醒着在工作，PEM 误判睡眠关定位——静默等于丢工时证据
+        assertTrue(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = true, hasActiveWorkSession = true))
     }
 
-    @Test fun `unreadable sleep flag falls back to notifying`() {
-        // VivoSleepModeReader 读取失败按未激活处理：宁可多通知，不静默
-        assertTrue(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = false))
+    @Test fun `sleep mode without work session stays silent`() {
+        assertFalse(SystemLocationNotifyGate.shouldNotifyLocationOff(sleepModeActive = true, hasActiveWorkSession = false))
     }
 }

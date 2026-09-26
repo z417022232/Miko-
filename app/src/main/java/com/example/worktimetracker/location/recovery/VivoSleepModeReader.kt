@@ -26,8 +26,27 @@ object SystemLocationNotifyGate {
     /**
      * 系统定位被关闭时是否应通知用户。
      *
-     * 唯一豁免是 vivo 睡眠模式激活中（恢复由 App 自愈链负责，见 LocationSwitchReceiver）；
-     * 其余任何关闭（用户手关、白天被关、睡眠标志读取失败）都通知。
+     * 睡眠模式激活中（已知正常关闭）默认静默；**唯一例外是工作会话进行中**：
+     * 用户上夜班时人醒着、手机闲置在公司，PEM 会误判睡眠而关定位——那时
+     * 静默等于丢工时证据还没人知道，必须提醒。其余任何关闭（用户手关、
+     * 白天被关、睡眠标志读取失败）都通知。
      */
-    fun shouldNotifyLocationOff(sleepModeActive: Boolean): Boolean = !sleepModeActive
+    fun shouldNotifyLocationOff(sleepModeActive: Boolean, hasActiveWorkSession: Boolean): Boolean =
+        !sleepModeActive || hasActiveWorkSession
+}
+
+/**
+ * 工作会话进行中的同步读取（与 JourneyObservation.hasActiveWorkSession 同口径）。
+ *
+ * 只在睡眠模式激活这一罕见分支被调用。读不到状态行（从未记录过会话）视为不在工作；
+ * 读取异常同样视为不在工作——此时通知本身也发不出去，不必再放大。
+ */
+object ActiveWorkSessionReader {
+    private val ACTIVE_STATES = setOf("WORKING", "TEMP_LEAVE")
+
+    fun hasActive(context: Context): Boolean = runCatching {
+        val app = context.applicationContext as? com.example.worktimetracker.WorkTimeApplication
+        val state = app?.database?.workStateDao()?.getStateBlocking()
+        state != null && state.currentState in ACTIVE_STATES
+    }.getOrDefault(false)
 }

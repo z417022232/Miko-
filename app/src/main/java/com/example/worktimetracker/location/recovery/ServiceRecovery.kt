@@ -24,6 +24,9 @@ object ServiceRecovery {
     private const val LOCATION_ALERT_EPISODE = "system_location_alert_episode"
     private const val LOCATION_ALERT_NOTIFIED = "system_location_alert_notified"
 
+    /** 睡眠模式期间工作会话被定位关闭打断的提醒限流键（配合 shouldNotify 的 60 分钟窗口）。 */
+    private const val KEY_WORKING_LOCATION_OFF = "WORKING_LOCATION_OFF"
+
     /**
      * 判定「定位服务还活着」的心跳窗口。
      *
@@ -168,9 +171,14 @@ object ServiceRecovery {
         val episode = prefs.getLong(LOCATION_ALERT_EPISODE, 0L)
         val notified = prefs.getLong(LOCATION_ALERT_NOTIFIED, 0L)
         if (episode <= 0L || episode == notified) return false
-        // 方案一定型（2026-09-25）：睡眠待机优化夜间关定位是已知正常行为，静默自愈不通知。
-        // 不标记已通知——若睡眠模式退出后定位仍处于关闭态，下一次领取照常成功。
-        if (!SystemLocationNotifyGate.shouldNotifyLocationOff(VivoSleepModeReader.isActive(context))) return false
+        val sleepActive = VivoSleepModeReader.isActive(context)
+        // 睡眠模式激活中才需要复核工作会话（夜班场景：人醒着，PEM 误判睡眠关定位）；
+        // 工作时段的提醒限流一小时一次，防止夜间反复开关把通知变噪音
+        val sessionActive = if (sleepActive) ActiveWorkSessionReader.hasActive(context) else false
+        if (!SystemLocationNotifyGate.shouldNotifyLocationOff(sleepActive, sessionActive)) return false
+        if (sleepActive && !ServiceRecovery.shouldNotify(context, KEY_WORKING_LOCATION_OFF, System.currentTimeMillis())) {
+            return false
+        }
         prefs.edit().putLong(LOCATION_ALERT_NOTIFIED, episode).commit()
         return true
     }

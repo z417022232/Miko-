@@ -14,13 +14,19 @@ object RecoveryNotifier {
 
     fun systemLocationDisabled(context: Context) {
         NotificationChannels.ensure(context)
+        val working = ActiveWorkSessionReader.hasActive(context)
         val intent = PendingIntent.getActivity(
             context, 2, Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val (title, text) = if (working) {
+            "正在记录的工时可能中断" to "系统定位被关闭（多半是省电策略），当前正处于工作时段，点击打开"
+        } else {
+            "系统定位已暂停" to "记录已暂停；多半是省电策略（如睡眠待机优化）关闭了定位，点击打开"
+        }
         val notification = NotificationCompat.Builder(context, NotificationChannels.RECOVERY_CHANNEL_ID)
-            .setContentTitle("系统定位已暂停")
-            .setContentText("记录已暂停；多半是省电策略（如睡眠待机优化）关闭了定位，点击打开")
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(R.drawable.ic_stat_worktime)
             .setContentIntent(intent)
             .setAutoCancel(true)
