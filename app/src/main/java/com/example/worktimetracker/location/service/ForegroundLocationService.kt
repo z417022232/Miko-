@@ -304,8 +304,11 @@ class ForegroundLocationService : Service(), LocationListener {
             }
         }
         val systemLocation = SystemLocationStateChecker.checkAndRecord(this)
-        if (systemLocation.enabled) startLocationUpdates()
-        else if (systemLocation.notifyUser) {
+        if (systemLocation.enabled) {
+            // 服务活着且定位可用——「服务已停止/定位已暂停」类旧通知都成了误导，清掉
+            RecoveryNotifier.cancelSystemLocationDisabled(this)
+            startLocationUpdates()
+        } else if (systemLocation.notifyUser) {
             logEvent("SYSTEM_LOCATION_DISABLED", "服务启动时发现系统定位已关闭")
             RecoveryNotifier.systemLocationDisabled(this)
         }

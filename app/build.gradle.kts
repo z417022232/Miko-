@@ -13,8 +13,8 @@ android {
         applicationId = "com.example.worktimetracker"
         minSdk = 29
         targetSdk = 35
-        versionCode = 38
-        versionName = "10.6"
+        versionCode = 39
+        versionName = "10.7"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

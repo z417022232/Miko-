@@ -24,29 +24,42 @@ object VivoSleepModeReader {
 
 object SystemLocationNotifyGate {
     /**
-     * 系统定位被关闭时是否应通知用户。
+     * 打扰用户的统一闸门：定位被系统关闭、服务死亡需要用户介入等场景共用。
      *
-     * 睡眠模式激活中（已知正常关闭）默认静默；**唯一例外是工作会话进行中**：
+     * 睡眠模式激活中（已知正常关闭，自愈链负责恢复）默认静默；**唯一例外是工作会话进行中**：
      * 用户上夜班时人醒着、手机闲置在公司，PEM 会误判睡眠而关定位——那时
      * 静默等于丢工时证据还没人知道，必须提醒。其余任何关闭（用户手关、
-     * 白天被关、睡眠标志读取失败）都通知。
+     * 白天被关、睡眠标志读取失败）都打扰。
      */
-    fun shouldNotifyLocationOff(sleepModeActive: Boolean, hasActiveWorkSession: Boolean): Boolean =
+    fun shouldDisturbUser(sleepModeActive: Boolean, hasActiveWorkSession: Boolean): Boolean =
         !sleepModeActive || hasActiveWorkSession
 }
 
 /**
- * 工作会话进行中的同步读取（与 JourneyObservation.hasActiveWorkSession 同口径）。
+ * 工作状态（currentState）的进程级快照，由 WorkTimeApplication 的 Flow 收集器维护。
  *
- * 只在睡眠模式激活这一罕见分支被调用。读不到状态行（从未记录过会话）视为不在工作；
- * 读取异常同样视为不在工作——此时通知本身也发不出去，不必再放大。
+ * 通知领取的判定需要读工作状态，但领取可能发生在主线程（服务的 providerGlobalCheck），
+ * Room 禁止主线程阻塞查询——2026-09-27 夜班实测 6 次定位关闭在领取时静默失败就是这个原因。
+ * 读快照 = 零 IO、任意线程安全；仅冷启动未暖机时才落到 [ActiveWorkSessionReader] 的直读兜底。
+ */
+object WorkSessionSnapshot {
+    @Volatile var currentState: String? = null
+}
+
+/**
+ * 工作会话进行中的读取（与 JourneyObservation.hasActiveWorkSession 同口径）。
+ * 优先读 [WorkSessionSnapshot]；快照未暖机（进程刚被广播拉起）时后台线程直读兜底，
+ * 主线程直读会抛（Room 限制），按「不在工作」处理——收集器暖机后此窗口只有毫秒级。
  */
 object ActiveWorkSessionReader {
     private val ACTIVE_STATES = setOf("WORKING", "TEMP_LEAVE")
 
-    fun hasActive(context: Context): Boolean = runCatching {
-        val app = context.applicationContext as? com.example.worktimetracker.WorkTimeApplication
-        val state = app?.database?.workStateDao()?.getStateBlocking()
-        state != null && state.currentState in ACTIVE_STATES
-    }.getOrDefault(false)
+    fun hasActive(context: Context): Boolean {
+        WorkSessionSnapshot.currentState?.let { return it in ACTIVE_STATES }
+        return runCatching {
+            val state = (context.applicationContext as? com.example.worktimetracker.WorkTimeApplication)
+                ?.database?.workStateDao()?.getStateBlocking()?.currentState
+            state != null && state in ACTIVE_STATES
+        }.getOrDefault(false)
+    }
 }

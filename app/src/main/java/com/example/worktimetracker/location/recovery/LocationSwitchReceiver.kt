@@ -33,6 +33,16 @@ class LocationSwitchReceiver : BroadcastReceiver() {
                 val now = System.currentTimeMillis()
                 // 与服务内 / 闹钟看门狗共用同一份状态转移与一次性通知领取
                 val check = SystemLocationStateChecker.checkAndRecord(app, now)
+                // 诊断行：无差别记录每次送达的开关广播与判定结果——服务内回调赢了
+                // 转移竞速时 transition=NONE 属正常；整夜无此行而服务有日志 = 广播未送达
+                val sleep = VivoSleepModeReader.isActive(app)
+                (app as? WorkTimeApplication)?.database?.appLogDao()?.insert(
+                    AppLogEntity(
+                        type = "LOCATION_SWITCH",
+                        content = "action=${action.substringAfterLast('.')} enabled=${check.enabled} " +
+                            "transition=${check.transition} sleep=$sleep claimed=${check.notifyUser}"
+                    )
+                )
                 if (check.enabled) {
                     // 覆盖服务已死的场景：进程由本广播拉起，没人替它撤旧通知
                     RecoveryNotifier.cancelSystemLocationDisabled(app)

@@ -175,7 +175,7 @@ object ServiceRecovery {
         // 睡眠模式激活中才需要复核工作会话（夜班场景：人醒着，PEM 误判睡眠关定位）；
         // 工作时段的提醒限流一小时一次，防止夜间反复开关把通知变噪音
         val sessionActive = if (sleepActive) ActiveWorkSessionReader.hasActive(context) else false
-        if (!SystemLocationNotifyGate.shouldNotifyLocationOff(sleepActive, sessionActive)) return false
+        if (!SystemLocationNotifyGate.shouldDisturbUser(sleepActive, sessionActive)) return false
         if (sleepActive && !ServiceRecovery.shouldNotify(context, KEY_WORKING_LOCATION_OFF, System.currentTimeMillis())) {
             return false
         }

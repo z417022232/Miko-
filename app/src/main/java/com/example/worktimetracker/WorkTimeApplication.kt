@@ -40,6 +40,16 @@ class WorkTimeApplication : Application() {
             JourneyHistoryPrelearningService(database).runOnce()
             GeofenceRecovery.register(this@WorkTimeApplication)
         }
+        // 工作状态进程级快照：通知领取路径（含主线程的 providerGlobalCheck）要判断
+        // 「是否正处工作会话」，但 Room 禁止主线程阻塞查询——2026-09-27 夜班实测
+        // 6 次定位关闭全部在此静默失败。Flow 收集器让快照常热，读取零 IO。
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                database.workStateDao().observeState().collect {
+                    com.example.worktimetracker.location.recovery.WorkSessionSnapshot.currentState = it?.currentState
+                }
+            }
+        }
     }
 
     /**

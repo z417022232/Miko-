@@ -51,6 +51,10 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
             )
         }
         val snapshot = ServiceRecovery.snapshot(applicationContext, sourceHealth)
+        val disturb = SystemLocationNotifyGate.shouldDisturbUser(
+            VivoSleepModeReader.isActive(applicationContext),
+            ActiveWorkSessionReader.hasActive(applicationContext)
+        )
         when (val action = ServiceHealthPolicy.evaluate(snapshot, now)) {
             HealthAction.HEALTHY -> Unit
             HealthAction.NOTIFY_TAP_TO_RECOVER -> if (ServiceRecovery.shouldNotify(applicationContext, action.name, now)) {
@@ -58,7 +62,8 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
                     type = "RECOVERY_BLOCKED",
                     content = "定位服务心跳超过25分钟；Android 不允许后台任务直接启动定位前台服务，请点击通知恢复"
                 ))
-                sendRecoveryNotification("工时记录服务已停止",
+                // 睡眠模式期间服务死亡由闹钟自愈链兜底；只在清醒或工作时段打扰用户
+                if (disturb) sendRecoveryNotification("工时记录服务已停止",
                     "自动记录暂停了，点击这里恢复自动记录")
             }
             HealthAction.REREGISTER_LOCATION,
@@ -77,7 +82,7 @@ class LocationHealthWorker(context: Context, params: WorkerParameters) : Corouti
                     type = "LOCATION_HEALTH",
                     content = "定位链路健康检查：${action.name}（来源状态=${sourceHealth.keys.sorted().joinToString()}）"
                 ))
-                sendRecoveryNotification("定位记录可能中断",
+                if (disturb) sendRecoveryNotification("定位记录可能中断",
                     "系统定位已关闭或不可用，点击查看恢复方法")
             }
             HealthAction.AUXILIARY_DEGRADED -> if (ServiceRecovery.shouldNotify(applicationContext, action.name, now)) {

@@ -50,7 +50,7 @@ class SystemLocationEntryPointContractTest {
     fun `notification claim is gated by vivo sleep mode and stale alert is cancelled on recovery`() {
         val claim = source("app/src/main/java/com/example/worktimetracker/location/recovery/ServiceRecovery.kt")
         val body = functionBody(claim, "fun claimSystemLocationNotification(")
-        val gate = body.indexOf("SystemLocationNotifyGate.shouldNotifyLocationOff")
+        val gate = body.indexOf("SystemLocationNotifyGate.shouldDisturbUser")
         val mark = body.indexOf("putLong(LOCATION_ALERT_NOTIFIED")
         assertTrue("通知领取必须先过睡眠模式豁免", gate in 0 until mark)
         assertTrue("豁免判定必须基于 vivo 睡眠标志读取", body.contains("VivoSleepModeReader.isActive(context)"))
@@ -65,6 +65,36 @@ class SystemLocationEntryPointContractTest {
         assertTrue("服务恢复路径必须撤旧通知", service.contains("RecoveryNotifier.cancelSystemLocationDisabled"))
         val receiver = source("app/src/main/java/com/example/worktimetracker/location/recovery/LocationSwitchReceiver.kt")
         assertTrue("开关广播恢复路径必须撤旧通知（覆盖服务已死场景）", receiver.contains("RecoveryNotifier.cancelSystemLocationDisabled"))
+    }
+
+    @Test
+    fun `work session is read from snapshot so main thread claim cannot hit room`() {
+        val reader = source("app/src/main/java/com/example/worktimetracker/location/recovery/VivoSleepModeReader.kt")
+        assertTrue("必须有进程级快照对象", reader.contains("object WorkSessionSnapshot"))
+        val hasActive = functionBody(reader, "fun hasActive(context: Context)")
+        val cache = hasActive.indexOf("WorkSessionSnapshot.currentState")
+        val blocking = hasActive.indexOf("getStateBlocking")
+        assertTrue("必须优先读快照（主线程不能碰 Room）", cache in 0 until blocking)
+        assertTrue("兜底直读必须吞异常", hasActive.contains("runCatching"))
+        val app = source("app/src/main/java/com/example/worktimetracker/WorkTimeApplication.kt")
+        assertTrue("快照必须由 Flow 收集器维护", app.contains("WorkSessionSnapshot.currentState = it?.currentState"))
+        assertTrue("收集器必须吞异常不影响启动链", functionBody(app, "override fun onCreate()").contains("runCatching"))
+    }
+
+    @Test
+    fun `health worker notification branches respect the same disturb gate`() {
+        val worker = source("app/src/main/java/com/example/worktimetracker/location/recovery/LocationHealthWorker.kt")
+        val disturb = worker.indexOf("SystemLocationNotifyGate.shouldDisturbUser")
+        assertTrue("巡检必须先算打扰闸门", disturb >= 0)
+        assertTrue("服务死亡通知必须过闸门", worker.contains("if (disturb) sendRecoveryNotification(\"工时记录服务已停止\""))
+        assertTrue("Provider不可用通知必须过闸门", worker.contains("if (disturb) sendRecoveryNotification(\"定位记录可能中断\""))
+    }
+
+    @Test
+    fun `location switch receiver logs a diagnostic line for every delivered broadcast`() {
+        val receiver = source("app/src/main/java/com/example/worktimetracker/location/recovery/LocationSwitchReceiver.kt")
+        assertTrue("必须落诊断日志", receiver.contains("type = \"LOCATION_SWITCH\""))
+        assertTrue("诊断行必须含送达判定与领取结果", receiver.contains("claimed="))
     }
 
     private fun source(relative: String): String {
