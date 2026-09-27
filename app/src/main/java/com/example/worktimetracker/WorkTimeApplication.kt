@@ -9,6 +9,7 @@ import com.example.worktimetracker.domain.evidence.FusedStatusSnapshot
 import com.example.worktimetracker.location.recovery.ServiceRecovery
 import com.example.worktimetracker.location.recovery.GeofenceRecovery
 import com.example.worktimetracker.data.HistoricalRecordRepair
+import com.example.worktimetracker.data.LearningModelRepair
 import com.example.worktimetracker.data.SalarySlipDraftRepair
 import com.example.worktimetracker.domain.payroll.PayRateSeed
 import com.example.worktimetracker.location.service.AnchorLearningService
@@ -30,6 +31,9 @@ class WorkTimeApplication : Application() {
             SalarySlipDraftRepair.runOnce(this@WorkTimeApplication)
             // 地点锚点学习（DB v14 / 方案阶段2）：只写三张新表，幂等且吞异常，
             // 跑失败绝不影响定位主链路（见 AnchorLearningService 的纪律说明）。
+            // DB v18 的历史伤害修复：老版本元数据缺 placeId，站点当前生效的版本可能是 RETIRED。
+            // 必须在 learnAll() **之前**跑，否则学习那一轮读到的还是错的归属。
+            LearningModelRepair.runOnce(database)
             AnchorLearningService(database).learnAll()
             // 阶段3新机预学习：仅当影子表为空时回放最近30天既有定位/工时事实，
             // 生成起始快照；不改旧记录，也不拿历史数据抵扣未来影子验证。
@@ -449,6 +453,11 @@ class WorkTimeApplication : Application() {
                 db.execSQL(
                     "ALTER TABLE learned_place_models ADD COLUMN everApplied INTEGER NOT NULL DEFAULT 0"
                 )
+                // 「曾经生效过」对老行不是猜测：`modelVersion > 0` 就是硬证据 ——
+                // 版本号只在 autoApplied 为真那一刻才开（AnchorLearningService.persist）。
+                // 不补这一句，所有老站点升上来都会再走一次历史预学习，
+                // 白拿一次「跳过影子验证」的特权。
+                db.execSQL("UPDATE learned_place_models SET everApplied = 1 WHERE modelVersion > 0")
             }
         }
 

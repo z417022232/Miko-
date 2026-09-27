@@ -62,6 +62,22 @@ interface LearningModelDao {
         now: Long
     )
 
+    /**
+     * 让某个地点**认领**它当前生效的版本（DB v18 的历史伤害修复，**幂等**）。
+     *
+     * v18 之前 `learning_model_meta` 没有 placeId，多站点共用同一条 `PLACE_ANCHOR` 版本序列，
+     * 于是后开版本的站点会把先开版本站点的版本一并 RETIRED —— 除「最后开版本的那个站点」外，
+     * 其余站点当前生效的版本恒为 RETIRED，回滚契约对它们实际失效。
+     *
+     * 认领依据是**显式指针**不是猜的：`learned_place_models.modelVersion` 就是该地点指向的版本号。
+     * 只补 `placeId IS NULL` 的老行：v18 之后新开的版本本来就带 placeId，不许被改写。
+     */
+    @Query(
+        "UPDATE learning_model_meta SET placeId = :placeId, status = 'ACTIVE', invalidatedAt = NULL " +
+            "WHERE modelType = :modelType AND modelVersion = :modelVersion AND placeId IS NULL"
+    )
+    suspend fun claimVersion(modelType: String, modelVersion: Long, placeId: Long)
+
     // ------------------------------------------------------ 地点学习模型
 
     @Query("SELECT * FROM learned_place_models")
